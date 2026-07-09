@@ -25,6 +25,13 @@ def test_local_path_aliased(redactor) -> None:
     assert "/workspace/" in sanitized
 
 
+def test_same_basename_paths_get_distinct_aliases(redactor) -> None:
+    a, _ = redactor.sanitize_text("repo /private/tmp/a/repo", "sess_1")
+    b, _ = redactor.sanitize_text("repo /private/tmp/b/repo", "sess_1")
+    assert a != b
+    assert "/private/tmp" not in a + b
+
+
 def test_tool_call_protocol_ids_are_not_redacted(redactor) -> None:
     body = {
         "messages": [

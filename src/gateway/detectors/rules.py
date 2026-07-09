@@ -340,6 +340,16 @@ BUILTIN_RULES: tuple[dict[str, Any], ...] = (
         "preview_keep": 2,
     },
     {
+        "id": "pii.hk_address",
+        "pattern": r"\b[A-Z][A-Za-z]+(?:\s+[A-Z][A-Za-z]+){0,3},\s*Hong Kong\b",
+        "type": "PII",
+        "subtype": "address",
+        "confidence": 0.82,
+        "risk": "medium",
+        "suggested_action": "redact",
+        "preview_keep": 2,
+    },
+    {
         "id": "pii.credit_card",
         "pattern": r"(?<!\d)(?:\d[ -]?){13,19}(?!\d)",
         "type": "MACHINE_SECRET",

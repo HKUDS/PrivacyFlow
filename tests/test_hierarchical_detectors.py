@@ -57,6 +57,10 @@ def test_phone_detected() -> None:
     assert "phone" in subtypes("+1 (415) 555-1212")
 
 
+def test_hong_kong_address_detected() -> None:
+    assert "address" in subtypes("Address: Kennedy Town, Hong Kong")
+
+
 def test_credit_card_only_luhn_valid() -> None:
     valid = subtypes("card 4111 1111 1111 1111")
     invalid = subtypes("card 4111 1111 1111 1112")

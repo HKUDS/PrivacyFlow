@@ -2,6 +2,36 @@
 
 Date: 2026-07-02
 
+## Claude Code Roleplay Agent Validation
+
+Date: 2026-07-09
+
+This validation is different from asking Claude Code to run the test harness.
+Claude Code itself acted as the coding agent in each synthetic scenario: it was
+started with `ANTHROPIC_BASE_URL=http://127.0.0.1:8787`, APG proxied its
+Anthropic-compatible `/v1/messages` traffic to DeepSeek, and Claude Code used
+real `Read`, `Write`, and `Bash` tool calls inside per-scenario test
+repositories.
+
+Result after fixes:
+
+- Claude Code version: `2.1.204`
+- model through APG: `deepseek-v4-flash`
+- scenarios run: `14`
+- passed: `14`
+- failed: `0`
+- upstream raw-secret leaks: `0`
+- audit raw-secret leaks: `0`
+- final-output / written-file forbidden leaks: `0`
+
+Issues found by the first roleplay run:
+
+- `scenario_06`: Hong Kong address fragment (`Kennedy Town, Hong Kong`) was not
+  detected as PII. Fixed with a narrow local address rule.
+- `scenario_13`: path aliases such as `/workspace/repo` collided across
+  independent synthetic repositories. Fixed by adding a short stable hash to
+  path aliases.
+
 ## DeepSeek Live APG Harness
 
 Command class:

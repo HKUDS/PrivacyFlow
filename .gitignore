@@ -1,5 +1,6 @@
 .venv/
 .apg/
+.apg-*/
 .apg-e2e*/
 .pytest_cache/
 __pycache__/

@@ -18,9 +18,15 @@ class FakeUpstream:
 
     async def stream_request(self, method, path, payload=None):
         self.calls.append((method, path, payload))
+        alias = "/workspace/project"
+        if isinstance(payload, dict):
+            try:
+                alias = payload["messages"][0]["content"].split("repo ", 1)[1]
+            except (KeyError, IndexError, TypeError):
+                pass
 
         async def chunks():
-            yield b'data: {"choices":[{"delta":{"content":"use /workspace/project/src/app.py"}}]}\n\n'
+            yield f'data: {{"choices":[{{"delta":{{"content":"use {alias}/src/app.py"}}}}]}}\n\n'.encode()
             yield b"data: [DONE]\n\n"
 
         return 200, {"content-type": "text/event-stream"}, chunks()
