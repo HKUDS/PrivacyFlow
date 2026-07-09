@@ -1,0 +1,89 @@
+bind_host: 127.0.0.1
+bind_port: 8765
+database_path: .apg/state.sqlite3
+audit_log_path: .apg/audit.jsonl
+signing_secret: change-this-local-secret
+local_api_keys:
+  - apg-local
+workspace_id: default
+strict_mode: true
+pii_mode: pseudonymize
+
+upstream:
+  base_url: https://api.openai.com
+  api_key: ${APG_UPSTREAM_API_KEY}
+  timeout_seconds: 60
+  strip_local_v1: false
+
+policy:
+  machine_secrets: redact
+  private_keys: block
+  pii:
+    emails: pseudonymize
+    phones: redact
+  local_paths: alias
+  audit_logs: safe_only
+  sensitive_edits:
+    env_files:
+      require_confirmation_for:
+        - "*"
+      deny_delete_keys:
+        - OPENAI_API_KEY
+        - GITHUB_TOKEN
+
+detectors:
+  preset: default
+  flow_timeout_ms: 1500
+  allow_model_download: true
+  overrides:
+    rules:
+      add:
+        - id: custom.internal_ticket
+          pattern: "\\bTICKET-[0-9]{6}\\b"
+          type: LOCAL_CONTEXT
+          subtype: internal_ticket
+          confidence: 0.85
+          risk: medium
+          suggested_action: redact
+      disable: []
+    modules: {}
+  presets:
+    custom_minimal:
+      flow_timeout_ms: 1000
+      modules:
+        - id: custom_rules
+          type: regex_rules
+          enabled: true
+          rules:
+            - id: custom.partner_token
+              pattern: "\\bpartner_live_[A-Za-z0-9]{12,}\\b"
+              type: MACHINE_SECRET
+              subtype: partner_token
+              confidence: 0.9
+              risk: high
+              suggested_action: redact
+        - id: entropy
+          type: entropy_context
+          enabled: true
+          min_length: 20
+          min_entropy: 3.5
+          timeout_ms: 100
+
+scoring:
+  critical_if:
+    - private_key
+    - provider_api_key
+    - jwt_with_bearer_context
+    - database_url_with_password
+  block_threshold: 0.90
+  redact_threshold: 0.65
+  warn_threshold: 0.40
+
+capability:
+  mode: auto              # auto | strict | audit
+  baseline_threshold: 3    # uses to establish a trusted pattern
+  secret_type_scopes: {}   # user overrides for Layer 1 type constraints
+  # Example user overrides for custom secret types:
+  # secret_type_scopes:
+  #   partner_live_token: ["api.partner.com", "*.partner-cdn.com"]
+  #   internal_service_key: null  # null = no default scope, fall through to Layer 2/3

@@ -1,0 +1,35 @@
+[project]
+name = "agent-privacy-gateway"
+version = "0.1.0"
+description = "Local privacy/security gateway for cloud AI agents."
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+  "fastapi>=0.115",
+  "httpx>=0.27",
+  "pydantic>=2.7",
+  "pyyaml>=6.0",
+  "uvicorn>=0.30",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.2"]
+models = [
+  "gliner>=0.2.17",
+  "torch>=2.2",
+  "transformers>=4.40",
+]
+
+[project.scripts]
+apg = "gateway.server:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests", "e2e_agent_tests/tests"]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/gateway"]

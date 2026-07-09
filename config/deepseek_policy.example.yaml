@@ -1,0 +1,19 @@
+bind_host: 127.0.0.1
+bind_port: 8765
+database_path: .apg/deepseek-state.sqlite3
+audit_log_path: .apg/deepseek-audit.jsonl
+signing_secret: change-this-local-secret
+local_api_keys:
+  - apg-local
+workspace_id: default
+strict_mode: true
+pii_mode: pseudonymize
+
+upstream:
+  # DeepSeek's official OpenAI-compatible base URL is https://api.deepseek.com.
+  # APG's local client path is /v1/chat/completions, so strip_local_v1 maps it
+  # to DeepSeek's /chat/completions upstream path.
+  base_url: https://api.deepseek.com
+  api_key: ${DEEPSEEK_API_KEY}
+  timeout_seconds: 60
+  strip_local_v1: true
