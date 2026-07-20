@@ -10,6 +10,7 @@ from gateway.detectors.normalizer import NormalizedText
 
 class PathDetector(Detector):
     name = "paths"
+    TRAILING_PUNCTUATION = ".,;:!?]}"
 
     PATTERNS = (
         re.compile(r"(?<!\w)/(?:Users|home)/[A-Za-z0-9._-]+/[^\s\"'<>)]*"),
@@ -23,15 +24,18 @@ class PathDetector(Detector):
     def detect(self, block: SourceBlock, normalized: NormalizedText) -> Iterable[Finding]:
         for pattern in self.PATTERNS:
             for match in pattern.finditer(normalized.normalized):
-                value = match.group(0)
+                value = match.group(0).rstrip(self.TRAILING_PUNCTUATION)
+                if not value:
+                    continue
                 subtype = "credential_file" if any(name in value for name in self.KNOWN_CREDENTIAL_NAMES) else "local_path"
-                start, end = normalized.original_span(match.start(), match.end())
+                normalized_end = match.start() + len(value)
+                start, end = normalized.original_span(match.start(), normalized_end)
                 yield Finding.make(
                     source_block_id=block.id,
                     original_start=start,
                     original_end=end,
                     normalized_start=match.start(),
-                    normalized_end=match.end(),
+                    normalized_end=normalized_end,
                     type="CREDENTIAL_FILE" if subtype == "credential_file" else "LOCAL_CONTEXT",
                     subtype=subtype,
                     confidence=0.9,

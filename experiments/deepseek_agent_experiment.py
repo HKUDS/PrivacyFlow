@@ -90,7 +90,7 @@ async def run_experiment(args: argparse.Namespace) -> int:
         async with httpx.AsyncClient(transport=transport, base_url="http://apg.local") as client:
             response = await client.post(
                 "/v1/chat/completions",
-                headers={"Authorization": "Bearer apg-local", "X-APG-Session-ID": "sess_experiment"},
+                headers={"Authorization": "Bearer apg-local"},
                 json={
                     "model": args.model,
                     "messages": build_messages(args.task),

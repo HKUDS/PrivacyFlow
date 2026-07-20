@@ -116,7 +116,7 @@ class RealAPIGateway(E2EMockGateway):
         async with httpx.AsyncClient(transport=self._transport, base_url="http://apg.local", timeout=self.timeout + 10) as client:
             response = await client.post(
                 "/v1/chat/completions",
-                headers={"Authorization": "Bearer apg-local", "X-APG-Session-ID": self.session_id},
+                headers={"Authorization": "Bearer apg-local"},
                 json=body,
             )
         append_jsonl(

@@ -81,15 +81,16 @@ class RuleBasedDetector(Detector):
                     continue
                 if any(_validator_passes(name, value) for name in rule.reject_validators):
                     continue
-                start, end = normalized.original_span(match.start(), match.end())
+                value_span = match.span("value") if "value" in match.groupdict() and match.group("value") is not None else match.span()
+                start, end = normalized.original_span(*value_span)
                 suggested_action = _source_action(rule, block.kind)
                 detector_name = _detector_name(rule, self.name)
                 yield Finding.make(
                     source_block_id=block.id,
                     original_start=start,
                     original_end=end,
-                    normalized_start=match.start(),
-                    normalized_end=match.end(),
+                    normalized_start=value_span[0],
+                    normalized_end=value_span[1],
                     type=rule.type,
                     subtype=rule.subtype,
                     confidence=rule.confidence,
@@ -160,6 +161,16 @@ def _source_action(rule: DetectionRule, source_kind: str) -> SuggestedAction:
 
 
 BUILTIN_RULES: tuple[dict[str, Any], ...] = (
+    {
+        "id": "apg.legacy_pii_placeholder",
+        "pattern": r"<APG_PII:[^<>]+>",
+        "type": "APG_MARKER",
+        "subtype": "legacy_pii_placeholder",
+        "confidence": 0.99,
+        "risk": "high",
+        "suggested_action": "warn",
+        "preview_keep": 0,
+    },
     {
         "id": "apg.signed_placeholder",
         "pattern": r"<APG:v1:(?P<kind>[a-z_]+):(?P<handle>[^:<>]+):(?P<session>[^:<>]+):(?P<issued>\d+):(?P<mac>[A-Za-z0-9_-]+)>",
@@ -309,7 +320,7 @@ BUILTIN_RULES: tuple[dict[str, Any], ...] = (
     },
     {
         "id": "secret.env_assignment",
-        "pattern": r"^\s*[A-Z0-9_]*(?:API_KEY|TOKEN|SECRET|PASSWORD|PASSWD|PASS|CREDENTIAL|PRIVATE_KEY|DATABASE_URL)[A-Z0-9_]*\s*=\s*.+$",
+        "pattern": r"^\s*[A-Z0-9_]*(?:API_KEY|TOKEN|SECRET|PASSWORD|PASSWD|PASS|CREDENTIAL|PRIVATE_KEY|DATABASE_URL)[A-Z0-9_]*\s*=\s*(?P<value>.+)$",
         "type": "MACHINE_SECRET",
         "subtype": "env_assignment",
         "confidence": 0.98,

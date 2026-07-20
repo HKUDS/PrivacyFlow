@@ -9,6 +9,7 @@ APG is a transparent OpenAI/Anthropic-compatible privacy proxy. It does **not** 
 3. **Transparent tool-call materialization.** When the upstream LLM responds with structured `tool_calls[].function.arguments` (OpenAI) or `content[].tool_use.input` (Anthropic) fields that contain APG placeholders, APG materializes the placeholder back to the raw value **only inside those argument fields**. The harness receives `tool_call.arguments` containing the real credential and can execute the tool with it.
 4. **Fail-closed for forged placeholders.** Hallucinated or unsigned placeholders anywhere (including in `arguments`) are left intact rather than partially replaced; the harness will normally see a tool call that fails when the bogus value is used.
 5. **Per-session HMAC.** Placeholders carry `kind`, `handle_id`, `session_id`, `issued_at`, and a short HMAC over a workspace/session/policy scope. Materialization fails if the MAC, session, workspace, expiry, tombstone state, or sink policy does not match.
+6. **Hierarchical path aliases.** Once a workspace path is aliased, descendant paths reuse that parent alias plus a relative suffix. This keeps remote tool context navigable while preserving session/workspace isolation and local restoration.
 
 ## What the harness owns
 
@@ -20,6 +21,7 @@ Anything APG does not enforce is explicitly the harness' responsibility. Concret
 - **Tool argument validation.** Whether the JSON arguments are well-formed for the tool's schema.
 - **Local file writes.** APG does not gate file writes. If a redacted view of `.env` is shown to the LLM and the LLM proposes writing it back, the harness (or the host VCS / editor) must prevent destructive whole-file overwrite of the original secret.
 - **Secret lifecycle and rotation.** APG's mapping store is a short-lived per-session cache. Long-term secret storage, key rotation, and revocation live in the harness' keystore.
+- **Local trajectory retention.** A trusted agent may record a tool argument after APG materializes it locally. APG protects upstream/model-visible traffic and final visible text; the harness must apply its own retention and access policy to local trajectories.
 
 ## Residual prompt-injection risk
 
@@ -44,7 +46,7 @@ APG keeps raw values only for the duration allowed by mapping TTLs; expired mapp
 ## Endpoint index
 
 - `POST /v1/chat/completions` — OpenAI-compatible proxy
-- `POST /v1/responses` — basic Responses proxy
+- `POST /v1/responses` — non-streaming and statefully scanned streaming Responses proxy
 - `POST /v1/messages` — Anthropic-compatible proxy (OpenAI ↔ Anthropic translation)
 - `GET /v1/models` — passthrough models list
 - `POST /v1/apg/detect` — dry-run detector inspection

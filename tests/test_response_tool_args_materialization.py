@@ -5,6 +5,8 @@ import json
 from fastapi.testclient import TestClient
 
 from gateway.config import GatewayConfig, UpstreamConfig
+from gateway.detector_manager import DetectorManager
+from gateway.redaction_engine import RedactionEngine
 from gateway.server import create_app
 
 
@@ -83,7 +85,8 @@ def test_secret_in_tool_call_arguments_materialized_to_raw_value(tmp_path) -> No
     assert materialized["api_key"] == "sk-proj-abcdefghijklmnopqrstuvwxyz0", "tool_call args must contain the raw secret"
     content = body["choices"][0]["message"]["content"]
     assert "sk-proj-" not in content, "visible content must stay redacted"
-    assert "<APG:v1:" in content, "visible content keeps a redaction marker"
+    assert "<APG:v1:" not in content, "visible content must not expose APG handles"
+    assert "APG-managed protected value" in content
 
 
 def test_forged_placeholder_inside_tool_call_args_is_left_intact(tmp_path) -> None:
@@ -113,6 +116,34 @@ def test_forged_placeholder_inside_tool_call_args_is_left_intact(tmp_path) -> No
     body = resp.json()
     args = json.loads(body["choices"][0]["message"]["tool_calls"][0]["function"]["arguments"])
     assert args["api_key"].startswith("<APG:v1:secret:"), "invalid placeholder must fail-closed (retained as-is)"
+
+
+def test_materialization_events_cover_cross_session_and_expired_handles(redactor, components) -> None:
+    secret = "sk-proj-abcdefghijklmnopqrstuvwxyz0"
+    placeholder, _ = redactor.sanitize_text(secret, "sess_a")
+    value, events = redactor.materialize_local_text_with_events(placeholder, "sess_b")
+    assert value == placeholder
+    assert events[-1]["action"] == "preserve"
+    assert events[-1]["result_code"] == "APG_PLACEHOLDER_SCOPE_MISMATCH"
+    assert "handle" not in events[-1]
+
+    store, signer, policy = components
+    rec = store.upsert_mapping(
+        session_id="sess_expired",
+        workspace_id="ws",
+        scope="request",
+        kind="secret",
+        subtype="api_key",
+        value=secret,
+        store_value=True,
+        materialization_class="secret",
+        ttl_seconds=-1,
+    )
+    expired = signer.issue("secret", rec.handle_id, "sess_expired")
+    expired_redactor = RedactionEngine(DetectorManager(), store, signer, policy, "ws")
+    value, events = expired_redactor.materialize_local_text_with_events(expired, "sess_expired")
+    assert value == expired
+    assert events[-1]["result_code"] == "APG_PLACEHOLDER_EXPIRED"
 
 
 def _extract_first_placeholder(text: str) -> str | None:

@@ -12,6 +12,15 @@ def test_api_key_redacted_before_upstream(redactor) -> None:
     assert events[0]["subtype"] == "openai_api_key"
 
 
+def test_env_assignment_preserves_key_and_redacts_only_value(redactor) -> None:
+    sanitized, _ = redactor.sanitize_text(
+        "SERVICE_TOKEN=sk-apgtest-stream-agent-secret-2026",
+        "sess_1",
+    )
+    assert sanitized.startswith("SERVICE_TOKEN=<APG:v1:secret:")
+    assert "sk-apgtest" not in sanitized
+
+
 def test_email_pseudonymized_consistently(redactor) -> None:
     a, _ = redactor.sanitize_text("howard@example.com", "sess_1")
     b, _ = redactor.sanitize_text("howard@example.com", "sess_1")
@@ -25,11 +34,28 @@ def test_local_path_aliased(redactor) -> None:
     assert "/workspace/" in sanitized
 
 
+def test_local_path_alias_preserves_trailing_sentence_punctuation(redactor) -> None:
+    raw_path = "/private/tmp/project/private/path_probe.txt"
+    sanitized, _ = redactor.sanitize_text(f"Read {raw_path}.", "sess_1")
+    assert sanitized.endswith(".")
+    restored = redactor.materialize_local_text(sanitized, "sess_1")
+    assert restored == f"Read {raw_path}."
+
+
 def test_same_basename_paths_get_distinct_aliases(redactor) -> None:
     a, _ = redactor.sanitize_text("repo /private/tmp/a/repo", "sess_1")
     b, _ = redactor.sanitize_text("repo /private/tmp/b/repo", "sess_1")
     assert a != b
     assert "/private/tmp" not in a + b
+
+
+def test_child_path_reuses_existing_parent_alias(redactor) -> None:
+    root = "/private/tmp/project/apg-agent-test-repo"
+    root_alias, _ = redactor.sanitize_text(root, "sess_1")
+    child_alias, _ = redactor.sanitize_text(root + "/scripts/validate_secret.py", "sess_1")
+    assert child_alias == root_alias + "/scripts/validate_secret.py"
+    restored = redactor.materialize_local_text(child_alias, "sess_1")
+    assert restored == root + "/scripts/validate_secret.py"
 
 
 def test_tool_call_protocol_ids_are_not_redacted(redactor) -> None:

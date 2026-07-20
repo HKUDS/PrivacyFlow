@@ -31,7 +31,7 @@ FALSE_POSITIVE_HINTS = ("fake", "example", "dummy", "placeholder", "sample", "mo
 class EntropyContextDetector(Detector):
     name = "heuristic.entropy_context"
 
-    TOKEN_RE = re.compile(r"\b[A-Za-z0-9_\-+/=]{20,}\b|\b[a-fA-F0-9]{32,}\b")
+    TOKEN_RE = re.compile(r"\b[A-Za-z0-9_\-+/]{20,}={0,2}\b|\b[a-fA-F0-9]{32,}\b")
 
     def __init__(self, min_length: int = 20, min_entropy: float = 3.5) -> None:
         self.min_length = min_length
@@ -44,7 +44,11 @@ class EntropyContextDetector(Detector):
             value = match.group(0)
             if len(value) < self.min_length or value.startswith("APG"):
                 continue
+            if value.startswith("workspace/") or "/workspace/" in value:
+                continue
             if _tool_identifier(value):
+                continue
+            if _path_like_token(value, text, match.end()):
                 continue
             if _inside_plain_http_url(text, match.start(), match.end()):
                 continue
@@ -102,6 +106,31 @@ def _provider_prefix(value: str) -> bool:
 
 def _tool_identifier(value: str) -> bool:
     return value.startswith(("apg_", "mcp__")) and re.fullmatch(r"[a-z][a-z0-9_]*", value) is not None
+
+
+def _path_like_token(value: str, text: str, end: int) -> bool:
+    if "/" not in value:
+        return False
+    if value.startswith(("/", "./", "../", "~/")):
+        return True
+    if re.match(r"\.(?:py|pyi|js|jsx|ts|tsx|json|ya?ml|toml|md|txt|sh|zsh|bash)\b", text[end:], re.I):
+        return True
+    first_segment = value.split("/", 1)[0].lower()
+    return first_segment in {
+        "app",
+        "apps",
+        "bin",
+        "config",
+        "docs",
+        "e2e_agent_tests",
+        "examples",
+        "lib",
+        "packages",
+        "scripts",
+        "src",
+        "test",
+        "tests",
+    }
 
 
 def _inside_plain_http_url(text: str, start: int, end: int) -> bool:

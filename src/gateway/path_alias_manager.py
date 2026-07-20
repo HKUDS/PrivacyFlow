@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import hashlib
-from pathlib import Path
+from pathlib import Path, PurePosixPath, PureWindowsPath
 
 
 class PathAliasManager:
@@ -18,3 +18,13 @@ class PathAliasManager:
         if ".." in Path(suffix).parts:
             return None
         return str(Path(base) / suffix.lstrip("/"))
+
+    def relative_suffix(self, parent: str, child: str) -> str | None:
+        path_type = PureWindowsPath if "\\" in parent or "\\" in child else PurePosixPath
+        try:
+            relative = path_type(child).relative_to(path_type(parent))
+        except ValueError:
+            return None
+        if not relative.parts:
+            return ""
+        return "/" + "/".join(relative.parts)

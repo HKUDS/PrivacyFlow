@@ -90,7 +90,7 @@ class E2EMockGateway:
 
     def write_example_file(self, rel: str, content: str) -> GatewayDecision:
         findings = self.detectors.scan_text(content, kind="file_write_content", source_path=rel)
-        unsafe = any(f.type == "MACHINE_SECRET" and f.subtype not in {"database_url"} for f in findings)
+        unsafe = any(f.type == "MACHINE_SECRET" and f.subtype not in {"database_url", "env_assignment"} for f in findings)
         if unsafe or "sk-apgtest" in content or "ghp_apgtest" in content:
             append_jsonl(self.audit_log, {"run_id": self.run_id, "action": "write_example_file", "path": rel, "decision": "blocked_realistic_secret"})
             return GatewayDecision(False, "APG_EXAMPLE_SECRET_BLOCKED", retryable=False)

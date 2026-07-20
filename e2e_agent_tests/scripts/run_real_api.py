@@ -55,7 +55,7 @@ def run_real_scenario(
     result = {
         "id": scenario_id,
         "name": scenario["name"],
-        "runner": "real_api_deepseek",
+        "runner": "provider_api_deepseek",
         "model": model,
         "mode": mode,
         "passed": passed,
@@ -99,7 +99,7 @@ def run_real_all(args: argparse.Namespace) -> dict[str, Any]:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Run APG E2E scenarios through real APG API proxy + DeepSeek.")
+    parser = argparse.ArgumentParser(description="Run APG E2E scenarios through the real DeepSeek provider API (not a coding-agent runner).")
     parser.add_argument("--workdir", default=".apg-e2e-real")
     parser.add_argument("--report", default="e2e_agent_tests/reports/latest_real_api_report.md")
     parser.add_argument("--model", default="deepseek-v4-flash")

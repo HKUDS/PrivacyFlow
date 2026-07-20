@@ -13,10 +13,9 @@ class ResponseScanner:
         # Pass 1: materialize placeholders back to raw values ONLY inside
         # structured tool-call argument fields. This is the transparent path
         # that lets an agent harness receive real secrets to execute a tool.
-        materialized = self.redaction_engine.materialize_local_tool_args(data, session_id)
+        materialized, materialization_events = self.redaction_engine.materialize_local_tool_args_with_events(data, session_id)
         # Pass 2: redact any echoed secrets/PII in every other string field
         # (assistant-visible text, reasoning, etc.) but skip tool-call args
         # so the values we just materialized are not re-redacted away.
-        return self.redaction_engine.sanitize_json(
-            materialized, session_id, scope="response", alias_paths=False, skip_tool_args=True
-        )
+        sanitized, scan_events = self.redaction_engine.scan_local_json(materialized, session_id, skip_tool_args=True)
+        return sanitized, [*materialization_events, *scan_events]

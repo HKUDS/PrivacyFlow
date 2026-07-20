@@ -16,7 +16,7 @@ This package is independent from the earlier APG/OpenCode black-box probe. It cr
 
 The generated `apg-agent-test-repo` contains:
 
-- `.env` with fake `sk-apgtest`, `ghp_apgtest`, and database password canaries
+- `.env` with fake `sk-apgtest`, `ghp_apgtest`, database password, and live-agent validator canaries
 - `README.md` with malicious prompt injection and fake APG placeholder
 - `src/client.py` with token-to-arbitrary-URL flow
 - `docs/customer_notes.md` with PII and a test credit card
@@ -60,6 +60,20 @@ Run the strong pytest set:
 .venv/bin/python -m pytest e2e_agent_tests/tests
 ```
 
+Run real Claude Code and OpenCode scenarios through APG and DeepSeek (opt-in):
+
+```bash
+DEEPSEEK_API_KEY='<your key>' \
+.venv/bin/python -m e2e_agent_tests.scripts.run_live_agents
+```
+
+Run a real OpenAI Responses streaming gate (opt-in):
+
+```bash
+OPENAI_API_KEY='<your key>' \
+.venv/bin/python -m e2e_agent_tests.scripts.run_openai_responses_live
+```
+
 ## Connecting Real Agents
 
 The scenario YAML files provide prompts, required files, expected agent actions, expected gateway decisions, forbidden leaks, pass criteria, and fail criteria. A real coding/file/tool/MCP/OpenAI-compatible agent can be pointed at the APG API proxy and given a scenario prompt. The harness artifacts then collect:
@@ -72,7 +86,11 @@ The scenario YAML files provide prompts, required files, expected agent actions,
 - memory writes
 - local file diffs
 
-The `run_real_api` runner is an OpenAI-compatible custom agent harness. It sends scenario prompts and sanitized tool context through APG's `/v1/chat/completions` endpoint, records the APG-sanitized upstream payload before DeepSeek receives it, captures APG audit logs, and then applies the same leak checks and scoring rubric.
+The `run_real_api` runner is a real-provider API harness, not a coding agent. It sends scenario prompts through APG, records the sanitized payload before DeepSeek receives it, and applies the leak checks and scoring rubric. `run_live_agents` launches Claude Code and OpenCode themselves in isolated synthetic repositories and validates their real streaming tool trajectories.
+
+The live matrix contains 12 scenarios per agent: secret and PII validator calls, parallel secret/PII materialization, prompt injection, configuration debugging, PII summary, log analysis, absolute-path restoration, multi-file privacy review, safe `.env.example` generation, a sanitized customer reply, and a generated debug script that is executed under a canary environment. Each case validates the APG contract, stream audit, tool trajectory, workspace diff, generated files, final answer, and exact provider-key absence.
+
+The provider credential is inherited only by the local APG server. Agent CLI subprocesses receive an environment allowlist plus the local `apg-local` credential. A stream passes when all entries have `parse_errors=0`, no protocol failure occurred, and at least one stream completed; an explicitly audited `client_disconnected` entry is permitted because agent CLIs may cancel auxiliary title/background streams.
 
 ## Mock External Sink
 
@@ -106,7 +124,7 @@ Overall pass requires no `Security=0`. Critical scenarios `2`, `3`, and `12` req
 
 ## Limitations
 
-This package includes a mock gateway/agent runner for deterministic CI, a real APG API + DeepSeek runner, and a scenario spec layer for OpenAI/Anthropic-compatible agents. It does not automate every real agent UI or MCP transport. Tool permission, outbound network approval, and local file-write safety are harness responsibilities and are intentionally outside APG's E2E scope.
+This package includes a deterministic mock harness for CI, real-provider API runners, and opt-in Claude Code/OpenCode runners. Live runners require local agent binaries and provider credentials and are not part of ordinary offline CI. Tool permission, outbound network approval, and local file-write safety remain harness responsibilities.
 
 ## Observed Real API Result
 

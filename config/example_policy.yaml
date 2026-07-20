@@ -5,31 +5,21 @@ audit_log_path: .apg/audit.jsonl
 signing_secret: change-this-local-secret
 local_api_keys:
   - apg-local
+# Optional dedicated WebUI/control-plane credentials. When omitted, the
+# control plane accepts local_api_keys for backward compatibility.
+admin_enabled: true
+admin_api_keys:
+  - ${APG_ADMIN_API_KEY}
 workspace_id: default
 strict_mode: true
 pii_mode: pseudonymize
+gc_interval_seconds: 60
 
 upstream:
   base_url: https://api.openai.com
   api_key: ${APG_UPSTREAM_API_KEY}
   timeout_seconds: 60
   strip_local_v1: false
-
-policy:
-  machine_secrets: redact
-  private_keys: block
-  pii:
-    emails: pseudonymize
-    phones: redact
-  local_paths: alias
-  audit_logs: safe_only
-  sensitive_edits:
-    env_files:
-      require_confirmation_for:
-        - "*"
-      deny_delete_keys:
-        - OPENAI_API_KEY
-        - GITHUB_TOKEN
 
 detectors:
   preset: default
@@ -68,22 +58,3 @@ detectors:
           min_length: 20
           min_entropy: 3.5
           timeout_ms: 100
-
-scoring:
-  critical_if:
-    - private_key
-    - provider_api_key
-    - jwt_with_bearer_context
-    - database_url_with_password
-  block_threshold: 0.90
-  redact_threshold: 0.65
-  warn_threshold: 0.40
-
-capability:
-  mode: auto              # auto | strict | audit
-  baseline_threshold: 3    # uses to establish a trusted pattern
-  secret_type_scopes: {}   # user overrides for Layer 1 type constraints
-  # Example user overrides for custom secret types:
-  # secret_type_scopes:
-  #   partner_live_token: ["api.partner.com", "*.partner-cdn.com"]
-  #   internal_service_key: null  # null = no default scope, fall through to Layer 2/3

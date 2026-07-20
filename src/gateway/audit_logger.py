@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import os
+import threading
 import time
 from pathlib import Path
 from typing import Any
@@ -9,22 +11,38 @@ from typing import Any
 class AuditLogger:
     def __init__(self, path: str) -> None:
         self.path = Path(path)
+        self._lock = threading.RLock()
         self.path.parent.mkdir(parents=True, exist_ok=True)
+        if self.path.exists():
+            try:
+                os.chmod(self.path, 0o600)
+            except OSError:
+                pass
 
     def log(self, event: dict[str, Any]) -> None:
-        safe = _scrub(event)
+        safe = scrub_audit_value(event)
         safe.setdefault("timestamp", int(time.time()))
-        with self.path.open("a", encoding="utf-8") as f:
-            f.write(json.dumps(safe, sort_keys=True) + "\n")
+        with self._lock:
+            with self.path.open("a", encoding="utf-8") as f:
+                f.write(json.dumps(safe, sort_keys=True) + "\n")
+            try:
+                os.chmod(self.path, 0o600)
+            except OSError:
+                pass
 
 
-def _scrub(value: Any, depth: int = 0) -> Any:
+def scrub_audit_value(value: Any, depth: int = 0) -> Any:
+    """Return an audit-safe copy without raw values or APG capabilities."""
     if depth > 10:
         return "<max_depth>"
     if isinstance(value, dict):
-        return {k: _scrub(v, depth + 1) for k, v in value.items() if k not in {"raw", "value", "secret"}}
+        return {
+            k: scrub_audit_value(v, depth + 1)
+            for k, v in value.items()
+            if k not in {"raw", "value", "secret", "handle", "handle_id", "fingerprint"}
+        }
     if isinstance(value, list):
-        return [_scrub(v, depth + 1) for v in value]
+        return [scrub_audit_value(v, depth + 1) for v in value]
     if isinstance(value, str):
         for marker in _SCRUB_MARKERS:
             if marker in value:
@@ -33,6 +51,7 @@ def _scrub(value: Any, depth: int = 0) -> Any:
 
 
 _SCRUB_MARKERS = (
+    "<APG",           # Signed/legacy APG placeholders and redaction markers
     "sk-",            # OpenAI / general API key prefix
     "-----BEGIN",     # PEM private key header
     "Bearer ",         # Bearer token prefix

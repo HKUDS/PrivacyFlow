@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import os
 import sqlite3
+import threading
 import time
 import uuid
 from dataclasses import dataclass
@@ -34,6 +35,7 @@ class MappingStore:
         self.path = path
         Path(path).parent.mkdir(parents=True, exist_ok=True)
         self.conn = sqlite3.connect(path, check_same_thread=False)
+        self._lock = threading.RLock()
         self.conn.row_factory = sqlite3.Row
         self.conn.execute("PRAGMA journal_mode=WAL")
         self.conn.execute("PRAGMA synchronous=NORMAL")
@@ -90,7 +92,7 @@ class MappingStore:
     ) -> MappingRecord:
         now = int(time.time())
         fingerprint = hashlib.sha256((kind + ":" + subtype + ":" + (value or "")).encode("utf-8")).hexdigest()
-        with self.conn:
+        with self._lock, self.conn:
             existing = self.conn.execute(
                 "SELECT * FROM mappings WHERE session_id=? AND kind=? AND subtype=? AND fingerprint=? AND state='active'",
                 (session_id, kind, subtype, fingerprint),
@@ -129,12 +131,74 @@ class MappingStore:
         return self.get(handle_id)
 
     def get(self, handle_id: str) -> MappingRecord | None:
-        row = self.conn.execute("SELECT * FROM mappings WHERE handle_id=?", (handle_id,)).fetchone()
+        with self._lock:
+            row = self.conn.execute("SELECT * FROM mappings WHERE handle_id=?", (handle_id,)).fetchone()
         return _row_to_record(row) if row else None
+
+    def list_records(
+        self,
+        *,
+        workspace_id: str | None = None,
+        state: str | None = None,
+        kind: str | None = None,
+        limit: int = 500,
+    ) -> list[MappingRecord]:
+        """List mapping metadata for local administration.
+
+        Callers must never serialize ``value``, ``fingerprint``, or
+        ``handle_id`` directly. The WebUI control plane converts each record
+        into an opaque administration id before returning it.
+        """
+        query = "SELECT * FROM mappings WHERE 1=1"
+        params: list[Any] = []
+        if workspace_id is not None:
+            query += " AND workspace_id=?"
+            params.append(workspace_id)
+        if state is not None:
+            query += " AND state=?"
+            params.append(state)
+        if kind is not None:
+            query += " AND kind=?"
+            params.append(kind)
+        query += " ORDER BY last_seen_at DESC LIMIT ?"
+        params.append(max(1, min(limit, 2000)))
+        with self._lock:
+            rows = self.conn.execute(query, params).fetchall()
+        return [_row_to_record(row) for row in rows]
+
+    def active_values(
+        self,
+        session_id: str,
+        workspace_id: str,
+        *,
+        materialization_class: str | None = None,
+    ) -> list[str]:
+        """Return live local values for cross-delta response protection.
+
+        This is deliberately a read-only lookup: it does not refresh mapping
+        lifetimes and never exposes values outside the owning session and
+        workspace.
+        """
+        now = int(time.time())
+        query = (
+            "SELECT value FROM mappings "
+            "WHERE session_id=? AND workspace_id=? AND state='active' "
+            "AND value IS NOT NULL AND idle_expires_at>=? AND max_expires_at>=?"
+        )
+        params: list[Any] = [session_id, workspace_id, now, now]
+        if materialization_class is not None:
+            query += " AND materialization_class=?"
+            params.append(materialization_class)
+        with self._lock:
+            rows = self.conn.execute(query, params).fetchall()
+        return [str(row["value"]) for row in rows if row["value"]]
+
+    def active_path_values(self, session_id: str, workspace_id: str) -> list[str]:
+        return self.active_values(session_id, workspace_id, materialization_class="path")
 
     def validate_active(self, handle_id: str, session_id: str, workspace_id: str) -> tuple[bool, MappingRecord | None, str]:
         now = int(time.time())
-        with self.conn:
+        with self._lock, self.conn:
             rec = self.get(handle_id)
             if not rec:
                 return False, None, "APG_PLACEHOLDER_UNRESOLVED"
@@ -157,17 +221,31 @@ class MappingStore:
         return True, self.get(handle_id), "OK"
 
     def tombstone(self, handle_id: str) -> None:
-        self.conn.execute(
-            "UPDATE mappings SET state='tombstoned', value=NULL, session_id='', workspace_id='', fingerprint='' WHERE handle_id=?",
-            (handle_id,),
-        )
-        self.conn.commit()
+        with self._lock, self.conn:
+            self.conn.execute(
+                "UPDATE mappings SET state='tombstoned', value=NULL, session_id='', workspace_id='', fingerprint='' WHERE handle_id=?",
+                (handle_id,),
+            )
 
     def expire_request_scope(self) -> int:
         now = int(time.time())
-        cur = self.conn.execute("UPDATE mappings SET state='tombstoned', value=NULL WHERE scope='request' AND idle_expires_at < ? AND state='active'", (now,))
-        self.conn.commit()
-        return cur.rowcount
+        with self._lock, self.conn:
+            cur = self.conn.execute("UPDATE mappings SET state='tombstoned', value=NULL WHERE scope='request' AND idle_expires_at < ? AND state='active'", (now,))
+            return cur.rowcount
+
+    def tombstone_expired(self) -> int:
+        now = int(time.time())
+        with self._lock, self.conn:
+            cur = self.conn.execute(
+                "UPDATE mappings SET state='tombstoned', value=NULL "
+                "WHERE state='active' AND (idle_expires_at < ? OR max_expires_at < ?)",
+                (now, now),
+            )
+            return cur.rowcount
+
+    def close(self) -> None:
+        with self._lock:
+            self.conn.close()
 
 
 def _row_to_record(row: sqlite3.Row) -> MappingRecord:

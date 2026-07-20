@@ -29,12 +29,15 @@
 
 ## v0.4
 
-- Streaming support with buffered scanning
-- Full `/v1/responses` compatibility
+- Stateful streaming for Chat Completions, Anthropic Messages, and OpenAI Responses
+- Buffered function-call argument materialization across all supported streaming protocols
 - Embeddings and file upload scanning
 
 ## v0.5
 
+- Local management WebUI for safe audit review, protected-value revocation, and detector configuration
+- Authenticated administration API with dedicated-key support
+- Hot-reloaded detector presets, module switches, custom rules, and local dry runs
 - MCP proxy for existing MCP servers against the same transparent privacy contract
 
 ## v0.6

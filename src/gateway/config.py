@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import os
-import secrets
+import re
 import warnings
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -24,9 +24,12 @@ class GatewayConfig:
     audit_log_path: str = ".apg/audit.jsonl"
     signing_secret: str = "dev-only-change-me"
     local_api_keys: set[str] = field(default_factory=lambda: {"apg-local"})
+    admin_api_keys: set[str] = field(default_factory=set)
+    admin_enabled: bool = True
     workspace_id: str = "default"
     strict_mode: bool = True
     pii_mode: str = "pseudonymize"
+    gc_interval_seconds: float = 60.0
     detectors_config: dict[str, Any] = field(default_factory=dict)
     upstream: UpstreamConfig = field(default_factory=UpstreamConfig)
 
@@ -45,7 +48,8 @@ def _load_yaml(path: Path) -> dict[str, Any]:
 def load_config(path: str | None = None) -> GatewayConfig:
     config_path = Path(path or os.getenv("APG_CONFIG_PATH", "")) if path or os.getenv("APG_CONFIG_PATH") else None
     raw = _load_yaml(config_path) if config_path else {}
-    base_dir = config_path.parent if config_path else Path.cwd()
+    strict_mode = _env_bool("APG_STRICT", raw.get("strict_mode", True))
+    raw = _expand_env_refs(raw, strict_mode)
     upstream_raw = raw.get("upstream", {})
     detectors_raw = dict(raw.get("detectors", {}))
     upstream = UpstreamConfig(
@@ -56,8 +60,9 @@ def load_config(path: str | None = None) -> GatewayConfig:
     )
     keys = os.getenv("APG_LOCAL_API_KEYS")
     local_api_keys = set(keys.split(",")) if keys else set(raw.get("local_api_keys", ["apg-local"]))
+    admin_keys = os.getenv("APG_ADMIN_API_KEYS")
+    admin_api_keys = set(admin_keys.split(",")) if admin_keys else set(raw.get("admin_api_keys", []))
     signing_secret = os.getenv("APG_SIGNING_SECRET", raw.get("signing_secret", "dev-only-change-me"))
-    strict_mode = _env_bool("APG_STRICT", raw.get("strict_mode", True))
 
     if "apg-local" in local_api_keys and not os.getenv("APG_LOCAL_API_KEYS"):
         _warn_or_raise(
@@ -74,6 +79,8 @@ def load_config(path: str | None = None) -> GatewayConfig:
             "APG_STRICT_SIGNING_SECRET",
         )
     pii_mode = os.getenv("APG_PII_MODE", raw.get("pii_mode", "pseudonymize"))
+    if strict_mode and pii_mode == "allow":
+        raise RuntimeError("pii_mode=allow is not permitted under strict_mode=True. (APG_STRICT_PII_ALLOW)")
     return GatewayConfig(
         bind_host=os.getenv("APG_HOST", raw.get("bind_host", "127.0.0.1")),
         bind_port=int(os.getenv("APG_PORT", raw.get("bind_port", 8765))),
@@ -81,9 +88,12 @@ def load_config(path: str | None = None) -> GatewayConfig:
         audit_log_path=os.getenv("APG_AUDIT_LOG_PATH", raw.get("audit_log_path", ".apg/audit.jsonl")),
         signing_secret=signing_secret,
         local_api_keys=local_api_keys,
+        admin_api_keys=admin_api_keys,
+        admin_enabled=_env_bool("APG_ADMIN_ENABLED", raw.get("admin_enabled", True)),
         workspace_id=os.getenv("APG_WORKSPACE_ID", raw.get("workspace_id", "default")),
         strict_mode=strict_mode,
         pii_mode=pii_mode,
+        gc_interval_seconds=float(os.getenv("APG_GC_INTERVAL_SECONDS", raw.get("gc_interval_seconds", 60.0))),
         detectors_config=detectors_raw,
         upstream=upstream,
     )
@@ -102,3 +112,23 @@ def _env_bool(name: str, default: bool) -> bool:
         return bool(default)
     return value.strip().lower() in {"1", "true", "yes", "on"}
 
+
+_ENV_REF_RE = re.compile(r"^\$\{([A-Za-z_][A-Za-z0-9_]*)\}$")
+
+
+def _expand_env_refs(value: Any, strict: bool) -> Any:
+    if isinstance(value, dict):
+        return {key: _expand_env_refs(item, strict) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_expand_env_refs(item, strict) for item in value]
+    if not isinstance(value, str):
+        return value
+    match = _ENV_REF_RE.fullmatch(value)
+    if match is None:
+        return value
+    name = match.group(1)
+    resolved = os.getenv(name)
+    if resolved is not None:
+        return resolved
+    _warn_or_raise(strict, f"Configuration references unset environment variable {name}.", "APG_CONFIG_ENV_UNRESOLVED")
+    return ""

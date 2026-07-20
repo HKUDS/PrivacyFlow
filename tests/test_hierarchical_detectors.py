@@ -43,6 +43,12 @@ def test_env_api_key_assignment_detected() -> None:
     assert "env_assignment" in subtypes("MY_API_KEY=x")
 
 
+def test_env_assignment_finding_covers_value_only() -> None:
+    text = "SERVICE_TOKEN=secret-value"
+    finding = by_subtype(text, "env_assignment")
+    assert text[finding.original_start : finding.original_end] == "secret-value"
+
+
 def test_database_url_with_password_detected() -> None:
     finding = by_subtype("DATABASE_URL=postgres://user:pass@example.com/db", "database_url")
     assert "database_url_password" in finding.validators
@@ -90,6 +96,17 @@ def test_high_entropy_near_sha256_is_lower_risk() -> None:
 
 def test_plain_schema_url_is_not_high_entropy_secret() -> None:
     assert "high_entropy_token" not in subtypes("schema: https://json-schema.org/draft-07/schema#")
+
+
+def test_repository_script_path_is_not_high_entropy_secret() -> None:
+    assert "high_entropy_token" not in subtypes("run python scripts/validate_secret.py VALUE")
+    assert "high_entropy_token" not in subtypes("ripts/validate_secret.py")
+
+
+def test_local_path_span_excludes_sentence_punctuation() -> None:
+    text = "Read /private/tmp/project/private/path_probe.txt."
+    finding = by_subtype(text, "local_path")
+    assert text[finding.original_start : finding.original_end] == "/private/tmp/project/private/path_probe.txt"
 
 
 def test_fake_context_lowers_confidence_but_provider_token_stays_hard() -> None:
