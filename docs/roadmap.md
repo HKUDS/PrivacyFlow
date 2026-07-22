@@ -37,7 +37,7 @@
 
 - Local management WebUI for safe audit review, protected-value revocation, and detector configuration
 - Authenticated administration API with dedicated-key support
-- Hot-reloaded detector presets, module switches, custom rules, and local dry runs
+- Revisioned detector configurations with ordered typed modules, read-only templates, atomic hot reload, v1 migration, and local dry runs
 - MCP proxy for existing MCP servers against the same transparent privacy contract
 
 ## v0.6

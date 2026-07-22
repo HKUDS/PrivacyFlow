@@ -6,6 +6,7 @@ from fastapi.testclient import TestClient
 
 from gateway.config import GatewayConfig, UpstreamConfig
 from gateway.detector_manager import DetectorManager
+from gateway.placeholder_parser import PLACEHOLDER_RE
 from gateway.redaction_engine import RedactionEngine
 from gateway.server import create_app
 
@@ -147,7 +148,5 @@ def test_materialization_events_cover_cross_session_and_expired_handles(redactor
 
 
 def _extract_first_placeholder(text: str) -> str | None:
-    import re
-
-    m = re.search(r"<APG:v1:[^>]+>", text)
+    m = PLACEHOLDER_RE.search(text)
     return m.group(0) if m else None

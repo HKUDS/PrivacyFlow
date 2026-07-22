@@ -18,6 +18,7 @@ from gateway.detectors.normalizer import normalize_with_mapping
 from gateway.detectors.paths import PathDetector
 from gateway.detectors.rules import RuleBasedDetector, builtin_rules
 from gateway.detectors.scoring import FindingAggregator
+from gateway.placeholder_parser import span_is_within_placeholder_format_example
 
 BUILTIN_EXTERNALS: dict[str, type[Detector]] = {
     "detect_secrets": DetectSecretsPlugin,
@@ -58,6 +59,7 @@ class FlowModule:
     timeout_ms: int | None = None
     fail_open: bool = True
     config_error: str | None = None
+    stream_safe: bool = False
 
 
 @dataclass
@@ -109,9 +111,10 @@ class DetectorFlow:
         if module.config_error:
             if not module.fail_open:
                 raise RuntimeError(module.config_error)
-            return [], ModuleDiagnostic(module.id, module.type, True, status="error", error=module.config_error)
+            status = "unavailable" if module.config_error == "module_not_available" else "error"
+            return [], ModuleDiagnostic(module.id, module.type, True, status=status, error=module.config_error)
         if module.detector is None:
-            return [], ModuleDiagnostic(module.id, module.type, True, status="error", error="module_not_available")
+            return [], ModuleDiagnostic(module.id, module.type, True, status="unavailable", error="module_not_available")
         try:
             if module.timeout_ms is None:
                 findings = list(module.detector.detect(block, normalized))
@@ -127,12 +130,23 @@ class DetectorFlow:
                 finally:
                     if future.done():
                         executor.shutdown(wait=False)
+            findings = [
+                finding
+                for finding in findings
+                if not span_is_within_placeholder_format_example(
+                    block.text,
+                    finding.original_start,
+                    finding.original_end,
+                )
+            ]
             elapsed_ms = (time.perf_counter() - start) * 1000
             return findings, ModuleDiagnostic(module.id, module.type, True, elapsed_ms, len(findings))
         except Exception as exc:
             if not module.fail_open:
                 raise
             elapsed_ms = (time.perf_counter() - start) * 1000
+            if module.type in {"local_model", "hf_token_classification", "gliner"} and isinstance(exc, (ImportError, OSError)):
+                return [], ModuleDiagnostic(module.id, module.type, True, elapsed_ms, status="unavailable", error="model_unavailable")
             return [], ModuleDiagnostic(module.id, module.type, True, elapsed_ms, status="error", error=exc.__class__.__name__)
 
 
@@ -219,20 +233,62 @@ def _module_from_config(module: dict[str, Any], root_config: dict[str, Any]) -> 
     enabled = bool(module.get("enabled", True))
     timeout_ms = module.get("timeout_ms")
     fail_open = bool(module.get("fail_open", True))
+    stream_safe = bool(module.get("stream_safe", module_id in {"builtin_rules", "paths", "entropy"}))
     try:
         detector = _detector_from_config(module_id, module_type, module, root_config)
-        return FlowModule(module_id, module_type, detector, enabled, timeout_ms, fail_open)
+        return FlowModule(module_id, module_type, detector, enabled, timeout_ms, fail_open, stream_safe=stream_safe)
     except Exception as exc:
-        return FlowModule(module_id, module_type, None, enabled, timeout_ms, fail_open, f"{exc.__class__.__name__}: {exc}")
+        return FlowModule(module_id, module_type, None, enabled, timeout_ms, fail_open, f"{exc.__class__.__name__}: {exc}", stream_safe)
 
 
 def _detector_from_config(module_id: str, module_type: str, module: dict[str, Any], root_config: dict[str, Any]) -> Detector:
     if module_type in {"regex_rules", "rule_validator"}:
         return RuleBasedDetector(module.get("rules", []), name=f"rules.{module_id}")
     if module_type == "path_detector":
-        return PathDetector()
+        return PathDetector(
+            detect_unix_home=bool(module.get("detect_unix_home", True)),
+            detect_macos_private=bool(module.get("detect_macos_private", True)),
+            detect_shell_config=bool(module.get("detect_shell_config", True)),
+            detect_windows_user=bool(module.get("detect_windows_user", True)),
+            credential_names=module.get("credential_names"),
+            exclude_patterns=module.get("exclude_patterns"),
+            path_risk=str(module.get("path_risk", "medium")),
+            credential_risk=str(module.get("credential_risk", "high")),
+            path_action=str(module.get("path_action", "warn")),
+            credential_action=str(module.get("credential_action", "redact")),
+        )
     if module_type == "entropy_context":
-        return EntropyContextDetector(min_length=int(module.get("min_length", 20)), min_entropy=float(module.get("min_entropy", 3.5)))
+        return EntropyContextDetector(
+            min_length=int(module.get("min_length", 20)),
+            min_entropy=float(module.get("min_entropy", 3.5)),
+            context_window=int(module.get("context_window", 80)),
+            sensitive_words=module.get("sensitive_words"),
+            false_positive_hints=module.get("false_positive_hints"),
+            sensitive_risk=str(module.get("sensitive_risk", "high")),
+            contextless_risk=str(module.get("contextless_risk", "medium")),
+            sensitive_action=str(module.get("sensitive_action", "redact")),
+            contextless_action=str(module.get("contextless_action", "warn")),
+        )
+    if module_type == "local_model":
+        adapter = str(module.get("adapter", "transformers_token_classification"))
+        if adapter == "gliner":
+            return GLiNERDetector(
+                module_id=module_id,
+                model_name=str(module["model_name"]),
+                labels=[str(label) for label in module.get("labels", [])],
+                threshold=float(module.get("threshold", 0.5)),
+                allow_download=bool(root_config.get("allow_model_download", False)),
+            )
+        if adapter != "transformers_token_classification":
+            raise ValueError("unknown_local_model_adapter")
+        return HFTokenClassificationDetector(
+            module_id=module_id,
+            model_name=str(module["model_name"]),
+            threshold=float(module.get("threshold", 0.5)),
+            device=_model_device(module.get("device", "cpu")),
+            allow_download=bool(root_config.get("allow_model_download", False)),
+            aggregation_strategy=str(module.get("aggregation_strategy", "simple")),
+        )
     if module_type == "hf_token_classification":
         return HFTokenClassificationDetector(
             module_id=module_id,
@@ -268,3 +324,14 @@ def _detector_from_config(module_id: str, module_type: str, module: dict[str, An
         cls = getattr(importlib.import_module(module_name), class_name)
         return cls(**module.get("config", {}))
     raise ValueError(f"unknown_module_type:{module_type}")
+
+
+def _model_device(value: Any) -> int | str:
+    normalized = str(value).lower()
+    if normalized == "cpu":
+        return -1
+    if normalized == "cuda":
+        return 0
+    if normalized.startswith("cuda:"):
+        return int(normalized.split(":", 1)[1])
+    return normalized

@@ -22,6 +22,8 @@ upstream:
   strip_local_v1: false
 
 detectors:
+  # Legacy YAML presets are exposed in the WebUI as read-only deployment
+  # templates. User-editable configurations live in detector-control.json v2.
   preset: default
   flow_timeout_ms: 1500
   allow_model_download: true

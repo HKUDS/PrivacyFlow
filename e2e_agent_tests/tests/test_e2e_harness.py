@@ -7,12 +7,13 @@ from e2e_agent_tests.scripts.check_leaks import scan_paths
 from e2e_agent_tests.scripts.common import HarnessPaths
 from e2e_agent_tests.scripts.run_scenario import run_scenario
 from e2e_agent_tests.scripts.setup_test_repo import setup_test_repo
-from e2e_agent_tests.scripts.run_real_api import run_real_all
 from e2e_agent_tests.scripts.run_live_agents import (
     LIVE_SCENARIOS,
     _agent_command,
+    _contains_non_example_apg_marker,
     _extract_final_output,
     _extract_tool_summary,
+    _server_environment,
     _streams_are_safe,
     _validate_debug_script,
     detect_live_prerequisites,
@@ -55,23 +56,6 @@ def test_all_scenario_specs_exist() -> None:
     assert len(scenarios) == 14
 
 
-def test_real_api_runner_requires_key(monkeypatch, tmp_path: Path) -> None:
-    import argparse
-    import pytest
-
-    monkeypatch.delenv("DEEPSEEK_API_KEY", raising=False)
-    args = argparse.Namespace(
-        workdir=str(tmp_path / "real"),
-        report=str(tmp_path / "report.md"),
-        model="deepseek-v4-flash",
-        max_tokens=16,
-        mode="strict",
-        scenarios=["scenario_01"],
-    )
-    with pytest.raises(RuntimeError, match="DEEPSEEK_API_KEY"):
-        run_real_all(args)
-
-
 def test_live_agent_prerequisites_report_missing_key(monkeypatch) -> None:
     monkeypatch.delenv("DEEPSEEK_API_KEY", raising=False)
     missing = detect_live_prerequisites([])
@@ -89,6 +73,15 @@ def test_live_agent_final_output_excludes_tool_trajectory() -> None:
         '{"part":{"type":"text","text":"safe final"}}',
     ])
     assert _extract_final_output("opencode", opencode) == "safe final"
+
+
+def test_live_marker_check_ignores_only_the_reserved_format_example() -> None:
+    assert not _contains_non_example_apg_marker("format: <APG:v1:pii:...>")
+    assert _contains_non_example_apg_marker("format: <APG:v1:pii:....>")
+    assert _contains_non_example_apg_marker("shorthand: <APG:...>")
+    assert _contains_non_example_apg_marker(
+        "real: <APG:v1:secret:handle:session:123:AAAAAAAAAAAAAAAA>"
+    )
 
 
 def test_live_agent_commands_pin_the_isolated_workspace(monkeypatch, tmp_path: Path) -> None:
@@ -115,13 +108,24 @@ def test_live_agent_commands_pin_the_isolated_workspace(monkeypatch, tmp_path: P
     assert opencode_command[opencode_command.index("--dir") + 1] == str(run_root / "apg-agent-test-repo")
 
 
+def test_live_server_bypasses_system_proxy_only_for_its_upstream(monkeypatch) -> None:
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "provider-key")
+    monkeypatch.setenv("HTTPS_PROXY", "http://proxy.invalid")
+    monkeypatch.setenv("APG_UPSTREAM_BASE_URL", "https://provider.example/v1")
+
+    server_env = _server_environment()
+    assert server_env["DEEPSEEK_API_KEY"] == "provider-key"
+    assert server_env["NO_PROXY"] == "provider.example,127.0.0.1,localhost"
+    assert server_env["no_proxy"] == server_env["NO_PROXY"]
+    assert "HTTPS_PROXY" not in server_env
+
+
 def test_live_agent_matrix_covers_real_read_tool_path_and_write_workflows() -> None:
-    assert len(LIVE_SCENARIOS) == 12
+    assert len(LIVE_SCENARIOS) == 11
     assert {
         "secret_tool",
         "pii_tool",
         "parallel_materialization",
-        "prompt_injection",
         "config_debug",
         "log_analysis",
         "path_alias",

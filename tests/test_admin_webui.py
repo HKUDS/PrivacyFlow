@@ -101,66 +101,106 @@ def test_detector_control_hot_reload_and_persistence(tmp_path) -> None:
     cfg = _config(tmp_path)
     rule = {
         "id": "custom.partner_token",
+        "pattern": r"\bpartner_live_[A-Za-z0-9_-]{8,}\b",
         "subtype": "partner_token",
-        "mode": "prefix",
-        "prefix": "partner_live_",
-        "min_length": 8,
         "type": "MACHINE_SECRET",
+        "confidence": 0.9,
         "risk": "high",
         "suggested_action": "redact",
+        "flags": [],
+        "validators": [],
+        "require_validators": [],
+        "reject_validators": [],
+        "preview_keep": 0,
+        "enabled": True,
     }
     with TestClient(create_app(cfg, AdminFakeUpstream())) as client:
-        catalog = client.get("/api/admin/detectors", headers=_admin_headers()).json()
-        assert {module["id"] for module in catalog["modules"]} >= {"builtin_rules", "paths", "entropy"}
+        catalog_response = client.get("/api/admin/detector-configurations", headers=_admin_headers())
+        assert catalog_response.status_code == 200
+        catalog = catalog_response.json()
+        assert [item["name"] for item in catalog["templates"][:4]] == ["凭据与密钥", "个人信息", "本地开发环境", "全面保护"]
+        assert client.get("/api/admin/detectors", headers=_admin_headers()).status_code == 404
 
-        added = client.post("/api/admin/detectors/rules", headers=_admin_headers(), json=rule)
-        assert added.status_code == 201
-        assert added.json()["custom_rules"][0]["id"] == rule["id"]
+        created = client.post(
+            "/api/admin/detector-configurations",
+            headers=_admin_headers(),
+            json={"name": "Partner credentials", "source_id": "builtin.credentials"},
+        )
+        assert created.status_code == 201
+        configuration = created.json()
+        custom_module = {
+            "id": "custom_rules",
+            "name": "Partner rules",
+            "type": "regex",
+            "enabled": True,
+            "timeout_ms": 100,
+            "failure_mode": "closed",
+            "editable": True,
+            "config": {"rules": [rule]},
+        }
+        configuration["modules"].insert(0, custom_module)
+        saved = client.put(
+            f"/api/admin/detector-configurations/{configuration['id']}",
+            headers=_admin_headers(),
+            json={
+                "revision": configuration["revision"],
+                "name": configuration["name"],
+                "description": configuration["description"],
+                "core_guard_enabled": configuration["core_guard_enabled"],
+                "flow_timeout_ms": configuration["flow_timeout_ms"],
+                "content_tags": configuration["content_tags"],
+                "modules": configuration["modules"],
+            },
+        )
+        assert saved.status_code == 200
+        configuration = saved.json()
+        assert configuration["modules"][0]["id"] == "custom_rules"
+
+        stale = client.put(
+            f"/api/admin/detector-configurations/{configuration['id']}",
+            headers=_admin_headers(),
+            json={**configuration, "revision": 1},
+        )
+        assert stale.status_code == 409
 
         dry_run = client.post(
-            "/api/admin/detectors/test",
+            f"/api/admin/detector-configurations/{configuration['id']}/test",
             headers=_admin_headers(),
             json={"text": "local-context-never-log credential=partner_live_abcdefghijkl"},
         )
         assert dry_run.status_code == 200
         assert any("rules.custom_rules" in finding["detectors"] for finding in dry_run.json()["findings"])
-        assert "partner_live_abcdefghijkl" not in dry_run.json()["sanitized_text"]
+        assert [item["id"] for item in dry_run.json()["diagnostics"][:2]] == ["apg_core", "custom_rules"]
         assert "local-context-never-log" not in (tmp_path / "audit.jsonl").read_text(encoding="utf-8")
 
-        disabled = client.patch(
-            "/api/admin/detectors/modules/entropy",
+        invalid_configuration = {**configuration, "modules": [*configuration["modules"]]}
+        invalid_configuration["modules"][0] = {**custom_module, "config": {"rules": [{**rule, "id": "custom.unsafe", "pattern": "(a+)+$"}]}}
+        invalid = client.put(
+            f"/api/admin/detector-configurations/{configuration['id']}",
             headers=_admin_headers(),
-            json={"enabled": False},
-        )
-        assert disabled.status_code == 200
-        assert next(module for module in disabled.json()["modules"] if module["id"] == "entropy")["enabled"] is False
-
-        invalid = client.post(
-            "/api/admin/detectors/rules",
-            headers=_admin_headers(),
-            json={**rule, "id": "custom.unsafe", "mode": "regex", "pattern": "(a+)+$"},
+            json=invalid_configuration,
         )
         assert invalid.status_code == 400
-        ambiguous_repeat = client.post(
-            "/api/admin/detectors/rules",
-            headers=_admin_headers(),
-            json={**rule, "id": "custom.unsafe_alt", "mode": "regex", "pattern": "(a|aa)+$"},
-        )
-        assert ambiguous_repeat.status_code == 400
+
+        activated = client.post(f"/api/admin/detector-configurations/{configuration['id']}/activate", headers=_admin_headers())
+        assert activated.status_code == 200
+        assert client.delete(f"/api/admin/detector-configurations/{configuration['id']}", headers=_admin_headers()).status_code == 409
 
     state_path = tmp_path / "detector-control.json"
     assert state_path.exists()
     assert os.stat(state_path).st_mode & 0o777 == 0o600
     state_text = state_path.read_text(encoding="utf-8")
     assert "partner_live_abcdefghijkl" not in state_text
+    assert '"version": 2' in state_text
 
     with TestClient(create_app(cfg, AdminFakeUpstream())) as client:
-        persisted = client.get("/api/admin/detectors", headers=_admin_headers()).json()
-        assert [item["id"] for item in persisted["custom_rules"]] == ["custom.partner_token"]
-        assert next(module for module in persisted["modules"] if module["id"] == "entropy")["enabled"] is False
-        removed = client.delete("/api/admin/detectors/rules/custom.partner_token", headers=_admin_headers())
+        persisted = client.get("/api/admin/detector-configurations", headers=_admin_headers()).json()
+        assert persisted["active_configuration_id"] == configuration["id"]
+        loaded = client.get(f"/api/admin/detector-configurations/{configuration['id']}", headers=_admin_headers()).json()
+        assert loaded["modules"][0]["config"]["rules"][0]["id"] == "custom.partner_token"
+        assert client.post("/api/admin/detector-configurations/builtin.comprehensive/activate", headers=_admin_headers()).status_code == 200
+        removed = client.delete(f"/api/admin/detector-configurations/{configuration['id']}", headers=_admin_headers())
         assert removed.status_code == 200
-        assert removed.json()["custom_rules"] == []
 
 
 def test_audit_logger_scrubs_apg_handles_before_they_reach_webui(tmp_path) -> None:

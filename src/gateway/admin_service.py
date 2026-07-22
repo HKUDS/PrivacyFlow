@@ -63,6 +63,7 @@ class AdminService:
         risk = Counter(str(item.get("risk", "unknown")) for item in detections if item.get("action") != "allow")
         safe_recent = [self._safe_event(event) for event in reversed(events[-100:]) if event.get("detections")][:8]
         upstream = urlparse(self.config.upstream.base_url)
+        active_detector_configuration = self.detector_control.active_configuration()
         return {
             "metrics": {
                 "requests_24h": requests,
@@ -76,7 +77,7 @@ class AdminService:
             "system": {
                 "workspace": self.config.workspace_id,
                 "upstream": upstream.hostname or "not configured",
-                "preset": self.detector_control.catalog()["preset"],
+                "detector_configuration": active_detector_configuration["name"],
                 "pii_mode": self.config.pii_mode,
                 "strict_mode": self.config.strict_mode,
                 "local_only": self.config.bind_host in {"127.0.0.1", "localhost", "::1"},

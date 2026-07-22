@@ -13,7 +13,7 @@ from gateway.detector_manager import DetectorManager
 from gateway.mapping_store import MappingStore
 from gateway.materialization_engine import MaterializationEngine
 from gateway.path_alias_manager import PathAliasManager
-from gateway.placeholder_parser import PlaceholderSigner
+from gateway.placeholder_parser import APG_PLACEHOLDER_FORMAT_EXAMPLE, PlaceholderSigner
 from gateway.policy_engine import PolicyEngine
 
 PROTOCOL_KEYS = {"model", "tool_call_id", "tool_use_id", "call_id", "item_id", "previous_response_id"}
@@ -30,7 +30,6 @@ STREAM_TEXT_MAX_PENDING = 4096
 STREAM_TEXT_MAX_STRICT_BLOCK = 1_048_576
 PROTECTED_VALUE = "APG-managed protected value"
 
-_STREAM_SAFE_MODULE_IDS = {"builtin_rules", "paths", "entropy"}
 _TOKEN_CHAR_RE = re.compile(r"[A-Za-z0-9._~+/=:@-]")
 _ENV_ASSIGNMENT_RE = re.compile(
     r"(?:API_KEY|TOKEN|SECRET|PASSWORD|PASSWD|CREDENTIAL|PRIVATE_KEY|DATABASE_URL)\s*=",
@@ -197,7 +196,16 @@ class BalancedStreamScanner:
     def __init__(self, redactor: "RedactionEngine", session_id: str) -> None:
         self.redactor = redactor
         self.session_id = session_id
-        self.known_secrets = redactor.active_secret_values(session_id)
+        self.core_guard_enabled = redactor.detector_manager.core_guard_enabled
+        self.known_secrets = (
+            [
+                value
+                for value in redactor.active_secret_values(session_id)
+                if value != APG_PLACEHOLDER_FORMAT_EXAMPLE
+            ]
+            if self.core_guard_enabled
+            else []
+        )
         self.path_aliases = redactor.active_path_aliases(session_id)
         longest = max((len(value) for value in self.known_secrets), default=0)
         self.strict = redactor.stream_requires_strict_buffering() or longest > STREAM_TEXT_MAX_PENDING
@@ -294,18 +302,20 @@ class BalancedStreamScanner:
 
     def _incomplete_candidate_start(self, text: str, *, include_pem: bool = False) -> int | None:
         starts: list[int] = []
-        apg_start = _partial_apg_start(text)
-        if apg_start is not None:
-            starts.append(apg_start)
+        if self.core_guard_enabled:
+            apg_start = _partial_apg_start(text)
+            if apg_start is not None:
+                starts.append(apg_start)
         secret_start = _partial_sequence_start(text, self.known_secrets)
         if secret_start is not None:
             starts.append(secret_start)
         alias_start = _partial_sequence_start(text, self.path_aliases)
         if alias_start is not None:
             starts.append(alias_start)
-        pem_start = _unclosed_pem_start(text)
-        if pem_start is not None and (include_pem or len(text) - pem_start >= STREAM_TEXT_BASE_TAIL):
-            starts.append(pem_start)
+        if self.core_guard_enabled:
+            pem_start = _unclosed_pem_start(text)
+            if pem_start is not None and (include_pem or len(text) - pem_start >= STREAM_TEXT_BASE_TAIL):
+                starts.append(pem_start)
         return min(starts) if starts else None
 
     def _overflow_candidate(self, detections: list[Any]) -> tuple[str, list[dict[str, Any]]]:
@@ -640,7 +650,7 @@ class RedactionEngine:
 
     def stream_requires_strict_buffering(self) -> bool:
         modules = self.detector_manager.hierarchical.flow.modules
-        return any(module.enabled and module.id not in _STREAM_SAFE_MODULE_IDS for module in modules)
+        return any(module.enabled and not module.stream_safe for module in modules)
 
     def materialize_local_tool_args(self, data: Any, session_id: str) -> Any:
         materialized, _ = self.materialize_local_tool_args_with_events(data, session_id)
@@ -788,7 +798,7 @@ class RedactionEngine:
             session_id,
             scope="response",
             alias_paths=False,
-            fold_apg_markers=fold_apg_markers,
+            fold_apg_markers=fold_apg_markers and self.detector_manager.core_guard_enabled,
         )
         for token, value in restorations.items():
             safe = safe.replace(token, value)

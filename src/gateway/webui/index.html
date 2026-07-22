@@ -29,7 +29,7 @@
           <span class="nav-index" aria-hidden="true">03</span><span>受保护值</span>
         </button>
         <button class="nav-item" type="button" data-view="detectors">
-          <span class="nav-index" aria-hidden="true">04</span><span>检测器</span>
+          <span class="nav-index" aria-hidden="true">04</span><span>检测器配置</span>
         </button>
       </nav>
 
@@ -131,33 +131,41 @@
         </section>
 
         <section class="view" id="view-detectors" aria-labelledby="page-title">
-          <section class="detector-preset-band">
-            <div>
-              <p class="section-kicker">EXECUTION PRESET</p>
-              <h2>检测强度</h2>
+          <section class="configuration-toolbar">
+            <label class="configuration-picker"><span>检测器配置</span><select id="configuration-select"></select></label>
+            <div class="configuration-actions">
+              <button class="secondary-button" type="button" id="new-configuration">＋ 新建</button>
+              <button class="secondary-button" type="button" id="duplicate-configuration">复制</button>
+              <button class="primary-button" type="button" id="activate-configuration">启用配置</button>
             </div>
-            <div class="segmented-control" id="preset-control" aria-label="检测器预设"></div>
           </section>
 
-          <section class="detector-section">
+          <section class="configuration-editor" id="configuration-editor">
+            <div class="configuration-heading">
+              <div class="configuration-identity">
+                <input id="configuration-name" aria-label="配置名称" maxlength="80">
+                <textarea id="configuration-description" aria-label="配置说明" rows="2" maxlength="240"></textarea>
+                <div class="configuration-tags" id="configuration-tags"></div>
+              </div>
+              <div class="configuration-status" id="configuration-status"></div>
+            </div>
+            <div class="configuration-settings">
+              <label><span>总流程超时（ms）</span><input id="configuration-timeout" type="number" min="10" max="120000"></label>
+              <label class="guard-setting"><span>APG 核心保护</span><span class="toggle"><input id="configuration-core-guard" type="checkbox"><span></span></span></label>
+              <div class="configuration-save-actions">
+                <button class="secondary-button danger-text" type="button" id="delete-configuration">删除</button>
+                <button class="primary-button" type="button" id="save-configuration">保存配置</button>
+              </div>
+            </div>
+            <div class="danger-note is-hidden" id="core-guard-warning">核心保护已关闭：APG 标记、已知会话 Secret 和流式边界折叠将不再提供完整保护。</div>
+          </section>
+
+          <section class="detector-section module-pipeline-section">
             <div class="section-heading">
-              <div><p class="section-kicker">MODULE PIPELINE</p><h2>检测模块</h2></div>
-              <span class="muted" id="flow-timeout"></span>
+              <div><p class="section-kicker">ORDERED PIPELINE</p><h2>检测模块</h2></div>
+              <button class="primary-button" type="button" id="add-module">＋ 新增模块</button>
             </div>
             <div class="module-list" id="detector-modules"></div>
-          </section>
-
-          <section class="detector-section custom-rules-section">
-            <div class="section-heading">
-              <div><p class="section-kicker">PROJECT RULES</p><h2>自定义规则</h2></div>
-              <button class="primary-button" type="button" id="add-rule-button">＋ 新建规则</button>
-            </div>
-            <div class="table-wrap">
-              <table>
-                <thead><tr><th>规则</th><th>类型</th><th>风险</th><th>动作</th><th>匹配逻辑</th><th></th></tr></thead>
-                <tbody id="custom-rules"></tbody>
-              </table>
-            </div>
           </section>
 
           <section class="detector-lab">
@@ -169,6 +177,7 @@
               <label class="lab-input"><span>测试文本</span><textarea id="detection-input" rows="7" placeholder="输入一段本地测试文本"></textarea></label>
               <div class="lab-output" id="detection-output"><span class="muted">等待测试</span></div>
             </div>
+            <div class="diagnostic-list" id="detection-diagnostics"></div>
           </section>
         </section>
       </main>
@@ -191,22 +200,37 @@
     <div class="modal-body" id="modal-body"></div>
   </dialog>
 
-  <dialog class="modal rule-modal" id="rule-modal">
-    <form id="rule-form">
-      <div class="modal-header"><div><p class="section-kicker">CUSTOM DETECTOR</p><h2>新建检测规则</h2></div><button class="icon-button" type="button" data-close-modal aria-label="关闭">×</button></div>
+  <dialog class="modal configuration-modal" id="configuration-modal">
+    <form id="configuration-form">
+      <div class="modal-header"><div><p class="section-kicker">DETECTOR CONFIGURATION</p><h2>新建检测器配置</h2></div><button class="icon-button" type="button" data-close-modal aria-label="关闭">×</button></div>
       <div class="modal-body form-grid">
-        <label><span>规则 ID</span><input name="id" placeholder="custom.partner_token" required pattern="custom\.[a-z][a-z0-9_.-]{1,63}"></label>
-        <label><span>子类型</span><input name="subtype" placeholder="partner_token" required></label>
-        <label><span>匹配方式</span><select name="mode" id="rule-mode"><option value="prefix">Token 前缀</option><option value="regex">正则表达式</option></select></label>
-        <label id="prefix-field"><span>Token 前缀</span><input name="prefix" placeholder="partner_live_"></label>
-        <label id="pattern-field" class="is-hidden full-row"><span>正则表达式</span><input name="pattern" placeholder="\\bpartner_[A-Za-z0-9]{12,}\\b"></label>
-        <label><span>数据类型</span><select name="type"><option value="MACHINE_SECRET">Machine secret</option><option value="PII">PII</option><option value="LOCAL_CONTEXT">Local context</option></select></label>
-        <label><span>风险等级</span><select name="risk"><option value="critical">严重</option><option value="high" selected>高</option><option value="medium">中</option><option value="low">低</option></select></label>
-        <label><span>处理动作</span><select name="suggested_action"><option value="redact">Redact</option><option value="block">Block</option><option value="pseudonymize">Pseudonymize</option><option value="warn">Warn</option></select></label>
-        <label id="min-length-field"><span>前缀后最少字符数</span><input name="min_length" type="number" min="4" max="128" value="12"></label>
-        <p class="form-error full-row" id="rule-error" role="alert"></p>
+        <label class="full-row"><span>配置名称</span><input name="name" maxlength="80" required></label>
+        <label class="full-row"><span>基于</span><select name="source_id" id="configuration-source"></select></label>
+        <p class="form-error full-row" id="configuration-error" role="alert"></p>
       </div>
-      <div class="modal-actions"><button class="secondary-button" type="button" data-close-modal>取消</button><button class="primary-button" type="submit">保存并启用</button></div>
+      <div class="modal-actions"><button class="secondary-button" type="button" data-close-modal>取消</button><button class="primary-button" type="submit">创建配置</button></div>
+    </form>
+  </dialog>
+
+  <dialog class="modal module-modal" id="module-modal">
+    <form id="module-form">
+      <div class="modal-header"><div><p class="section-kicker">PIPELINE MODULE</p><h2 id="module-modal-title">编辑检测模块</h2></div><button class="icon-button" type="button" data-close-modal aria-label="关闭">×</button></div>
+      <div class="modal-body">
+        <div class="form-grid module-common-fields">
+          <label><span>模块名称</span><input name="name" maxlength="80" required></label>
+          <label><span>模块类型</span><select name="type" id="module-type"><option value="regex">正则检测</option><option value="entropy">熵值检测</option><option value="path">路径检测</option><option value="local_model">本地小模型</option></select></label>
+        </div>
+        <div class="module-specific-fields" id="module-specific-fields"></div>
+        <details class="advanced-settings">
+          <summary>高级设置</summary>
+          <div class="form-grid">
+            <label><span>模块超时（ms）</span><input name="timeout_ms" type="number" min="1" max="60000" placeholder="不限制"></label>
+            <label><span>失败策略</span><select name="failure_mode"><option value="open">Fail open</option><option value="closed">Fail closed</option></select></label>
+          </div>
+        </details>
+        <p class="form-error" id="module-error" role="alert"></p>
+      </div>
+      <div class="modal-actions"><button class="secondary-button" type="button" data-close-modal>取消</button><button class="primary-button" type="submit">应用到草稿</button></div>
     </form>
   </dialog>
 

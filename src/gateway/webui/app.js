@@ -5,7 +5,7 @@ const PAGE_META = {
   overview: ["LOCAL CONTROL PLANE", "隐私运行概览", "最近 24 小时的网关活动"],
   audit: ["SAFE AUDIT TRAIL", "审计记录", "拦截、折叠与本地还原事件"],
   protected: ["LOCAL MAPPING REGISTRY", "受保护值", "本地映射生命周期与撤销"],
-  detectors: ["DETECTION PIPELINE", "检测器", "预设、模块与项目规则"],
+  detectors: ["DETECTION PIPELINE", "检测器配置", "按检测内容组织的本地模块流水线"],
 };
 
 const state = {
@@ -14,7 +14,11 @@ const state = {
   loaded: new Set(),
   audit: null,
   protected: null,
-  detectors: null,
+  detectorCatalog: null,
+  detectorConfiguration: null,
+  detectorDraft: null,
+  editingModuleIndex: null,
+  moduleDraft: null,
   confirmAction: null,
 };
 
@@ -57,14 +61,24 @@ function bindActions() {
   for (const id of ["audit-phase", "audit-risk", "audit-endpoint"]) $("#" + id).addEventListener("change", () => loadAudit().catch(handleError));
   $("#protected-kind").addEventListener("change", () => loadProtected().catch(handleError));
   $("#purge-expired").addEventListener("click", () => confirmAction("清理过期记录", "将所有已过期映射转为不可恢复状态。", purgeExpired));
-  $("#add-rule-button").addEventListener("click", () => {
-    $("#rule-form").reset();
-    $("#rule-error").textContent = "";
-    updateRuleMode();
-    $("#rule-modal").showModal();
+  $("#configuration-select").addEventListener("change", (event) => selectDetectorConfiguration(event.target.value));
+  $("#new-configuration").addEventListener("click", openConfigurationCreator);
+  $("#duplicate-configuration").addEventListener("click", duplicateDetectorConfiguration);
+  $("#activate-configuration").addEventListener("click", activateDetectorConfiguration);
+  $("#save-configuration").addEventListener("click", saveDetectorConfiguration);
+  $("#delete-configuration").addEventListener("click", deleteDetectorConfiguration);
+  $("#add-module").addEventListener("click", () => openModuleEditor(null));
+  $("#configuration-form").addEventListener("submit", createDetectorConfiguration);
+  $("#module-form").addEventListener("submit", applyModuleDraft);
+  $("#module-type").addEventListener("change", (event) => {
+    state.moduleDraft.type = event.target.value;
+    state.moduleDraft.config = defaultModuleConfig(event.target.value);
+    renderModuleSpecificFields();
   });
-  $("#rule-mode").addEventListener("change", updateRuleMode);
-  $("#rule-form").addEventListener("submit", saveRule);
+  for (const id of ["configuration-name", "configuration-description", "configuration-timeout"]) {
+    $("#" + id).addEventListener("input", updateConfigurationFields);
+  }
+  $("#configuration-core-guard").addEventListener("change", updateCoreGuard);
   $("#run-detection").addEventListener("click", runDetection);
   $("#confirm-action").addEventListener("click", async () => {
     const action = state.confirmAction;
@@ -161,7 +175,7 @@ async function loadOverview() {
   renderEventRows($("#overview-events"), data.recent, true);
   const system = data.system;
   $("#system-strip").innerHTML = [
-    ["Workspace", system.workspace], ["Upstream", system.upstream], ["Preset", system.preset],
+    ["Workspace", system.workspace], ["Upstream", system.upstream], ["检测配置", system.detector_configuration],
     ["PII", system.pii_mode], ["Strict", system.strict_mode ? "On" : "Off"], ["管理面板", system.local_only ? "仅本机" : "远程绑定"],
   ].map(([label, value]) => `<span class="system-item">${escapeHtml(label)}<strong>${escapeHtml(value)}</strong></span>`).join("");
   state.loaded.add("overview");
@@ -258,71 +272,365 @@ async function purgeExpired() {
 }
 
 async function loadDetectors() {
-  const data = await api("/detectors");
-  state.detectors = data;
-  renderDetectors(data);
+  const selected = state.detectorConfiguration?.id;
+  state.detectorCatalog = await api("/detector-configurations");
+  renderConfigurationOptions();
+  const available = [...state.detectorCatalog.templates, ...state.detectorCatalog.configurations];
+  const configurationId = available.some((item) => item.id === selected) ? selected : state.detectorCatalog.active_configuration_id;
+  await loadDetectorConfiguration(configurationId);
   state.loaded.add("detectors");
 }
 
-function renderDetectors(data) {
-  $("#preset-control").innerHTML = data.presets.map((preset) => `<button type="button" class="segment ${preset.id === data.preset ? "is-active" : ""}" data-preset="${escapeHtml(preset.id)}">${escapeHtml(preset.label)}</button>`).join("");
-  $$('[data-preset]', $("#preset-control")).forEach((button) => button.addEventListener("click", () => setPreset(button.dataset.preset)));
-  $("#flow-timeout").textContent = data.flow_timeout_ms ? `Flow timeout ${data.flow_timeout_ms} ms` : "No flow timeout";
-  $("#detector-modules").innerHTML = data.modules.map((module) => `<div class="module-row"><div class="module-name"><span class="module-symbol">${escapeHtml(module.category.slice(0, 3))}</span><div><strong>${escapeHtml(module.id)}</strong><span>${escapeHtml(module.description)}</span></div></div><span class="badge ${module.status === "ready" ? "green" : module.status === "error" ? "red" : "neutral"}">${escapeHtml(module.status)}</span><span class="module-meta">${module.rule_count ? `${module.rule_count} rules` : escapeHtml(module.type)}</span><label class="toggle"><input type="checkbox" data-module="${escapeHtml(module.id)}" ${module.enabled ? "checked" : ""} aria-label="启用 ${escapeHtml(module.id)}"><span></span></label></div>`).join("");
-  $$('[data-module]', $("#detector-modules")).forEach((input) => input.addEventListener("change", () => toggleModule(input.dataset.module, input.checked, input)));
-  const target = $("#custom-rules");
-  target.innerHTML = data.custom_rules.length ? data.custom_rules.map((rule) => `<tr><td><strong>${escapeHtml(rule.id)}</strong><br><span class="muted">${escapeHtml(rule.subtype)}</span></td><td>${escapeHtml(rule.type)}</td><td><span class="badge ${escapeHtml(rule.risk)}">${escapeHtml(rule.risk)}</span></td><td>${escapeHtml(rule.suggested_action)}</td><td class="mono">${escapeHtml(rule.pattern)}</td><td><button class="row-action danger" type="button" data-delete-rule="${escapeHtml(rule.id)}">删除</button></td></tr>`).join("") : `<tr><td colspan="6" class="muted">尚未通过 WebUI 添加项目规则</td></tr>`;
-  $$('[data-delete-rule]', target).forEach((button) => button.addEventListener("click", () => confirmAction("删除检测规则", `${button.dataset.deleteRule} 将从运行流程中移除。`, () => deleteRule(button.dataset.deleteRule))));
-  $("#detection-output").innerHTML = `<span class="muted">等待测试</span>`;
+function renderConfigurationOptions() {
+  const select = $("#configuration-select");
+  const options = (items) => items.map((item) => `<option value="${escapeHtml(item.id)}">${escapeHtml(item.name)}${item.is_active ? " · 当前" : ""}</option>`).join("");
+  select.innerHTML = `<optgroup label="内置与部署模板">${options(state.detectorCatalog.templates)}</optgroup><optgroup label="用户配置">${options(state.detectorCatalog.configurations)}</optgroup>`;
+  if (state.detectorConfiguration) select.value = state.detectorConfiguration.id;
 }
 
-async function setPreset(preset) {
+async function loadDetectorConfiguration(configurationId) {
+  const data = await api(`/detector-configurations/${encodeURIComponent(configurationId)}`);
+  state.detectorConfiguration = data;
+  state.detectorDraft = structuredClone(data);
+  $("#configuration-select").value = data.id;
+  renderDetectorConfiguration();
+}
+
+function selectDetectorConfiguration(configurationId) {
+  if (!configurationId || configurationId === state.detectorConfiguration?.id) return;
+  if (detectorConfigurationDirty()) {
+    $("#configuration-select").value = state.detectorConfiguration.id;
+    return confirmAction("放弃未保存更改", "切换配置将丢弃当前草稿。", () => loadDetectorConfiguration(configurationId));
+  }
+  loadDetectorConfiguration(configurationId).catch(handleError);
+}
+
+function renderDetectorConfiguration() {
+  const configuration = state.detectorDraft;
+  if (!configuration) return;
+  const readonly = configuration.readonly;
+  $("#configuration-name").value = configuration.name;
+  $("#configuration-description").value = configuration.description || "";
+  $("#configuration-timeout").value = configuration.flow_timeout_ms ?? "";
+  $("#configuration-core-guard").checked = configuration.core_guard_enabled;
+  for (const id of ["configuration-name", "configuration-description", "configuration-timeout", "configuration-core-guard"]) $("#" + id).disabled = readonly;
+  $("#configuration-tags").innerHTML = (configuration.content_tags || []).map((tag) => `<span class="badge neutral">${escapeHtml(tag)}</span>`).join("");
+  $("#configuration-status").innerHTML = `${configuration.is_active ? '<span class="badge green">当前启用</span>' : ""}${configuration.readonly ? '<span class="badge neutral">只读模板</span>' : `<span class="muted">Revision ${configuration.revision}</span>`}`;
+  $("#core-guard-warning").classList.toggle("is-hidden", configuration.core_guard_enabled);
+  $("#activate-configuration").disabled = configuration.is_active || detectorConfigurationDirty();
+  $("#activate-configuration").textContent = configuration.is_active ? "当前配置" : "启用配置";
+  $("#duplicate-configuration").textContent = readonly ? "复制并编辑" : "复制";
+  $("#save-configuration").disabled = readonly || !detectorConfigurationDirty();
+  $("#delete-configuration").disabled = readonly || configuration.is_active;
+  $("#add-module").disabled = readonly;
+  renderDetectorModules();
+  $("#detection-output").innerHTML = `<span class="muted">等待测试</span>`;
+  $("#detection-diagnostics").innerHTML = "";
+}
+
+function renderDetectorModules() {
+  const readonly = state.detectorDraft.readonly;
+  const modules = state.detectorDraft.modules || [];
+  const target = $("#detector-modules");
+  if (!modules.length) {
+    target.innerHTML = `<div class="empty-pipeline"><strong>配置中还没有检测模块</strong><span>新增模块后，它们会按这里的顺序依次执行。</span></div>`;
+    return;
+  }
+  target.innerHTML = modules.map((module, index) => {
+    const type = moduleTypeLabel(module.type);
+    const rules = module.type === "regex" ? module.config.rules.length : null;
+    const unavailable = module.type === "local_model" && module.enabled && module.runtime_available === false;
+    const status = !module.enabled ? "disabled" : unavailable ? "unavailable" : module.editable === false ? "managed" : "ready";
+    const statusClass = status === "ready" ? "green" : status === "unavailable" ? "red" : "neutral";
+    const controls = readonly || module.editable === false ? "" : `<div class="module-actions"><button type="button" title="上移" aria-label="上移 ${escapeHtml(module.name)}" data-module-up="${index}" ${index === 0 ? "disabled" : ""}>↑</button><button type="button" title="下移" aria-label="下移 ${escapeHtml(module.name)}" data-module-down="${index}" ${index === modules.length - 1 ? "disabled" : ""}>↓</button><button type="button" data-module-edit="${index}">编辑</button><button type="button" data-module-copy="${index}">复制</button><button type="button" class="danger" data-module-delete="${index}">删除</button></div>`;
+    return `<div class="module-row"><span class="module-order">${index + 1}</span><div class="module-name"><span class="module-symbol">${escapeHtml(type.slice(0, 2))}</span><div><strong>${escapeHtml(module.name)}</strong><span>${escapeHtml(type)} · ${escapeHtml(module.id)}</span></div></div><span class="badge ${statusClass}">${status}</span><span class="module-meta">${rules === null ? escapeHtml(module.failure_mode) : `${rules} 条规则`}</span>${controls}<label class="toggle"><input type="checkbox" data-module-toggle="${index}" ${module.enabled ? "checked" : ""} ${readonly || module.editable === false ? "disabled" : ""} aria-label="启用 ${escapeHtml(module.name)}"><span></span></label></div>`;
+  }).join("");
+  $$('[data-module-toggle]', target).forEach((input) => input.addEventListener("change", () => updateModuleEnabled(Number(input.dataset.moduleToggle), input.checked)));
+  $$('[data-module-up]', target).forEach((button) => button.addEventListener("click", () => moveModule(Number(button.dataset.moduleUp), -1)));
+  $$('[data-module-down]', target).forEach((button) => button.addEventListener("click", () => moveModule(Number(button.dataset.moduleDown), 1)));
+  $$('[data-module-edit]', target).forEach((button) => button.addEventListener("click", () => openModuleEditor(Number(button.dataset.moduleEdit))));
+  $$('[data-module-copy]', target).forEach((button) => button.addEventListener("click", () => duplicateModule(Number(button.dataset.moduleCopy))));
+  $$('[data-module-delete]', target).forEach((button) => button.addEventListener("click", () => removeModule(Number(button.dataset.moduleDelete))));
+}
+
+function updateConfigurationFields() {
+  if (!state.detectorDraft || state.detectorDraft.readonly) return;
+  state.detectorDraft.name = $("#configuration-name").value;
+  state.detectorDraft.description = $("#configuration-description").value;
+  state.detectorDraft.flow_timeout_ms = $("#configuration-timeout").value ? Number($("#configuration-timeout").value) : null;
+  renderDetectorSaveState();
+}
+
+function updateCoreGuard(event) {
+  if (state.detectorDraft.readonly) return;
+  if (!event.target.checked) {
+    event.target.checked = true;
+    return confirmAction("关闭 APG 核心保护", "这会关闭 APG 标记、已知会话 Secret 和流式边界折叠。占位符签名与 session 校验仍保持开启。", () => {
+      state.detectorDraft.core_guard_enabled = false;
+      renderDetectorConfiguration();
+    });
+  }
+  state.detectorDraft.core_guard_enabled = true;
+  renderDetectorConfiguration();
+}
+
+function renderDetectorSaveState() {
+  $("#save-configuration").disabled = state.detectorDraft.readonly || !detectorConfigurationDirty();
+  $("#activate-configuration").disabled = state.detectorDraft.is_active || detectorConfigurationDirty();
+}
+
+function detectorConfigurationPayload(configuration) {
+  return {
+    revision: configuration.revision,
+    name: configuration.name,
+    description: configuration.description || "",
+    core_guard_enabled: configuration.core_guard_enabled,
+    flow_timeout_ms: configuration.flow_timeout_ms,
+    content_tags: configuration.content_tags || [],
+    modules: configuration.modules,
+  };
+}
+
+function detectorConfigurationDirty() {
+  if (!state.detectorConfiguration || !state.detectorDraft || state.detectorDraft.readonly) return false;
+  return JSON.stringify(detectorConfigurationPayload(state.detectorConfiguration)) !== JSON.stringify(detectorConfigurationPayload(state.detectorDraft));
+}
+
+async function saveDetectorConfiguration() {
+  if (!detectorConfigurationDirty()) return;
   try {
-    const data = await api("/detectors/preset", {method: "PUT", body: JSON.stringify({preset})});
-    state.detectors = data; renderDetectors(data); toast("检测预设已更新");
+    const data = await api(`/detector-configurations/${encodeURIComponent(state.detectorDraft.id)}`, {method: "PUT", body: JSON.stringify(detectorConfigurationPayload(state.detectorDraft))});
+    state.detectorConfiguration = data;
+    state.detectorDraft = structuredClone(data);
+    await refreshDetectorCatalog(data.id);
+    renderDetectorConfiguration();
+    toast("检测器配置已保存并校验");
   } catch (error) { handleError(error); }
 }
 
-async function toggleModule(moduleId, enabled, input) {
-  input.disabled = true;
+async function activateDetectorConfiguration() {
+  if (detectorConfigurationDirty()) return toast("请先保存当前草稿", true);
   try {
-    const data = await api(`/detectors/modules/${encodeURIComponent(moduleId)}`, {method: "PATCH", body: JSON.stringify({enabled})});
-    state.detectors = data; renderDetectors(data); toast(`${moduleId} 已${enabled ? "启用" : "停用"}`);
-  } catch (error) { input.checked = !enabled; handleError(error); }
+    const data = await api(`/detector-configurations/${encodeURIComponent(state.detectorDraft.id)}/activate`, {method: "POST"});
+    await refreshDetectorCatalog(data.id);
+    await loadDetectorConfiguration(data.id);
+    state.loaded.delete("overview");
+    toast("检测器配置已启用");
+  } catch (error) { handleError(error); }
 }
 
-function updateRuleMode() {
-  const prefix = $("#rule-mode").value === "prefix";
-  $("#prefix-field").classList.toggle("is-hidden", !prefix);
-  $("#min-length-field").classList.toggle("is-hidden", !prefix);
-  $("#pattern-field").classList.toggle("is-hidden", prefix);
+function deleteDetectorConfiguration() {
+  const configuration = state.detectorDraft;
+  if (configuration.readonly || configuration.is_active) return;
+  confirmAction("删除检测器配置", `${configuration.name} 将被永久删除。`, async () => {
+    await api(`/detector-configurations/${encodeURIComponent(configuration.id)}`, {method: "DELETE"});
+    await refreshDetectorCatalog(state.detectorCatalog.active_configuration_id);
+    await loadDetectorConfiguration(state.detectorCatalog.active_configuration_id);
+    toast("检测器配置已删除");
+  });
 }
 
-async function saveRule(event) {
+function openConfigurationCreator() {
+  $("#configuration-form").reset();
+  $("#configuration-error").textContent = "";
+  const all = [...state.detectorCatalog.templates, ...state.detectorCatalog.configurations];
+  $("#configuration-source").innerHTML = `<option value="">空白配置</option>${all.map((item) => `<option value="${escapeHtml(item.id)}">${escapeHtml(item.name)}</option>`).join("")}`;
+  $("#configuration-source").value = state.detectorConfiguration?.id || "builtin.comprehensive";
+  $("#configuration-form [name=name]").value = "新检测配置";
+  $("#configuration-modal").showModal();
+}
+
+async function createDetectorConfiguration(event) {
   event.preventDefault();
   const form = new FormData(event.target);
-  const payload = Object.fromEntries(form.entries());
-  payload.min_length = Number(payload.min_length || 12);
-  $("#rule-error").textContent = "";
+  $("#configuration-error").textContent = "";
   try {
-    const data = await api("/detectors/rules", {method: "POST", body: JSON.stringify(payload)});
-    state.detectors = data; renderDetectors(data); $("#rule-modal").close(); toast("自定义规则已启用");
-  } catch (error) { $("#rule-error").textContent = error.message; }
+    const data = await api("/detector-configurations", {method: "POST", body: JSON.stringify({name: form.get("name"), source_id: form.get("source_id")})});
+    $("#configuration-modal").close();
+    await refreshDetectorCatalog(data.id);
+    await loadDetectorConfiguration(data.id);
+    toast("检测器配置已创建");
+  } catch (error) { $("#configuration-error").textContent = error.message; }
 }
 
-async function deleteRule(ruleId) {
-  const data = await api(`/detectors/rules/${encodeURIComponent(ruleId)}`, {method: "DELETE"});
-  state.detectors = data; renderDetectors(data); toast("自定义规则已删除");
+async function duplicateDetectorConfiguration() {
+  try {
+    const data = await api("/detector-configurations", {method: "POST", body: JSON.stringify({source_id: state.detectorDraft.id})});
+    await refreshDetectorCatalog(data.id);
+    await loadDetectorConfiguration(data.id);
+    toast("已创建可编辑副本");
+  } catch (error) { handleError(error); }
+}
+
+async function refreshDetectorCatalog(selectedId) {
+  state.detectorCatalog = await api("/detector-configurations");
+  renderConfigurationOptions();
+  if (selectedId) $("#configuration-select").value = selectedId;
+}
+
+function updateModuleEnabled(index, enabled) {
+  state.detectorDraft.modules[index].enabled = enabled;
+  renderDetectorConfiguration();
+}
+
+function moveModule(index, direction) {
+  const target = index + direction;
+  if (target < 0 || target >= state.detectorDraft.modules.length) return;
+  const modules = state.detectorDraft.modules;
+  [modules[index], modules[target]] = [modules[target], modules[index]];
+  renderDetectorConfiguration();
+}
+
+function duplicateModule(index) {
+  const module = structuredClone(state.detectorDraft.modules[index]);
+  module.id = randomId("mod");
+  module.name += " 副本";
+  module.editable = true;
+  state.detectorDraft.modules.splice(index + 1, 0, module);
+  renderDetectorConfiguration();
+}
+
+function removeModule(index) {
+  const module = state.detectorDraft.modules[index];
+  confirmAction("删除检测模块", `${module.name} 将从配置草稿中移除。`, () => {
+    state.detectorDraft.modules.splice(index, 1);
+    renderDetectorConfiguration();
+  });
+}
+
+function openModuleEditor(index) {
+  state.editingModuleIndex = index;
+  state.moduleDraft = index === null ? {
+    id: randomId("mod"), name: "新检测模块", type: "regex", enabled: true,
+    timeout_ms: null, failure_mode: "open", editable: true, config: defaultModuleConfig("regex"),
+  } : structuredClone(state.detectorDraft.modules[index]);
+  $("#module-form").reset();
+  $("#module-error").textContent = "";
+  $("#module-modal-title").textContent = index === null ? "新增检测模块" : "编辑检测模块";
+  $("#module-form [name=name]").value = state.moduleDraft.name;
+  $("#module-type").value = state.moduleDraft.type;
+  $("#module-type").disabled = index !== null;
+  $("#module-form [name=timeout_ms]").value = state.moduleDraft.timeout_ms ?? "";
+  $("#module-form [name=failure_mode]").value = state.moduleDraft.failure_mode || "open";
+  renderModuleSpecificFields();
+  $("#module-modal").showModal();
+}
+
+function defaultModuleConfig(type) {
+  if (type === "regex") return {rules: []};
+  if (type === "entropy") return {min_length: 20, min_entropy: 3.5, context_window: 80, sensitive_words: ["api_key", "token", "secret", "password", "credential"], false_positive_hints: ["fake", "example", "dummy", "sample"], sensitive_risk: "high", contextless_risk: "medium", sensitive_action: "redact", contextless_action: "warn"};
+  if (type === "path") return {detect_unix_home: true, detect_macos_private: true, detect_shell_config: true, detect_windows_user: true, credential_names: [".env", "id_rsa", "id_ed25519", "credentials.json", "kubeconfig"], exclude_patterns: [], path_risk: "medium", credential_risk: "high", path_action: "warn", credential_action: "redact"};
+  return {adapter: "transformers_token_classification", model_name: "iiiorg/piiranha-v1-detect-personal-information", threshold: 0.75, device: "cpu", aggregation_strategy: "simple", labels: ["email", "phone_number", "user_name"]};
+}
+
+function renderModuleSpecificFields() {
+  const module = state.moduleDraft;
+  const target = $("#module-specific-fields");
+  if (module.type === "regex") {
+    target.innerHTML = `<div class="specific-heading"><div><p class="section-kicker">REGEX RULES</p><strong>${module.config.rules.length} 条规则</strong></div><button class="secondary-button" type="button" id="add-regex-rule">＋ 添加规则</button></div><div class="rule-editor-list">${module.config.rules.map(renderRegexRule).join("")}</div>`;
+    $("#add-regex-rule").addEventListener("click", () => {
+      syncModuleSpecificFields();
+      state.moduleDraft.config.rules.push({id: `custom.rule_${randomHex(8)}`, pattern: "", type: "MACHINE_SECRET", subtype: "custom_secret", confidence: 0.9, risk: "high", suggested_action: "redact", flags: [], validators: [], require_validators: [], reject_validators: [], preview_keep: 0, enabled: true, metadata: {source: "webui"}});
+      renderModuleSpecificFields();
+    });
+    $$('[data-remove-rule]', target).forEach((button) => button.addEventListener("click", () => {
+      syncModuleSpecificFields();
+      state.moduleDraft.config.rules.splice(Number(button.dataset.removeRule), 1);
+      renderModuleSpecificFields();
+    }));
+  } else if (module.type === "entropy") {
+    const config = module.config;
+    target.innerHTML = `<div class="form-grid specific-grid"><label><span>最小 Token 长度</span><input id="entropy-min-length" type="number" min="8" max="512" value="${config.min_length}"></label><label><span>熵阈值</span><input id="entropy-threshold" type="number" min="0" max="8" step="0.1" value="${config.min_entropy}"></label><label><span>上下文窗口</span><input id="entropy-window" type="number" min="0" max="1024" value="${config.context_window}"></label><label class="full-row"><span>敏感上下文词（逗号分隔）</span><input id="entropy-words" value="${escapeHtml(config.sensitive_words.join(", "))}"></label><label class="full-row"><span>误报提示词（逗号分隔）</span><input id="entropy-hints" value="${escapeHtml(config.false_positive_hints.join(", "))}"></label>${riskActionFields("entropy-sensitive", "敏感上下文", config.sensitive_risk, config.sensitive_action)}${riskActionFields("entropy-contextless", "无上下文", config.contextless_risk, config.contextless_action)}</div>`;
+  } else if (module.type === "path") {
+    const config = module.config;
+    target.innerHTML = `<div class="check-grid"><label><input id="path-unix" type="checkbox" ${config.detect_unix_home ? "checked" : ""}> Unix / macOS Home</label><label><input id="path-private" type="checkbox" ${config.detect_macos_private ? "checked" : ""}> macOS /private</label><label><input id="path-shell" type="checkbox" ${config.detect_shell_config ? "checked" : ""}> Shell 配置目录</label><label><input id="path-windows" type="checkbox" ${config.detect_windows_user ? "checked" : ""}> Windows User 路径</label></div><div class="form-grid specific-grid"><label class="full-row"><span>凭据文件名（逗号分隔）</span><input id="path-credentials" value="${escapeHtml(config.credential_names.join(", "))}"></label><label class="full-row"><span>排除模式（逗号分隔 glob）</span><input id="path-excludes" value="${escapeHtml(config.exclude_patterns.join(", "))}"></label>${riskActionFields("path-normal", "普通路径", config.path_risk, config.path_action)}${riskActionFields("path-credential", "凭据文件", config.credential_risk, config.credential_action)}</div>`;
+  } else {
+    const config = module.config;
+    target.innerHTML = `<div class="form-grid specific-grid"><label><span>运行方式</span><select id="model-adapter"><option value="transformers_token_classification" ${config.adapter === "transformers_token_classification" ? "selected" : ""}>Transformers Token Classification</option><option value="gliner" ${config.adapter === "gliner" ? "selected" : ""}>GLiNER</option></select></label><label><span>置信度阈值</span><input id="model-threshold" type="number" min="0" max="1" step="0.01" value="${config.threshold}"></label><label class="full-row"><span>Hugging Face 模型地址或本地路径</span><input id="model-name" value="${escapeHtml(config.model_name)}"></label><label><span>设备</span><select id="model-device"><option value="cpu">CPU</option><option value="mps">Apple MPS</option><option value="cuda">CUDA</option><option value="cuda:0">CUDA:0</option></select></label>${config.adapter === "gliner" ? `<label class="full-row"><span>实体标签（逗号分隔）</span><input id="model-labels" value="${escapeHtml(config.labels.join(", "))}"></label>` : `<label><span>聚合方式</span><select id="model-aggregation"><option value="simple">Simple</option><option value="first">First</option><option value="average">Average</option><option value="max">Max</option></select></label>`}<div class="model-policy-note full-row">模型按需延迟加载；是否允许下载由部署策略决定。</div></div>`;
+    $("#model-device").value = config.device;
+    if ($("#model-aggregation")) $("#model-aggregation").value = config.aggregation_strategy;
+    $("#model-adapter").addEventListener("change", (event) => { syncModuleSpecificFields(); state.moduleDraft.config.adapter = event.target.value; renderModuleSpecificFields(); });
+  }
+}
+
+function renderRegexRule(rule, index) {
+  return `<section class="rule-editor" data-rule-card="${index}"><div class="rule-editor-heading"><strong>${escapeHtml(rule.id)}</strong><label class="inline-check"><input data-rule-field="enabled" type="checkbox" ${rule.enabled !== false ? "checked" : ""}>启用</label><button class="row-action danger" type="button" data-remove-rule="${index}">删除</button></div><div class="form-grid"><label><span>规则 ID</span><input data-rule-field="id" value="${escapeHtml(rule.id)}"></label><label><span>Subtype</span><input data-rule-field="subtype" value="${escapeHtml(rule.subtype)}"></label><label class="full-row"><span>正则表达式</span><textarea data-rule-field="pattern" rows="3">${escapeHtml(rule.pattern)}</textarea></label><label><span>数据类型</span><select data-rule-field="type">${selectOptions(["MACHINE_SECRET", "PII", "LOCAL_CONTEXT", "CREDENTIAL_FILE", "UNKNOWN_SECRET_CANDIDATE"], rule.type)}</select></label><label><span>置信度</span><input data-rule-field="confidence" type="number" min="0" max="1" step="0.01" value="${rule.confidence}"></label><label><span>风险</span><select data-rule-field="risk">${selectOptions(["critical", "high", "medium", "low"], rule.risk)}</select></label><label><span>动作</span><select data-rule-field="suggested_action">${selectOptions(["redact", "block", "pseudonymize", "warn", "alias"], rule.suggested_action)}</select></label><label><span>Flags（逗号分隔）</span><input data-rule-field="flags" value="${escapeHtml((rule.flags || []).join(", "))}"></label><label><span>Validators</span><input data-rule-field="validators" value="${escapeHtml((rule.validators || []).join(", "))}"></label><label><span>必须通过的 Validators</span><input data-rule-field="require_validators" value="${escapeHtml((rule.require_validators || []).join(", "))}"></label><label><span>拒绝的 Validators</span><input data-rule-field="reject_validators" value="${escapeHtml((rule.reject_validators || []).join(", "))}"></label></div></section>`;
+}
+
+function riskActionFields(prefix, label, risk, action) {
+  return `<label><span>${label}风险</span><select id="${prefix}-risk">${selectOptions(["critical", "high", "medium", "low"], risk)}</select></label><label><span>${label}动作</span><select id="${prefix}-action">${selectOptions(["redact", "block", "pseudonymize", "warn", "alias"], action)}</select></label>`;
+}
+
+function syncModuleSpecificFields() {
+  const module = state.moduleDraft;
+  if (module.type === "regex") {
+    module.config.rules = $$('[data-rule-card]').map((card) => {
+      const field = (name) => card.querySelector(`[data-rule-field="${name}"]`);
+      const previous = module.config.rules[Number(card.dataset.ruleCard)] || {};
+      return {...previous, id: field("id").value.trim(), subtype: field("subtype").value.trim(), pattern: field("pattern").value, type: field("type").value, confidence: Number(field("confidence").value), risk: field("risk").value, suggested_action: field("suggested_action").value, flags: commaList(field("flags").value), validators: commaList(field("validators").value), require_validators: commaList(field("require_validators").value), reject_validators: commaList(field("reject_validators").value), enabled: field("enabled").checked};
+    });
+  } else if (module.type === "entropy") {
+    module.config = {...module.config, min_length: Number($("#entropy-min-length").value), min_entropy: Number($("#entropy-threshold").value), context_window: Number($("#entropy-window").value), sensitive_words: commaList($("#entropy-words").value), false_positive_hints: commaList($("#entropy-hints").value), sensitive_risk: $("#entropy-sensitive-risk").value, sensitive_action: $("#entropy-sensitive-action").value, contextless_risk: $("#entropy-contextless-risk").value, contextless_action: $("#entropy-contextless-action").value};
+  } else if (module.type === "path") {
+    module.config = {...module.config, detect_unix_home: $("#path-unix").checked, detect_macos_private: $("#path-private").checked, detect_shell_config: $("#path-shell").checked, detect_windows_user: $("#path-windows").checked, credential_names: commaList($("#path-credentials").value), exclude_patterns: commaList($("#path-excludes").value), path_risk: $("#path-normal-risk").value, path_action: $("#path-normal-action").value, credential_risk: $("#path-credential-risk").value, credential_action: $("#path-credential-action").value};
+  } else {
+    module.config = {...module.config, adapter: $("#model-adapter").value, model_name: $("#model-name").value.trim(), threshold: Number($("#model-threshold").value), device: $("#model-device").value, aggregation_strategy: $("#model-aggregation")?.value || module.config.aggregation_strategy, labels: $("#model-labels") ? commaList($("#model-labels").value) : module.config.labels};
+  }
+}
+
+function applyModuleDraft(event) {
+  event.preventDefault();
+  const form = new FormData(event.target);
+  $("#module-error").textContent = "";
+  try {
+    syncModuleSpecificFields();
+    state.moduleDraft.name = String(form.get("name") || "").trim();
+    state.moduleDraft.timeout_ms = form.get("timeout_ms") ? Number(form.get("timeout_ms")) : null;
+    state.moduleDraft.failure_mode = form.get("failure_mode") || "open";
+    if (!state.moduleDraft.name) throw new Error("请输入模块名称");
+    if (state.editingModuleIndex === null) state.detectorDraft.modules.push(state.moduleDraft);
+    else state.detectorDraft.modules[state.editingModuleIndex] = state.moduleDraft;
+    $("#module-modal").close();
+    renderDetectorConfiguration();
+  } catch (error) { $("#module-error").textContent = error.message; }
+}
+
+function renderDetectionDiagnostics(diagnostics) {
+  $("#detection-diagnostics").innerHTML = diagnostics.length ? `<div class="diagnostic-heading"><p class="section-kicker">EXECUTION TRACE</p><span>${diagnostics.length} 个步骤</span></div>${diagnostics.map((item, index) => `<div class="diagnostic-row"><span class="diagnostic-order">${index + 1}</span><strong>${escapeHtml(item.id === "apg_core" ? "APG 核心保护" : item.id)}</strong><span>${escapeHtml(item.type)}</span><span>${item.findings} 命中</span><span>${Number(item.elapsed_ms).toFixed(2)} ms</span><b class="badge ${item.status === "ok" ? "green" : ["disabled", "unavailable"].includes(item.status) ? "neutral" : "red"}">${escapeHtml(item.status)}</b></div>`).join("")}` : "";
+}
+
+function moduleTypeLabel(type) {
+  return ({regex: "正则检测", entropy: "熵值检测", path: "路径检测", local_model: "本地小模型", deployment: "部署模块"})[type] || type;
+}
+
+function selectOptions(values, selected) {
+  return values.map((value) => `<option value="${escapeHtml(value)}" ${value === selected ? "selected" : ""}>${escapeHtml(value)}</option>`).join("");
+}
+
+function commaList(value) {
+  return String(value || "").split(",").map((item) => item.trim()).filter(Boolean);
+}
+
+function randomHex(length) {
+  const bytes = crypto.getRandomValues(new Uint8Array(Math.ceil(length / 2)));
+  return [...bytes].map((value) => value.toString(16).padStart(2, "0")).join("").slice(0, length);
+}
+
+function randomId(prefix) {
+  return `${prefix}_${randomHex(12)}`;
 }
 
 async function runDetection() {
   const text = $("#detection-input").value;
   if (!text.trim()) return toast("请输入测试文本", true);
+  if (detectorConfigurationDirty()) return toast("请先保存配置草稿再试跑", true);
   const output = $("#detection-output");
   output.innerHTML = `<span class="muted">正在检测…</span>`;
+  $("#detection-diagnostics").innerHTML = "";
   try {
-    const data = await api("/detectors/test", {method: "POST", body: JSON.stringify({text})});
+    const data = await api(`/detector-configurations/${encodeURIComponent(state.detectorDraft.id)}/test`, {method: "POST", body: JSON.stringify({text})});
     renderHighlightedDetection(output, text, data.findings);
+    renderDetectionDiagnostics(data.diagnostics);
   } catch (error) { output.innerHTML = `<span class="form-error">${escapeHtml(error.message)}</span>`; handleError(error); }
 }
 

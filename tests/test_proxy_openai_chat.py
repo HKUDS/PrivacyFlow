@@ -42,6 +42,7 @@ def test_non_streaming_chat_forwards_sanitized_request(tmp_path) -> None:
     assert "sk-proj-" not in json.dumps(fake.calls[0][2])
     assert fake.calls[0][2]["messages"][0]["role"] == "system"
     assert APG_UPSTREAM_SYSTEM_PROMPT in fake.calls[0][2]["messages"][0]["content"]
+    assert "opening `<` and closing `>` delimiters" in APG_UPSTREAM_SYSTEM_PROMPT
 
 
 def test_apg_prompt_prepends_existing_system_message(tmp_path) -> None:

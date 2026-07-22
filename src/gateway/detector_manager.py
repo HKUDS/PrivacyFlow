@@ -7,7 +7,9 @@ from gateway.models import Detection
 
 class DetectorManager:
     def __init__(self, *, detectors_config: dict | None = None) -> None:
-        self.hierarchical = HierarchicalDetectorManager(detectors_config=detectors_config)
+        config = detectors_config or {}
+        self.core_guard_enabled = bool(config.get("core_guard_enabled", True))
+        self.hierarchical = HierarchicalDetectorManager(detectors_config=config)
         self.last_diagnostics: list[dict[str, Any]] = []
 
     def scan(self, text: str) -> list[Detection]:

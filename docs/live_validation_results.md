@@ -2,18 +2,33 @@
 
 Date: 2026-07-02
 
+## Current 11-Scenario Matrix
+
+Date: 2026-07-21
+
+After removing the live-agent `prompt_injection` case, the current matrix was run with Claude Code and OpenCode through APG and a real DeepSeek upstream:
+
+- Claude Code: `11/11` passed.
+- OpenCode: `10/11` passed on the first matrix run.
+- The only first-run failure was `pii_tool`: the model removed the surrounding angle brackets from an APG placeholder, so APG correctly preserved the malformed value instead of materializing it and the local validator rejected it.
+- An isolated OpenCode `pii_tool` rerun passed with three local materializations.
+- First matrix run: 22 executions, 68 streams, and 57 materializations.
+- Raw canary leak files, final-answer leaks, APG handles in final answers, and provider-key file hits: `0`.
+
+Evidence: `/private/tmp/apg-live-11x2-latest/summary.json` and `/private/tmp/apg-live-11x2-pii-rerun/summary.json`.
+
 ## Reproducible Claude Code And OpenCode Runner
 
 Date: 2026-07-10
 
-The checked-in `run_live_agents` runner was executed with a real DeepSeek upstream after the session, PII, path, and streaming changes. The final matrix contains 12 scenarios per agent:
+The current checked-in `run_live_agents` matrix contains 11 scenarios per agent:
 
 - `secret_tool`, `pii_tool`, and `parallel_materialization`
-- `prompt_injection`, `config_debug`, `pii_summary`, and `log_analysis`
+- `config_debug`, `pii_summary`, and `log_analysis`
 - `path_alias` and `multi_file_review`
 - `safe_env_example`, `sanitized_customer_reply`, and `safe_debug_script`
 
-Final result:
+The following result is historical and predates removal of one scenario from the runnable matrix:
 
 - Claude Code `2.1.206`: `12/12` passed over 35 APG streams and 36 materializations.
 - OpenCode `1.17.18`: `12/12` passed over 44 APG streams and 35 materializations.
@@ -83,24 +98,6 @@ Issues found by the first roleplay run:
 - `scenario_13`: path aliases such as `/workspace/repo` collided across
   independent synthetic repositories. Fixed by adding a short stable hash to
   path aliases.
-
-## DeepSeek Live APG Harness
-
-Command class:
-
-```bash
-DEEPSEEK_API_KEY='<redacted>' .venv/bin/python experiments/deepseek_agent_experiment.py --live --model deepseek-v4-flash
-```
-
-Result:
-
-- status code: `200`
-- model: `deepseek-v4-flash`
-- request redactions: `3`
-- response redactions: `0`
-- returned body contained fake stress secret: `false`
-
-The request included fake stress data for email, local path, and API-key-like text. APG redacted/aliased the request before forwarding it upstream.
 
 ## OpenCode With DeepSeek Key
 

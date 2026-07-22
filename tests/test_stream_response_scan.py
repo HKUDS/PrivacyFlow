@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import re
 
 import pytest
 from fastapi.testclient import TestClient
@@ -9,7 +8,7 @@ from fastapi.testclient import TestClient
 from gateway.config import GatewayConfig, UpstreamConfig
 from gateway.detector_manager import DetectorManager
 from gateway.mapping_store import MappingStore
-from gateway.placeholder_parser import PlaceholderSigner
+from gateway.placeholder_parser import PLACEHOLDER_RE, PlaceholderSigner
 from gateway.policy_engine import PolicyEngine
 from gateway.redaction_engine import (
     BalancedStreamScanner,
@@ -48,7 +47,7 @@ class ToolArgEchoUpstream:
     async def stream_request(self, method, path, payload=None):
         self.calls.append((method, path, payload))
         text = json.dumps(payload)
-        match = re.search(r"<APG:v1:[^>]+>", text)
+        match = PLACEHOLDER_RE.search(text)
         placeholder = match.group(0) if match else "<APG:v1:secret:missing:sess_missing:1:missing>"
 
         async def chunks():
@@ -214,7 +213,7 @@ def test_openai_streaming_text_protects_values_split_across_all_deltas(tmp_path,
     secret = "sk-proj-abcdefghijklmnopqrstuvwxyz0"
 
     def factory(payload):
-        placeholder = re.search(r"<APG:v1:[^>]+>", json.dumps(payload)).group(0)
+        placeholder = PLACEHOLDER_RE.search(json.dumps(payload)).group(0)
         value = secret if emit_raw else placeholder
 
         async def chunks():
@@ -242,7 +241,7 @@ def test_openai_streaming_buffers_interleaved_tool_calls(tmp_path) -> None:
     secret = "sk-proj-abcdefghijklmnopqrstuvwxyz0"
 
     def factory(payload):
-        placeholder = re.search(r"<APG:v1:[^>]+>", json.dumps(payload)).group(0)
+        placeholder = PLACEHOLDER_RE.search(json.dumps(payload)).group(0)
         args = [json.dumps({"api_key": placeholder}), json.dumps({"token": placeholder})]
 
         async def chunks():
@@ -371,7 +370,7 @@ def test_anthropic_streaming_text_and_tool_args_are_protected(tmp_path) -> None:
     secret = "sk-proj-abcdefghijklmnopqrstuvwxyz0"
 
     def factory(payload):
-        placeholder = re.search(r"<APG:v1:[^>]+>", json.dumps(payload)).group(0)
+        placeholder = PLACEHOLDER_RE.search(json.dumps(payload)).group(0)
         arguments = json.dumps({"api_key": placeholder})
 
         async def chunks():

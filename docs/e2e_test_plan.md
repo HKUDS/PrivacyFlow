@@ -45,15 +45,6 @@ Run all scenarios:
 .venv/bin/python -m e2e_agent_tests.scripts.run_all
 ```
 
-Run all scenarios through the real APG API proxy with DeepSeek as upstream:
-
-```bash
-DEEPSEEK_API_KEY='<your key>' \
-.venv/bin/python -m e2e_agent_tests.scripts.run_real_api \
-  --workdir .apg-e2e-real \
-  --report e2e_agent_tests/reports/latest_real_api_report.md
-```
-
 Run the strong pytest set:
 
 ```bash
@@ -65,13 +56,6 @@ Run real Claude Code and OpenCode scenarios through APG and DeepSeek (opt-in):
 ```bash
 DEEPSEEK_API_KEY='<your key>' \
 .venv/bin/python -m e2e_agent_tests.scripts.run_live_agents
-```
-
-Run a real OpenAI Responses streaming gate (opt-in):
-
-```bash
-OPENAI_API_KEY='<your key>' \
-.venv/bin/python -m e2e_agent_tests.scripts.run_openai_responses_live
 ```
 
 ## Connecting Real Agents
@@ -86,9 +70,9 @@ The scenario YAML files provide prompts, required files, expected agent actions,
 - memory writes
 - local file diffs
 
-The `run_real_api` runner is a real-provider API harness, not a coding agent. It sends scenario prompts through APG, records the sanitized payload before DeepSeek receives it, and applies the leak checks and scoring rubric. `run_live_agents` launches Claude Code and OpenCode themselves in isolated synthetic repositories and validates their real streaming tool trajectories.
+`run_live_agents` launches Claude Code and OpenCode themselves in isolated synthetic repositories and validates their real streaming tool trajectories.
 
-The live matrix contains 12 scenarios per agent: secret and PII validator calls, parallel secret/PII materialization, prompt injection, configuration debugging, PII summary, log analysis, absolute-path restoration, multi-file privacy review, safe `.env.example` generation, a sanitized customer reply, and a generated debug script that is executed under a canary environment. Each case validates the APG contract, stream audit, tool trajectory, workspace diff, generated files, final answer, and exact provider-key absence.
+The live matrix contains 11 scenarios per agent: secret and PII validator calls, parallel secret/PII materialization, configuration debugging, PII summary, log analysis, absolute-path restoration, multi-file privacy review, safe `.env.example` generation, a sanitized customer reply, and a generated debug script that is executed under a canary environment. Each case validates the APG contract, stream audit, tool trajectory, workspace diff, generated files, final answer, and exact provider-key absence.
 
 The provider credential is inherited only by the local APG server. Agent CLI subprocesses receive an environment allowlist plus the local `apg-local` credential. A stream passes when all entries have `parse_errors=0`, no protocol failure occurred, and at least one stream completed; an explicitly audited `client_disconnected` entry is permitted because agent CLIs may cancel auxiliary title/background streams.
 
@@ -124,14 +108,4 @@ Overall pass requires no `Security=0`. Critical scenarios `2`, `3`, and `12` req
 
 ## Limitations
 
-This package includes a deterministic mock harness for CI, real-provider API runners, and opt-in Claude Code/OpenCode runners. Live runners require local agent binaries and provider credentials and are not part of ordinary offline CI. Tool permission, outbound network approval, and local file-write safety remain harness responsibilities.
-
-## Observed Real API Result
-
-On 2026-07-03, `run_real_api` was executed against DeepSeek `deepseek-v4-flash` through APG:
-
-- scenarios run: `14`
-- passed: `14`
-- failed: `0`
-- artifact leak checker: `ok=True`
-- report: `e2e_agent_tests/reports/latest_real_api_report.md`
+This package includes a deterministic mock harness for CI and opt-in Claude Code/OpenCode runners. Live runners require local agent binaries and provider credentials and are not part of ordinary offline CI. Tool permission, outbound network approval, and local file-write safety remain harness responsibilities.

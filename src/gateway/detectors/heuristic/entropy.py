@@ -33,9 +33,28 @@ class EntropyContextDetector(Detector):
 
     TOKEN_RE = re.compile(r"\b[A-Za-z0-9_\-+/]{20,}={0,2}\b|\b[a-fA-F0-9]{32,}\b")
 
-    def __init__(self, min_length: int = 20, min_entropy: float = 3.5) -> None:
+    def __init__(
+        self,
+        min_length: int = 20,
+        min_entropy: float = 3.5,
+        *,
+        context_window: int = 80,
+        sensitive_words: list[str] | tuple[str, ...] | None = None,
+        false_positive_hints: list[str] | tuple[str, ...] | None = None,
+        sensitive_risk: str = "high",
+        contextless_risk: str = "medium",
+        sensitive_action: str = "redact",
+        contextless_action: str = "warn",
+    ) -> None:
         self.min_length = min_length
         self.min_entropy = min_entropy
+        self.context_window = context_window
+        self.sensitive_words = tuple(sensitive_words) if sensitive_words is not None else SENSITIVE_WORDS
+        self.false_positive_hints = tuple(false_positive_hints) if false_positive_hints is not None else FALSE_POSITIVE_HINTS
+        self.sensitive_risk = sensitive_risk
+        self.contextless_risk = contextless_risk
+        self.sensitive_action = sensitive_action
+        self.contextless_action = contextless_action
 
     def detect(self, block: SourceBlock, normalized: NormalizedText) -> Iterable[Finding]:
         text = normalized.normalized
@@ -55,17 +74,19 @@ class EntropyContextDetector(Detector):
             entropy = shannon_entropy(value)
             if entropy < self.min_entropy:
                 continue
-            window_start = max(0, match.start() - 80)
-            window_end = min(len(text), match.end() + 80)
+            window_start = max(0, match.start() - self.context_window)
+            window_end = min(len(text), match.end() + self.context_window)
             context = lowered[window_start:window_end]
-            sensitive_context = any(word in context for word in SENSITIVE_WORDS)
-            weak_context = any(word in context for word in FALSE_POSITIVE_HINTS)
+            sensitive_context = any(word.lower() in context for word in self.sensitive_words)
+            weak_context = any(word.lower() in context for word in self.false_positive_hints)
             if sensitive_context:
                 confidence = 0.82
-                risk = "high"
+                risk = self.sensitive_risk
+                action = self.sensitive_action
             else:
                 confidence = 0.55
-                risk = "medium"
+                risk = self.contextless_risk
+                action = self.contextless_action
             if weak_context and not _provider_prefix(value):
                 confidence = max(0.35, confidence - 0.25)
                 risk = "low" if risk == "medium" else "medium"
@@ -81,7 +102,7 @@ class EntropyContextDetector(Detector):
                 confidence=confidence,
                 risk=risk,  # type: ignore[arg-type]
                 detector=self.name,
-                suggested_action="redact" if sensitive_context else "warn",
+                suggested_action=action,  # type: ignore[arg-type]
                 safe_preview=safe_preview(value),
                 metadata={
                     "entropy": entropy,

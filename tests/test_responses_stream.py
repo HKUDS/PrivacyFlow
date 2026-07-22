@@ -1,16 +1,20 @@
 from __future__ import annotations
 
 import json
-import re
 
 from fastapi.testclient import TestClient
 
 from gateway.config import GatewayConfig, UpstreamConfig
+from gateway.placeholder_parser import PLACEHOLDER_RE
 from gateway.redaction_engine import PROTECTED_VALUE, SSEDecoder, parse_sse_event
 from gateway.server import APG_UPSTREAM_SYSTEM_PROMPT, create_app
 
 
 SECRET = "sk-proj-abcdefghijklmnopqrstuvwxyz0"
+
+
+def _placeholder_of_kind(text: str, kind: str) -> str:
+    return next(match.group(0) for match in PLACEHOLDER_RE.finditer(text) if match.group("kind") == kind)
 
 
 class ResponsesStreamUpstream:
@@ -59,7 +63,7 @@ def _stream(client: TestClient, body: dict) -> str:
 
 def test_responses_stream_injects_instructions_and_folds_split_secret(tmp_path) -> None:
     def factory(payload):
-        placeholder = re.search(r"<APG:v1:secret:[^>]+>", json.dumps(payload)).group(0)
+        placeholder = _placeholder_of_kind(json.dumps(payload), "secret")
 
         async def chunks():
             yield _event("response.created", {"response": {"id": "resp_1", "status": "in_progress", "output": []}})
@@ -107,7 +111,7 @@ def test_responses_stream_injects_instructions_and_folds_split_secret(tmp_path) 
 
 def test_responses_stream_buffers_and_materializes_interleaved_function_arguments(tmp_path) -> None:
     def factory(payload):
-        placeholder = re.search(r"<APG:v1:secret:[^>]+>", json.dumps(payload)).group(0)
+        placeholder = _placeholder_of_kind(json.dumps(payload), "secret")
         arguments = [json.dumps({"api_key": placeholder}), json.dumps({"token": placeholder})]
 
         async def chunks():
@@ -179,8 +183,8 @@ def test_non_streaming_responses_materializes_function_call_and_restores_pii(tmp
     )
     assert first.status_code == 200
     sent = json.dumps(upstream.calls[0][2])
-    secret_placeholder = re.search(r"<APG:v1:secret:[^>]+>", sent).group(0)
-    pii_placeholder = re.search(r"<APG:v1:pii:[^>]+>", sent).group(0)
+    secret_placeholder = _placeholder_of_kind(sent, "secret")
+    pii_placeholder = _placeholder_of_kind(sent, "pii")
     upstream.response_body = {
         "id": "resp_abcdefghijklmnopqrstuvwxyz1234567890",
         "object": "response",
@@ -205,7 +209,7 @@ def test_non_streaming_responses_materializes_function_call_and_restores_pii(tmp
 
 def test_responses_stream_flushes_tool_arguments_at_eof_and_rejects_malformed_json(tmp_path) -> None:
     def eof_factory(payload):
-        placeholder = re.search(r"<APG:v1:secret:[^>]+>", json.dumps(payload)).group(0)
+        placeholder = _placeholder_of_kind(json.dumps(payload), "secret")
 
         async def chunks():
             yield _event(

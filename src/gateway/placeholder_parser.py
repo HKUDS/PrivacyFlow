@@ -8,6 +8,20 @@ from dataclasses import dataclass
 from hashlib import sha256
 
 PLACEHOLDER_RE = re.compile(r"<APG:v1:(?P<kind>[a-z_]+):(?P<handle>[^:<>]+):(?P<session>[^:<>]+):(?P<issued>\d+):(?P<mac>[A-Za-z0-9_-]+)>")
+APG_PLACEHOLDER_FORMAT_EXAMPLE = "<APG:v1:pii:...>"
+
+
+def span_is_within_placeholder_format_example(text: str, start: int, end: int) -> bool:
+    """Return whether a non-empty span is wholly inside the reserved format example."""
+    if start < 0 or end <= start or end > len(text):
+        return False
+    example_start = text.find(APG_PLACEHOLDER_FORMAT_EXAMPLE)
+    while example_start >= 0:
+        example_end = example_start + len(APG_PLACEHOLDER_FORMAT_EXAMPLE)
+        if example_start <= start and end <= example_end:
+            return True
+        example_start = text.find(APG_PLACEHOLDER_FORMAT_EXAMPLE, example_start + 1)
+    return False
 
 
 @dataclass(frozen=True)

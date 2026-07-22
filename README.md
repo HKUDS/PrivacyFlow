@@ -106,9 +106,9 @@ The WebUI is an operational control plane for the local gateway:
 - **Overview:** request, interception, local materialization, risk, and seven-day trend summaries.
 - **Audit:** filter safe audit events by phase, risk, endpoint, or request metadata.
 - **Protected values:** inspect type, scope, state, and expiry; revoke an active mapping without exposing its value.
-- **Detectors:** switch presets, enable or disable modules, add project token-prefix or regular-expression rules, and dry-run the active pipeline.
+- **Detector configurations:** select a read-only content template or a user configuration, edit and reorder typed modules, atomically activate a validated revision, and dry-run any saved configuration locally.
 
-The management API never returns a raw mapped value, complete APG placeholder, internal handle, fingerprint, provider API key, or full session id. Protected-value actions use a separate HMAC-derived administration id. WebUI detector changes are written to `detector-control.json` beside the SQLite database with mode `0600` and are applied to new requests without restarting APG.
+The management API never returns a raw mapped value, complete APG placeholder, internal handle, fingerprint, provider API key, or full session id. Protected-value actions use a separate HMAC-derived administration id. WebUI detector changes are written to the version 2 `detector-control.json` beside the SQLite database with mode `0600`. Saving an active configuration validates, compiles, persists, and atomically swaps the pipeline; a failed build leaves the previous pipeline running.
 
 The panel is enabled by default because APG binds to loopback by default. Set `APG_ADMIN_ENABLED=false` to remove the UI and all `/api/admin/*` routes. Do not expose the panel over an untrusted network without HTTPS and an independent administrator key. See [docs/webui.md](/Users/howard/Documents/code/Agent-Privacy-Gateway/docs/webui.md) for the API and security model.
 
@@ -128,11 +128,8 @@ Realistic E2E harness commands:
 
 ```bash
 .venv/bin/python -m e2e_agent_tests.scripts.run_all
-DEEPSEEK_API_KEY='<your key>' .venv/bin/python -m e2e_agent_tests.scripts.run_real_api
-# Opt-in real coding-agent validation (12 scenarios x Claude Code/OpenCode):
+# Opt-in real coding-agent validation (11 scenarios x Claude Code/OpenCode):
 DEEPSEEK_API_KEY='<your key>' .venv/bin/python -m e2e_agent_tests.scripts.run_live_agents
-# Opt-in real OpenAI Responses streaming validation:
-OPENAI_API_KEY='<your key>' .venv/bin/python -m e2e_agent_tests.scripts.run_openai_responses_live
 ```
 
 ## Example Behavior
@@ -159,7 +156,18 @@ Optional external scanners and local model detectors have plugin interfaces. The
 
 The unified `Finding` schema records source block, original and normalized offsets, type, subtype, confidence, risk, detectors, validators, suggested action, safe preview, and metadata. A risk scorer merges overlapping evidence and hands findings to policy-aware components.
 
-Detector execution is compiled into a linear flow. You can use a built-in preset, override modules/rules, or define a preset from scratch. Project-specific regex rules belong in `detectors.overrides.rules.add` or a custom `regex_rules` module:
+Detector execution is compiled into an ordered flow. Every enabled module runs from top to bottom, and overlapping evidence is merged after all modules complete. The WebUI provides four read-only templates that describe what is detected rather than a strength level:
+
+| Template | Ordered modules |
+| --- | --- |
+| Credentials and keys | Credential regex -> entropy |
+| Personal information | PII regex -> local model (disabled) |
+| Local development environment | Paths and credential files |
+| Comprehensive protection | Credential regex -> PII regex -> paths -> entropy -> local model (disabled) |
+
+Editing a template creates a user-owned copy. User configurations support create, copy, rename, activate, delete, and module add/edit/copy/delete/reorder operations. Saves carry a revision and return `409` when another tab has already changed the configuration. The editable module types are regular expressions, entropy/context detection, paths, and a unified local-model module with Transformers token-classification or GLiNER adapters.
+
+YAML presets remain supported as read-only deployment templates. This is also the route for external tools and Python plugins, which cannot be added in the WebUI:
 
 ```yaml
 detectors:
@@ -188,7 +196,7 @@ Supported module types include regex rules, entropy/context heuristics, path det
 pip install -e '.[models]'
 ```
 
-Use `POST /v1/apg/detect` with a local API key to dry-run detection. The response includes safe findings, sanitized preview text, and module diagnostics without returning raw sensitive matches.
+Use `POST /v1/apg/detect` with a local API key to dry-run the active configuration. The WebUI can also test any saved configuration without activating it; it highlights matches in the original text locally and lists module diagnostics in execution order. Audit events omit test text, regular expressions, model paths, complete placeholders, and raw sensitive matches.
 
 ## Placeholder And Materialization
 

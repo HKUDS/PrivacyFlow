@@ -184,7 +184,7 @@ BUILTIN_RULES: tuple[dict[str, Any], ...] = (
     },
     {
         "id": "apg.redaction_marker",
-        "pattern": r"<APG(?:_REDACTED|_SECRET)[^>]*>|<APG:v1:[^>]+>",
+        "pattern": r"<APG[^>]*>",
         "type": "APG_MARKER",
         "subtype": "redaction_marker",
         "confidence": 0.98,
