@@ -177,7 +177,13 @@ def test_invalid_upstream_errors_handled_safely(tmp_path) -> None:
         async def request_json(self, method, path, payload=None):
             return 500, {"content-type": "application/json"}, {"error": {"message": "upstream failed"}}
 
-    cfg = GatewayConfig(database_path=str(tmp_path / "state.sqlite3"), audit_log_path=str(tmp_path / "audit.jsonl"), signing_secret="secret", local_api_keys={"local"})
+    cfg = GatewayConfig(
+        database_path=str(tmp_path / "state.sqlite3"),
+        audit_log_path=str(tmp_path / "audit.jsonl"),
+        signing_secret="secret",
+        local_api_keys={"local"},
+        upstream=UpstreamConfig(api_key="provider-key"),
+    )
     client = TestClient(create_app(cfg, ErrorUpstream()))
     resp = client.post("/v1/chat/completions", headers={"Authorization": "Bearer local"}, json={"messages": [{"content": "hello"}]})
     assert resp.status_code == 500
@@ -187,7 +193,7 @@ def test_invalid_upstream_errors_handled_safely(tmp_path) -> None:
 def test_audit_event_created_for_every_request(tmp_path) -> None:
     fake = FakeUpstream()
     audit = tmp_path / "audit.jsonl"
-    cfg = GatewayConfig(database_path=str(tmp_path / "state.sqlite3"), audit_log_path=str(audit), signing_secret="secret", local_api_keys={"local"})
+    cfg = GatewayConfig(database_path=str(tmp_path / "state.sqlite3"), audit_log_path=str(audit), signing_secret="secret", local_api_keys={"local"}, upstream=UpstreamConfig(api_key="provider-key"))
     client = TestClient(create_app(cfg, fake))
     client.post("/v1/chat/completions", headers={"Authorization": "Bearer local"}, json={"messages": [{"content": "hello"}]})
     lines = audit.read_text().splitlines()
@@ -197,7 +203,7 @@ def test_audit_event_created_for_every_request(tmp_path) -> None:
 def test_local_dummy_api_key_maps_to_gateway_session(tmp_path) -> None:
     fake = FakeUpstream()
     audit = tmp_path / "audit.jsonl"
-    cfg = GatewayConfig(database_path=str(tmp_path / "state.sqlite3"), audit_log_path=str(audit), signing_secret="secret", local_api_keys={"local"})
+    cfg = GatewayConfig(database_path=str(tmp_path / "state.sqlite3"), audit_log_path=str(audit), signing_secret="secret", local_api_keys={"local"}, upstream=UpstreamConfig(api_key="provider-key"))
     client = TestClient(create_app(cfg, fake))
     client.post("/v1/chat/completions", headers={"Authorization": "Bearer local"}, json={"messages": [{"content": "hello"}]})
     assert "sess_" in audit.read_text()

@@ -74,6 +74,11 @@ def test_webui_assets_and_admin_auth_are_separated(tmp_path) -> None:
         assert "frame-ancestors 'none'" in page.headers["content-security-policy"]
         app_js = client.get("/ui/assets/app.js")
         assert app_js.status_code == 200
+        i18n_js = client.get("/ui/assets/i18n.js")
+        assert i18n_js.status_code == 200
+        assert "Privacy operations overview" in i18n_js.text
+        assert "Detectors" in i18n_js.text
+        assert "apg:localechange" in i18n_js.text
         assert "ANTHROPIC_BASE_URL" in app_js.text
         assert "export ANTHROPIC_MODEL=deepseek-v4-pro[1m]" in app_js.text
         assert "export ANTHROPIC_DEFAULT_SONNET_MODEL=deepseek-v4-pro[1m]" in app_js.text
@@ -112,6 +117,11 @@ def test_webui_assets_and_admin_auth_are_separated(tmp_path) -> None:
         assert "data-copy-connection" in page.text
         assert "copy-claude-command" in page.text
         assert "复制接入命令" in page.text
+        assert "配置上游模型" in page.text
+        assert 'api("/upstream-configuration"' in app_js.text
+        assert 'data-locale="zh"' in page.text
+        assert 'data-locale="en"' in page.text
+        assert page.text.index("/ui/assets/i18n.js") < page.text.index("/ui/assets/app.js")
         assert 'data-audit-direction="replacement"' in page.text
         assert 'data-audit-direction="materialization"' in page.text
         assert "替换记录" in page.text
@@ -129,6 +139,81 @@ def test_webui_assets_and_admin_auth_are_separated(tmp_path) -> None:
         assert "view_agent_connection_info" in audit_text
         assert "agent-key" not in audit_text
         assert "provider-key" not in audit_text
+
+
+def test_webui_can_persist_and_hot_apply_first_run_upstream_key(tmp_path, monkeypatch) -> None:
+    launcher_path = tmp_path / ".apg" / "launcher.json"
+    launcher_path.parent.mkdir(mode=0o700)
+    launcher_path.write_text(
+        json.dumps(
+            {
+                "admin_api_key": "admin-key",
+                "local_api_key": "agent-key",
+                "signing_secret": "test-signing-secret",
+                "strip_local_v1": True,
+                "upstream_base_url": "https://api.deepseek.com",
+            }
+        ),
+        encoding="utf-8",
+    )
+    os.chmod(launcher_path, 0o600)
+    monkeypatch.setenv("APG_LAUNCHER_CONFIG_PATH", str(launcher_path))
+    cfg = _config(tmp_path)
+    cfg = GatewayConfig(
+        **{
+            **cfg.__dict__,
+            "upstream": UpstreamConfig(
+                base_url="https://api.deepseek.com",
+                api_key="",
+                strip_local_v1=True,
+            ),
+        }
+    )
+
+    with TestClient(create_app(cfg, AdminFakeUpstream())) as client:
+        status = client.get("/api/admin/upstream-configuration", headers=_admin_headers())
+        assert status.status_code == 200
+        assert status.json() == {
+            "configured": False,
+            "base_url": "https://api.deepseek.com",
+            "persistent": True,
+        }
+        assert "api_key" not in status.text
+
+        unavailable = client.post(
+            "/v1/chat/completions",
+            headers={"Authorization": "Bearer agent-key"},
+            json={"model": "test", "messages": [{"role": "user", "content": "hello"}]},
+        )
+        assert unavailable.status_code == 503
+        assert unavailable.json()["error"]["code"] == "APG_UPSTREAM_NOT_CONFIGURED"
+
+        assert client.put(
+            "/api/admin/upstream-configuration",
+            headers={"Authorization": "Bearer agent-key"},
+            json={"api_key": "saved-provider-key"},
+        ).status_code == 401
+        configured = client.put(
+            "/api/admin/upstream-configuration",
+            headers=_admin_headers(),
+            json={"api_key": "saved-provider-key"},
+        )
+        assert configured.status_code == 200
+        assert configured.json()["configured"] is True
+        assert "saved-provider-key" not in configured.text
+
+        response = client.post(
+            "/v1/chat/completions",
+            headers={"Authorization": "Bearer agent-key"},
+            json={"model": "test", "messages": [{"role": "user", "content": "hello"}]},
+        )
+        assert response.status_code == 200
+
+    assert os.stat(launcher_path).st_mode & 0o777 == 0o600
+    assert json.loads(launcher_path.read_text(encoding="utf-8"))["upstream_api_key"] == "saved-provider-key"
+    audit_text = (tmp_path / "audit.jsonl").read_text(encoding="utf-8")
+    assert "configure_upstream_api_key" in audit_text
+    assert "saved-provider-key" not in audit_text
 
 
 def test_admin_audit_and_protected_values_never_return_raw_capabilities(tmp_path) -> None:

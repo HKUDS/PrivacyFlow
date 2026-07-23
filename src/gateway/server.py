@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import uuid
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
@@ -14,7 +16,8 @@ from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Redirect
 
 from gateway.admin_service import AdminNotFoundError, AdminService
 from gateway.audit_logger import AuditLogger
-from gateway.config import GatewayConfig, load_config
+from gateway.cli.launcher import LauncherConfigError, save_launcher_upstream_api_key
+from gateway.config import GatewayConfig, UpstreamConfig, load_config
 from gateway.detector_control import (
     DetectorConfigurationConflict,
     DetectorConfigurationNotFound,
@@ -142,6 +145,9 @@ def create_app(config: GatewayConfig | None = None, upstream_client: UpstreamCli
     response_scanner = ResponseScanner(redactor)
     sessions = SessionManager(cfg.database_path)
     upstream = upstream_client or UpstreamClient(cfg.upstream)
+    runtime_upstream_config = cfg.upstream
+    launcher_config_path_raw = os.getenv("APG_LAUNCHER_CONFIG_PATH", "").strip()
+    launcher_config_path = Path(launcher_config_path_raw) if launcher_config_path_raw else None
     audit = AuditLogger(cfg.audit_log_path, store)
     detector_state_path = str(Path(cfg.database_path).with_name("detector-control.json"))
 
@@ -152,6 +158,40 @@ def create_app(config: GatewayConfig | None = None, upstream_client: UpstreamCli
 
     detector_control = DetectorControlPlane(cfg.detectors_config, detector_state_path, apply_detector_manager)
     admin = AdminService(cfg, store, audit, detector_control)
+
+    def active_upstream_config() -> UpstreamConfig:
+        candidate = getattr(upstream, "config", None)
+        return candidate if isinstance(candidate, UpstreamConfig) else runtime_upstream_config
+
+    def update_upstream_api_key(api_key: str) -> UpstreamConfig:
+        nonlocal runtime_upstream_config
+        runtime_upstream_config = replace(active_upstream_config(), api_key=api_key)
+        update_config = getattr(upstream, "update_config", None)
+        if callable(update_config):
+            update_config(runtime_upstream_config)
+        return runtime_upstream_config
+
+    def upstream_configuration_info() -> dict[str, Any]:
+        active = active_upstream_config()
+        return {
+            "configured": bool(active.api_key.strip()),
+            "base_url": active.base_url,
+            "persistent": launcher_config_path is not None,
+        }
+
+    def upstream_not_configured_response(*, anthropic: bool = False) -> JSONResponse:
+        message = "Configure the upstream API key in the APG WebUI before sending Agent requests."
+        if anthropic:
+            payload: dict[str, Any] = {"type": "error", "error": {"type": "api_error", "message": message}}
+        else:
+            payload = {
+                "error": {
+                    "code": "APG_UPSTREAM_NOT_CONFIGURED",
+                    "retryable": False,
+                    "message": message,
+                }
+            }
+        return JSONResponse(payload, status_code=503)
 
     @asynccontextmanager
     async def lifespan(_: FastAPI):
@@ -224,6 +264,8 @@ def create_app(config: GatewayConfig | None = None, upstream_client: UpstreamCli
     async def proxy_json(endpoint: str, request: Request, authorization: str | None, x_apg_session_id: str | None, x_api_key: str | None = None) -> Response:
         request_id = f"req_{uuid.uuid4().hex[:12]}"
         session_id = authenticate(authorization, x_apg_session_id, x_api_key)
+        if not active_upstream_config().api_key.strip():
+            return upstream_not_configured_response()
         try:
             body: Any = await request.json()
         except Exception as exc:
@@ -651,6 +693,8 @@ def create_app(config: GatewayConfig | None = None, upstream_client: UpstreamCli
     async def anthropic_messages(request: Request, authorization: str | None, x_apg_session_id: str | None, x_api_key: str | None = None) -> Response:
         request_id = f"req_{uuid.uuid4().hex[:12]}"
         session_id = authenticate(authorization, x_apg_session_id, x_api_key)
+        if not active_upstream_config().api_key.strip():
+            return upstream_not_configured_response(anthropic=True)
         try:
             body: Any = await request.json()
         except Exception as exc:
@@ -747,6 +791,8 @@ def create_app(config: GatewayConfig | None = None, upstream_client: UpstreamCli
     async def models(authorization: str | None = Header(default=None), x_apg_session_id: str | None = Header(default=None), x_api_key: str | None = Header(default=None)) -> Response:
         request_id = f"req_{uuid.uuid4().hex[:12]}"
         session_id = authenticate(authorization, x_apg_session_id, x_api_key)
+        if not active_upstream_config().api_key.strip():
+            return upstream_not_configured_response()
         try:
             status, headers, body = await upstream.request_json("GET", "/v1/models")
         except httpx.HTTPError as exc:
@@ -822,7 +868,7 @@ def create_app(config: GatewayConfig | None = None, upstream_client: UpstreamCli
 
         @app.get("/ui/assets/{asset_name}", include_in_schema=False)
         async def webui_asset(asset_name: str) -> Response:
-            if asset_name not in {"app.js", "styles.css"}:
+            if asset_name not in {"app.js", "i18n.js", "styles.css"}:
                 raise HTTPException(status_code=404, detail="Asset not found")
             return FileResponse(webui_dir / asset_name, headers={"Cache-Control": "no-cache", "X-Content-Type-Options": "nosniff"})
 
@@ -841,6 +887,64 @@ def create_app(config: GatewayConfig | None = None, upstream_client: UpstreamCli
         ) -> Response:
             authenticate_admin(authorization, x_api_key)
             return JSONResponse(admin.connection_info(), headers={"Cache-Control": "no-store"})
+
+        @app.get("/api/admin/upstream-configuration")
+        async def admin_upstream_configuration(
+            authorization: str | None = Header(default=None),
+            x_api_key: str | None = Header(default=None),
+        ) -> Response:
+            authenticate_admin(authorization, x_api_key)
+            return JSONResponse(upstream_configuration_info(), headers={"Cache-Control": "no-store"})
+
+        @app.put("/api/admin/upstream-configuration")
+        async def update_admin_upstream_configuration(
+            request: Request,
+            authorization: str | None = Header(default=None),
+            x_api_key: str | None = Header(default=None),
+        ) -> Response:
+            authenticate_admin(authorization, x_api_key)
+            body = await admin_body(request)
+            api_key = body.get("api_key")
+            if not isinstance(api_key, str):
+                raise HTTPException(status_code=400, detail="Expected a string upstream API key")
+            try:
+                if launcher_config_path is not None:
+                    await asyncio.to_thread(save_launcher_upstream_api_key, launcher_config_path, api_key)
+                else:
+                    normalized = api_key.strip()
+                    if not normalized or len(normalized) > 4096:
+                        raise LauncherConfigError("The upstream API key must contain between 1 and 4096 characters.")
+                    if any(ord(char) < 32 or ord(char) == 127 for char in normalized):
+                        raise LauncherConfigError("The upstream API key contains unsupported control characters.")
+                active = update_upstream_api_key(api_key.strip())
+            except LauncherConfigError as exc:
+                raise HTTPException(status_code=400, detail=str(exc)) from exc
+            except OSError as exc:
+                audit.log(
+                    {
+                        "phase": "admin_action",
+                        "workspace_id": cfg.workspace_id,
+                        "action": "configure_upstream_api_key",
+                        "result_code": "PERSISTENCE_ERROR",
+                    }
+                )
+                raise HTTPException(status_code=500, detail="Could not securely persist the upstream API key") from exc
+            audit.log(
+                {
+                    "phase": "admin_action",
+                    "workspace_id": cfg.workspace_id,
+                    "action": "configure_upstream_api_key",
+                    "result_code": "OK",
+                }
+            )
+            return JSONResponse(
+                {
+                    "configured": bool(active.api_key),
+                    "base_url": active.base_url,
+                    "persistent": launcher_config_path is not None,
+                },
+                headers={"Cache-Control": "no-store"},
+            )
 
         @app.get("/api/admin/audit")
         async def admin_audit(

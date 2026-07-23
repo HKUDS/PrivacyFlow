@@ -49,11 +49,38 @@
           <h1 id="page-title">隐私运行概览</h1>
           <p class="page-subtitle" id="page-subtitle">最近 24 小时的网关活动</p>
         </div>
-        <button class="icon-button" type="button" id="refresh-button" title="刷新当前页面" aria-label="刷新当前页面">↻</button>
+        <div class="topbar-actions">
+          <div class="language-switch" role="group" aria-label="界面语言">
+            <button type="button" data-locale="zh" aria-pressed="false">中文</button>
+            <button type="button" data-locale="en" aria-pressed="false">EN</button>
+          </div>
+          <button class="icon-button" type="button" id="refresh-button" title="刷新当前页面" aria-label="刷新当前页面">↻</button>
+        </div>
       </header>
 
       <main class="main-content">
         <section class="view is-active" id="view-overview" aria-labelledby="page-title">
+          <section class="upstream-setup is-hidden" id="upstream-setup" aria-labelledby="upstream-setup-title">
+            <div class="upstream-setup-copy">
+              <div>
+                <p class="section-kicker">UPSTREAM CREDENTIAL</p>
+                <h2 id="upstream-setup-title">配置上游模型</h2>
+              </div>
+              <span class="configuration-status" id="upstream-status">未配置</span>
+              <p id="upstream-description">输入模型服务商的 API Key 后即可开始使用 Agent。密钥只保存在本机。</p>
+              <button class="secondary-button is-hidden" id="edit-upstream-key" type="button">更换 API Key</button>
+            </div>
+            <form class="upstream-key-form" id="upstream-key-form">
+              <label><span>上游 API Key</span><input class="mono" id="upstream-api-key" type="password" autocomplete="new-password" spellcheck="false" required maxlength="4096"></label>
+              <p class="upstream-target">发送至 <strong class="mono" id="upstream-base-url"></strong></p>
+              <p class="form-error" id="upstream-key-error" role="alert"></p>
+              <div class="upstream-form-actions">
+                <button class="secondary-button is-hidden" id="cancel-upstream-key" type="button">取消</button>
+                <button class="primary-button" id="save-upstream-key" type="submit">保存并启用</button>
+              </div>
+            </form>
+          </section>
+
           <section class="agent-access" aria-labelledby="agent-access-title">
             <div class="agent-access-heading">
               <div><p class="section-kicker">AGENT CONNECTION</p><h2 id="agent-access-title">Agent 接入</h2></div>
@@ -221,7 +248,13 @@
 
   <div class="login-overlay" id="login-overlay">
     <form class="login-panel" id="login-form">
-      <div class="login-brand"><span class="brand-mark" aria-hidden="true">A</span><strong>APG Control</strong></div>
+      <div class="login-heading-row">
+        <div class="login-brand"><span class="brand-mark" aria-hidden="true">A</span><strong>APG Control</strong></div>
+        <div class="language-switch" role="group" aria-label="界面语言">
+          <button type="button" data-locale="zh" aria-pressed="false">中文</button>
+          <button type="button" data-locale="en" aria-pressed="false">EN</button>
+        </div>
+      </div>
       <h1>连接本地隐私网关</h1>
       <label><span>管理员 API Key</span><input id="admin-key" type="password" autocomplete="current-password" required></label>
       <p class="form-error" id="login-error" role="alert"></p>
@@ -231,13 +264,13 @@
   </div>
 
   <dialog class="modal" id="detail-modal">
-    <div class="modal-header"><div><p class="section-kicker" id="modal-kicker">DETAIL</p><h2 id="modal-title">详情</h2></div><button class="icon-button" type="button" data-close-modal aria-label="关闭">×</button></div>
+    <div class="modal-header"><div><p class="section-kicker" id="modal-kicker">DETAIL</p><h2 id="modal-title">详情</h2></div><button class="icon-button" type="button" data-close-modal aria-label="关闭弹窗">×</button></div>
     <div class="modal-body" id="modal-body"></div>
   </dialog>
 
   <dialog class="modal configuration-modal" id="configuration-modal">
     <form id="configuration-form">
-      <div class="modal-header"><div><p class="section-kicker">DETECTOR CONFIGURATION</p><h2>新建检测器配置</h2></div><button class="icon-button" type="button" data-close-modal aria-label="关闭">×</button></div>
+      <div class="modal-header"><div><p class="section-kicker">DETECTOR CONFIGURATION</p><h2>新建检测器配置</h2></div><button class="icon-button" type="button" data-close-modal aria-label="关闭弹窗">×</button></div>
       <div class="modal-body form-grid">
         <label class="full-row"><span>配置名称</span><input name="name" maxlength="80" required></label>
         <label class="full-row"><span>基于</span><select name="source_id" id="configuration-source"></select></label>
@@ -249,7 +282,7 @@
 
   <dialog class="modal module-modal" id="module-modal">
     <form id="module-form">
-      <div class="modal-header"><div><p class="section-kicker">PIPELINE MODULE</p><h2 id="module-modal-title">编辑检测模块</h2></div><button class="icon-button" type="button" data-close-modal aria-label="关闭">×</button></div>
+      <div class="modal-header"><div><p class="section-kicker">PIPELINE MODULE</p><h2 id="module-modal-title">编辑检测模块</h2></div><button class="icon-button" type="button" data-close-modal aria-label="关闭弹窗">×</button></div>
       <div class="modal-body">
         <div class="form-grid module-common-fields">
           <label><span>模块名称</span><input name="name" maxlength="80" required></label>
@@ -270,12 +303,13 @@
   </dialog>
 
   <dialog class="modal confirm-modal" id="confirm-modal">
-    <div class="modal-header"><div><p class="section-kicker">CONFIRM ACTION</p><h2 id="confirm-title">确认操作</h2></div><button class="icon-button" type="button" data-close-modal aria-label="关闭">×</button></div>
+    <div class="modal-header"><div><p class="section-kicker">CONFIRM ACTION</p><h2 id="confirm-title">确认操作</h2></div><button class="icon-button" type="button" data-close-modal aria-label="关闭弹窗">×</button></div>
     <div class="modal-body"><p id="confirm-message"></p></div>
     <div class="modal-actions"><button class="secondary-button" type="button" data-close-modal>取消</button><button class="danger-button" type="button" id="confirm-action">确认</button></div>
   </dialog>
 
   <div class="toast" id="toast" role="status" aria-live="polite"></div>
+  <script src="/ui/assets/i18n.js" defer></script>
   <script src="/ui/assets/app.js" defer></script>
 </body>
 </html>

@@ -17,6 +17,9 @@ class UpstreamClient:
             return path.removeprefix("/v1")
         return path
 
+    def update_config(self, config: UpstreamConfig) -> None:
+        self.config = config
+
     async def request_json(self, method: str, path: str, payload: Any | None = None) -> tuple[int, dict[str, str], Any]:
         headers = {"Authorization": f"Bearer {self.config.api_key}", "Content-Type": "application/json"}
         upstream_path = self.upstream_path(path)

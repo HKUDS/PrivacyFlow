@@ -13,6 +13,8 @@ const state = {
   view: location.hash.replace("#", "") || "overview",
   loaded: new Set(),
   connection: null,
+  upstream: null,
+  upstreamEditing: false,
   connectionProtocol: "openai",
   audit: null,
   auditDirection: "replacement",
@@ -44,6 +46,12 @@ function init() {
   showView(PAGE_META[state.view] ? state.view : "overview", false);
   if (state.key) connect();
   else showLogin();
+  window.addEventListener("apg:localechange", () => {
+    syncVisibilityButtons();
+    showView(state.view, false);
+    state.loaded.clear();
+    if (state.key) loadView(state.view, true);
+  });
 }
 
 function bindNavigation() {
@@ -71,6 +79,18 @@ function bindActions() {
   $$('[data-copy-connection]').forEach((button) => button.addEventListener("click", () => copyConnectionValue(button.dataset.copyConnection)));
   $("#copy-claude-command").addEventListener("click", copyClaudeCodeCommand);
   $("#toggle-agent-key").addEventListener("click", toggleAgentKeyVisibility);
+  $("#upstream-key-form").addEventListener("submit", saveUpstreamApiKey);
+  $("#edit-upstream-key").addEventListener("click", () => {
+    state.upstreamEditing = true;
+    renderUpstreamConfiguration();
+    setTimeout(() => $("#upstream-api-key").focus(), 30);
+  });
+  $("#cancel-upstream-key").addEventListener("click", () => {
+    state.upstreamEditing = false;
+    $("#upstream-api-key").value = "";
+    $("#upstream-key-error").textContent = "";
+    renderUpstreamConfiguration();
+  });
   $("#audit-query").addEventListener("input", debounce(() => loadAudit().catch(handleError), 280));
   for (const id of ["audit-risk", "audit-endpoint"]) $("#" + id).addEventListener("change", () => loadAudit().catch(handleError));
   $$('[data-audit-direction]').forEach((button) => button.addEventListener("click", () => setAuditDirection(button.dataset.auditDirection)));
@@ -138,6 +158,8 @@ function logout() {
   resetRawVisibility();
   state.key = "";
   state.connection = null;
+  state.upstream = null;
+  state.upstreamEditing = false;
   state.loaded.clear();
   sessionStorage.removeItem("apg_admin_key");
   $("#admin-key").value = "";
@@ -146,6 +168,7 @@ function logout() {
   $("#agent-api-key").type = "password";
   setVisibilityButton($("#toggle-agent-key"), false, "显示 API Key", "隐藏 API Key");
   $("#copy-claude-command").disabled = true;
+  $("#upstream-api-key").value = "";
   showLogin();
   setConnected(false);
 }
@@ -192,9 +215,15 @@ async function api(path, options = {}) {
 }
 
 async function loadOverview() {
-  const [data, connection] = await Promise.all([api("/overview"), api("/connection")]);
+  const [data, connection, upstream] = await Promise.all([
+    api("/overview"),
+    api("/connection"),
+    api("/upstream-configuration"),
+  ]);
   state.connection = connection;
+  state.upstream = upstream;
   renderConnection();
+  renderUpstreamConfiguration();
   const metrics = [
     ["请求", data.metrics.requests_24h, "最近 24 小时", "accent-blue"],
     ["拦截", data.metrics.interceptions_24h, "敏感内容已替换或折叠", "accent-coral"],
@@ -211,6 +240,51 @@ async function loadOverview() {
     ["PII", system.pii_mode], ["Strict", system.strict_mode ? "On" : "Off"], ["管理面板", system.local_only ? "仅本机" : "远程绑定"],
   ].map(([label, value]) => `<span class="system-item">${escapeHtml(label)}<strong>${escapeHtml(value)}</strong></span>`).join("");
   state.loaded.add("overview");
+}
+
+function renderUpstreamConfiguration() {
+  if (!state.upstream) return;
+  const configured = Boolean(state.upstream.configured);
+  const editing = !configured || state.upstreamEditing;
+  const setup = $("#upstream-setup");
+  setup.classList.remove("is-hidden");
+  setup.classList.toggle("needs-setup", !configured);
+  $("#upstream-status").textContent = configured ? "已配置" : "需要配置";
+  $("#upstream-status").classList.toggle("is-active", configured);
+  $("#upstream-description").textContent = configured
+    ? "上游凭据已生效。APG 不会通过管理接口回显已保存的密钥。"
+    : "输入模型服务商的 API Key 后即可开始使用 Agent。密钥只保存在本机。";
+  $("#upstream-base-url").textContent = state.upstream.base_url || "未指定上游";
+  $("#upstream-key-form").classList.toggle("is-hidden", !editing);
+  $("#edit-upstream-key").classList.toggle("is-hidden", !configured || editing);
+  $("#cancel-upstream-key").classList.toggle("is-hidden", !configured);
+}
+
+async function saveUpstreamApiKey(event) {
+  event.preventDefault();
+  const input = $("#upstream-api-key");
+  const apiKey = input.value.trim();
+  if (!apiKey) {
+    $("#upstream-key-error").textContent = "请输入上游 API Key。";
+    return;
+  }
+  const button = $("#save-upstream-key");
+  button.disabled = true;
+  $("#upstream-key-error").textContent = "";
+  try {
+    state.upstream = await api("/upstream-configuration", {
+      method: "PUT",
+      body: JSON.stringify({api_key: apiKey}),
+    });
+    input.value = "";
+    state.upstreamEditing = false;
+    renderUpstreamConfiguration();
+    toast(state.upstream.persistent ? "上游 API Key 已安全保存并启用" : "上游 API Key 已在当前进程中启用");
+  } catch (error) {
+    $("#upstream-key-error").textContent = error.message || "保存失败。";
+  } finally {
+    button.disabled = false;
+  }
 }
 
 function setConnectionProtocol(protocol) {
@@ -317,7 +391,7 @@ function renderTrend(trend) {
   const max = Math.max(1, ...trend.map((item) => item.count));
   $("#trend-chart").innerHTML = trend.map((item) => {
     const date = new Date(item.day + "T00:00:00");
-    const label = new Intl.DateTimeFormat("zh-CN", {weekday: "short"}).format(date);
+    const label = new Intl.DateTimeFormat(displayLocale(), {weekday: "short"}).format(date);
     const heightClass = item.count ? Math.max(1, Math.ceil(item.count / max * 10)) : 0;
     return `<div class="bar-column"><strong>${formatNumber(item.count)}</strong><div class="bar bar-h-${heightClass}"></div><span>${escapeHtml(label)}</span></div>`;
   }).join("");
@@ -1164,15 +1238,16 @@ function valueStateLabel(value) {
 }
 
 function stateLabel(value) { return ({active: "活跃", expired: "已过期", revoked: "已撤销"})[value] || value; }
-function formatNumber(value) { return new Intl.NumberFormat("zh-CN").format(Number(value || 0)); }
-function formatTime(timestamp) { return timestamp ? new Intl.DateTimeFormat("zh-CN", {hour: "2-digit", minute: "2-digit"}).format(new Date(timestamp * 1000)) : "-"; }
-function formatDateTime(timestamp) { return timestamp ? new Intl.DateTimeFormat("zh-CN", {month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", second: "2-digit"}).format(new Date(timestamp * 1000)) : "-"; }
+function displayLocale() { return window.APG_I18N?.locale === "en" ? "en-US" : "zh-CN"; }
+function formatNumber(value) { return new Intl.NumberFormat(displayLocale()).format(Number(value || 0)); }
+function formatTime(timestamp) { return timestamp ? new Intl.DateTimeFormat(displayLocale(), {hour: "2-digit", minute: "2-digit"}).format(new Date(timestamp * 1000)) : "-"; }
+function formatDateTime(timestamp) { return timestamp ? new Intl.DateTimeFormat(displayLocale(), {month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", second: "2-digit"}).format(new Date(timestamp * 1000)) : "-"; }
 function formatRelative(timestamp) {
   if (!timestamp) return "-";
   const seconds = timestamp - Date.now() / 1000;
   const abs = Math.abs(seconds);
   const [amount, unit] = abs < 60 ? [Math.round(seconds), "second"] : abs < 3600 ? [Math.round(seconds / 60), "minute"] : abs < 86400 ? [Math.round(seconds / 3600), "hour"] : [Math.round(seconds / 86400), "day"];
-  return new Intl.RelativeTimeFormat("zh-CN", {numeric: "auto"}).format(amount, unit);
+  return new Intl.RelativeTimeFormat(displayLocale(), {numeric: "auto"}).format(amount, unit);
 }
 
 function toast(message, error = false) {

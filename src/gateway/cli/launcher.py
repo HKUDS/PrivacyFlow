@@ -1,13 +1,11 @@
 from __future__ import annotations
 
 import argparse
-import getpass
 import json
 import os
 import secrets
-import sys
 import tempfile
-from collections.abc import Callable, Mapping, MutableMapping, Sequence
+from collections.abc import Mapping, MutableMapping, Sequence
 from pathlib import Path
 from typing import Any
 
@@ -37,6 +35,8 @@ def main(argv: Sequence[str] | None = None) -> None:
     print("Agent Privacy Gateway")
     print(f"WebUI: http://{host}:{port}/ui/")
     print(f"Admin key: {admin_key}")
+    if not config["_resolved_upstream_api_key"]:
+        print("Upstream API key: not configured (finish setup in the WebUI).")
     print("Press Ctrl+C to stop.")
 
     from gateway.server import main as server_main
@@ -48,8 +48,6 @@ def prepare_launcher_config(
     path: Path,
     *,
     environ: Mapping[str, str] | None = None,
-    prompt: Callable[[str], str] = getpass.getpass,
-    interactive: bool | None = None,
 ) -> dict[str, Any]:
     environment = os.environ if environ is None else environ
     config = _read_launcher_config(path)
@@ -72,19 +70,9 @@ def prepare_launcher_config(
         changed = True
 
     provider_key = environment.get("APG_UPSTREAM_API_KEY", "").strip() or str(config.get("upstream_api_key", "")).strip()
-    if not provider_key:
-        can_prompt = sys.stdin.isatty() if interactive is None else interactive
-        if not can_prompt:
-            raise LauncherConfigError(
-                "No upstream API key configured. Run ./apg in a terminal once, or set APG_UPSTREAM_API_KEY."
-            )
-        provider_key = prompt("DeepSeek API key (stored only in .apg/launcher.json): ").strip()
-        if not provider_key:
-            raise LauncherConfigError("An upstream API key is required.")
-        config["upstream_api_key"] = provider_key
-        changed = True
 
     config["_resolved_upstream_api_key"] = provider_key
+    config["_launcher_config_path"] = str(path.resolve())
     if changed:
         _write_launcher_config(path, {key: value for key, value in config.items() if not key.startswith("_")})
     return config
@@ -103,9 +91,21 @@ def apply_launcher_environment(
         "APG_LOCAL_API_KEYS": str(config["local_api_key"]),
         "APG_ADMIN_API_KEYS": str(config["admin_api_key"]),
         "APG_SIGNING_SECRET": str(config["signing_secret"]),
+        "APG_LAUNCHER_CONFIG_PATH": str(config["_launcher_config_path"]),
     }
     for key, value in defaults.items():
         environment.setdefault(key, value)
+
+
+def save_launcher_upstream_api_key(path: Path, api_key: str) -> None:
+    normalized = api_key.strip()
+    if not normalized or len(normalized) > 4096:
+        raise LauncherConfigError("The upstream API key must contain between 1 and 4096 characters.")
+    if any(ord(char) < 32 or ord(char) == 127 for char in normalized):
+        raise LauncherConfigError("The upstream API key contains unsupported control characters.")
+    config = _read_launcher_config(path)
+    config["upstream_api_key"] = normalized
+    _write_launcher_config(path, config)
 
 
 def _read_launcher_config(path: Path) -> dict[str, Any]:

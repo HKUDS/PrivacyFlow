@@ -2,6 +2,12 @@
 
 APG serves a zero-build management panel at `/ui/`. It is designed for repeated local operations rather than provider traffic and uses the authenticated `/api/admin/*` control plane.
 
+## Language
+
+The WebUI supports Chinese and English. The language switch is available on both the sign-in panel and the authenticated control plane, and updates static labels, dynamically rendered tables, detector diagnostics, forms, and dialogs without reloading the page. The initial locale follows the browser language; later choices are stored under `apg_locale` in browser `localStorage`.
+
+The locale preference contains no credential or gateway data. Authentication remains in `sessionStorage`, while the CLI and launcher output remain English-only.
+
 ## Security Boundary
 
 The authenticated overview can return one configured local Agent credential from `APG_LOCAL_API_KEYS` so it can be copied into an Agent client. This is an APG-local access key, not the upstream provider key. Ordinary control-plane summaries do not return:
@@ -11,6 +17,8 @@ The authenticated overview can return one configured local Agent credential from
 - Mapping fingerprints
 - Provider API keys
 - Full APG session ids
+
+The first-run upstream-configuration endpoint is the deliberate provider-key write path. It accepts a key over the administrator-authenticated local control plane, atomically writes it to `.apg/launcher.json` with mode `0600`, hot-applies it to the running upstream client, clears the browser input, and returns only configured status and the non-secret upstream URL. It never echoes or audits the key.
 
 Protected values are identified by an HMAC-derived `pv_...` administration id. The id supports revocation but cannot be used for placeholder materialization. Revocation tombstones the mapping and clears its stored raw value.
 
@@ -30,7 +38,9 @@ APG binds to `127.0.0.1` by default. If the gateway is deliberately bound to ano
 
 ### Overview
 
-The dashboard provides an Agent connection strip above the metrics. It switches between the OpenAI-compatible and Anthropic base URLs, keeps the local Agent API key masked by default, and copies either value with one action. An eye icon temporarily reveals the local key. A separate Claude Code action copies a multiline shell environment block containing the local Anthropic URL and local Agent key, DeepSeek `deepseek-v4-pro[1m]` defaults for 1M-context primary work, DeepSeek v4 Flash defaults for Haiku and subagents, and maximum effort. It does not append a `claude` invocation, so users can apply their preferred Claude Code settings and startup command separately. The rest of the view summarizes the latest audit window: requests, interceptions, local tool-argument materializations, active protected values, seven-day activity, and risk distribution. The upstream is represented by hostname only.
+When the launcher has no provider credential, the dashboard opens an upstream API-key setup form before the Agent connection strip. Saving persists the key locally and enables the current process without a restart; subsequent loads show only configured status and an explicit replace action. The key input is never stored by the browser or returned by APG.
+
+The Agent connection strip switches between the OpenAI-compatible and Anthropic base URLs, keeps the local Agent API key masked by default, and copies either value with one action. An eye icon temporarily reveals the local key. A separate Claude Code action copies a multiline shell environment block containing the local Anthropic URL and local Agent key, DeepSeek `deepseek-v4-pro[1m]` defaults for 1M-context primary work, DeepSeek v4 Flash defaults for Haiku and subagents, and maximum effort. It does not append a `claude` invocation, so users can apply their preferred Claude Code settings and startup command separately. The rest of the view summarizes the latest audit window: requests, interceptions, local tool-argument materializations, active protected values, seven-day activity, and risk distribution. The upstream is represented by hostname only.
 
 ### Audit
 
@@ -65,6 +75,8 @@ The APG core guard is enabled by default. Disabling it requires explicit confirm
 | --- | --- | --- |
 | `GET` | `/api/admin/overview` | Safe dashboard summary |
 | `GET` | `/api/admin/connection` | One local Agent API key and protocol base paths |
+| `GET` | `/api/admin/upstream-configuration` | Provider-key configured status and safe upstream metadata |
+| `PUT` | `/api/admin/upstream-configuration` | Persist and hot-apply a replacement provider API key without echoing it |
 | `GET` | `/api/admin/audit` | Filtered audit events |
 | `GET` | `/api/admin/audit/operations` | Separate replacement or materialization operation list; optional administrator-only `include_raw=true` |
 | `GET` | `/api/admin/audit/requests` | Request-level replacement/materialization summaries |

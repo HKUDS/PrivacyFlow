@@ -21,7 +21,7 @@ APG uses signed placeholders, scoped mappings, session identity, configurable lo
 - `POST /v1/messages` (Anthropic/Claude Code compatibility)
 - `GET /v1/models`
 - `POST /v1/responses` non-streaming and statefully scanned streaming support
-- Local management WebUI at `/ui/` with audit, protected-value, and detector views
+- Bilingual local management WebUI at `/ui/` with Chinese/English switching, audit, protected-value, and detector views
 - Recursive scanning of any JSON string field
 - Rule-based detectors for common API keys, JWTs, private keys, database URLs, bearer tokens, env secrets, emails, phones, credit cards, and high-confidence local paths
 - Signed APG placeholders using HMAC
@@ -62,7 +62,9 @@ For the normal local workflow, no environment setup is required. Start APG with:
 ./apg
 ```
 
-The first run securely asks for the DeepSeek API key, stores it in the ignored `.apg/launcher.json` with mode `0600`, generates a persistent signing secret, and prints the WebUI address and local administrator key. Later runs use the same `./apg` command.
+The first run starts immediately without asking for a provider credential. Open the printed WebUI address, sign in with the printed local administrator key, and enter the upstream API key in the first-run setup panel. APG atomically stores it in the ignored `.apg/launcher.json` with mode `0600` and applies it to the running gateway without a restart. The launcher also generates and reuses a persistent signing secret.
+
+The launcher and command-line output are English-only. The WebUI supports Chinese and English, can be switched before or after sign-in, and remembers only the selected locale in browser `localStorage`.
 
 The environment variables below override launcher values for advanced deployments and CI.
 
@@ -113,12 +115,13 @@ Open the local management panel at [http://127.0.0.1:8765/ui/](http://127.0.0.1:
 
 The WebUI is an operational control plane for the local gateway:
 
-- **Overview:** one-click OpenAI/Anthropic Base URL and local Agent API-key copy, plus a ready-to-paste Claude Code launch block using DeepSeek v4 Pro's `[1m]` context variant. The launch excludes user-level Claude settings so they cannot silently replace APG's local endpoint.
+- **Language:** switch between Chinese and English before or after authentication; static labels, dynamic tables, detector diagnostics, forms, and dialogs update without a page reload.
+- **Overview:** first-run upstream API-key setup, one-click OpenAI/Anthropic Base URL and local Agent API-key copy, plus a ready-to-paste Claude Code environment block using DeepSeek v4 Pro's `[1m]` context variant. The copied block does not launch Claude Code or select its settings sources.
 - **Audit:** inspect separate operation-level replacement and materialization lists, with the exact transformation shown in every row and filters for risk, endpoint, or request metadata.
 - **Protected values:** inspect type, scope, state, and retention; keep mappings indefinitely by default, optionally reveal active originals with a confirmed eye control, configure idle clearing, or revoke an active mapping.
 - **Detector configurations:** select a read-only content template or a user configuration, edit and reorder typed modules, atomically activate a validated revision, and dry-run any saved configuration locally.
 
-The ordinary management APIs and `.apg/audit.jsonl` never return or persist raw mapped values, complete APG placeholders, internal handles, fingerprints, provider API keys, or full session ids. The administrator-only operation-list, request-detail, and protected-value APIs are the narrow exceptions: `include_raw=true` may temporarily read an original from a still-active mapping, while audit operation APIs also reconstruct the exact placeholder or path alias used. The WebUI keeps every eye control off by default, requires confirmation, never persists the choice, and clears rendered raw values when disabled, reloaded, logged out, expired, or revoked. Each raw read creates only a content-free administrator audit event. Raw mapping values remain in the mode-`0600` SQLite database until explicitly revoked unless the administrator enables idle-time automatic clearing. Protected-value actions use the same HMAC-derived `pv_...` id in replacement and materialization rows. WebUI detector changes are written to the version 2 `detector-control.json` beside the SQLite database with mode `0600`. Saving an active configuration validates, compiles, persists, and atomically swaps the pipeline; a failed build leaves the previous pipeline running.
+Management responses and `.apg/audit.jsonl` never return or record provider API keys, raw mapped values, complete APG placeholders, internal handles, fingerprints, or full session ids. The upstream-configuration endpoint deliberately accepts a new provider key, writes it only to the mode-`0600` launcher configuration, and returns status metadata without echoing the key. The administrator-only operation-list, request-detail, and protected-value APIs are the narrow raw-mapping exceptions: `include_raw=true` may temporarily read an original from a still-active mapping, while audit operation APIs also reconstruct the exact placeholder or path alias used. The WebUI keeps every eye control off by default, requires confirmation, never persists the choice, and clears rendered raw values when disabled, reloaded, logged out, expired, or revoked. Each raw read creates only a content-free administrator audit event. Raw mapping values remain in the mode-`0600` SQLite database until explicitly revoked unless the administrator enables idle-time automatic clearing. Protected-value actions use the same HMAC-derived `pv_...` id in replacement and materialization rows. WebUI detector changes are written to the version 2 of `detector-control.json` beside the SQLite database with mode `0600`. Saving an active configuration validates, compiles, persists, and atomically swaps the pipeline; a failed build leaves the previous pipeline running.
 
 The panel is enabled by default because APG binds to loopback by default. Set `APG_ADMIN_ENABLED=false` to remove the UI and all `/api/admin/*` routes. Do not expose the panel over an untrusted network without HTTPS and an independent administrator key. See [docs/webui.md](/Users/howard/Documents/code/Agent-Privacy-Gateway/docs/webui.md) for the API and security model.
 

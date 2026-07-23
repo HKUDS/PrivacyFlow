@@ -7,7 +7,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from gateway.audit_logger import AuditLogger
-from gateway.config import GatewayConfig
+from gateway.config import GatewayConfig, UpstreamConfig
 from gateway.detector_manager import DetectorManager
 from gateway.mapping_store import MappingStore
 from gateway.placeholder_parser import PlaceholderSigner
@@ -45,6 +45,7 @@ def test_api_returns_safe_403_for_cross_key_session(tmp_path) -> None:
         audit_log_path=str(tmp_path / "audit.jsonl"),
         signing_secret="secret",
         local_api_keys={"key-a", "key-b"},
+        upstream=UpstreamConfig(api_key="provider-key"),
     )
     client = TestClient(create_app(cfg, EmptyUpstream()))
     first = client.post("/v1/chat/completions", headers={"Authorization": "Bearer key-a"}, json={"messages": [{"content": "hello"}]})
