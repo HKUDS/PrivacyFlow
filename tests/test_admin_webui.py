@@ -118,6 +118,8 @@ def test_webui_assets_and_admin_auth_are_separated(tmp_path) -> None:
         assert "copy-claude-command" in page.text
         assert "复制接入命令" in page.text
         assert "配置上游模型" in page.text
+        assert "upstream-base-url-input" in page.text
+        assert "OpenAI-compatible" in page.text
         assert 'api("/upstream-configuration"' in app_js.text
         assert 'data-locale="zh"' in page.text
         assert 'data-locale="en"' in page.text
@@ -176,6 +178,7 @@ def test_webui_can_persist_and_hot_apply_first_run_upstream_key(tmp_path, monkey
         assert status.json() == {
             "configured": False,
             "base_url": "https://api.deepseek.com",
+            "protocol": "openai",
             "persistent": True,
         }
         assert "api_key" not in status.text
@@ -188,18 +191,35 @@ def test_webui_can_persist_and_hot_apply_first_run_upstream_key(tmp_path, monkey
         assert unavailable.status_code == 503
         assert unavailable.json()["error"]["code"] == "APG_UPSTREAM_NOT_CONFIGURED"
 
-        assert client.put(
-            "/api/admin/upstream-configuration",
-            headers={"Authorization": "Bearer agent-key"},
-            json={"api_key": "saved-provider-key"},
-        ).status_code == 401
-        configured = client.put(
+        missing_url = client.put(
             "/api/admin/upstream-configuration",
             headers=_admin_headers(),
             json={"api_key": "saved-provider-key"},
         )
+        assert missing_url.status_code == 400
+
+        invalid_url = client.put(
+            "/api/admin/upstream-configuration",
+            headers=_admin_headers(),
+            json={"base_url": "https://user:password@new.example/v1", "api_key": "saved-provider-key"},
+        )
+        assert invalid_url.status_code == 400
+        assert "upstream_api_key" not in launcher_path.read_text(encoding="utf-8")
+
+        assert client.put(
+            "/api/admin/upstream-configuration",
+            headers={"Authorization": "Bearer agent-key"},
+            json={"base_url": "https://new.example/v1", "api_key": "saved-provider-key"},
+        ).status_code == 401
+        configured = client.put(
+            "/api/admin/upstream-configuration",
+            headers=_admin_headers(),
+            json={"base_url": "https://new.example/v1/", "api_key": "saved-provider-key"},
+        )
         assert configured.status_code == 200
         assert configured.json()["configured"] is True
+        assert configured.json()["base_url"] == "https://new.example/v1"
+        assert configured.json()["protocol"] == "openai"
         assert "saved-provider-key" not in configured.text
 
         response = client.post(
@@ -210,9 +230,11 @@ def test_webui_can_persist_and_hot_apply_first_run_upstream_key(tmp_path, monkey
         assert response.status_code == 200
 
     assert os.stat(launcher_path).st_mode & 0o777 == 0o600
-    assert json.loads(launcher_path.read_text(encoding="utf-8"))["upstream_api_key"] == "saved-provider-key"
+    stored_launcher = json.loads(launcher_path.read_text(encoding="utf-8"))
+    assert stored_launcher["upstream_base_url"] == "https://new.example/v1"
+    assert stored_launcher["upstream_api_key"] == "saved-provider-key"
     audit_text = (tmp_path / "audit.jsonl").read_text(encoding="utf-8")
-    assert "configure_upstream_api_key" in audit_text
+    assert "configure_upstream_connection" in audit_text
     assert "saved-provider-key" not in audit_text
 
 

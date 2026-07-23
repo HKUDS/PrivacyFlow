@@ -18,7 +18,7 @@ The authenticated overview can return one configured local Agent credential from
 - Provider API keys
 - Full APG session ids
 
-The first-run upstream-configuration endpoint is the deliberate provider-key write path. It accepts a key over the administrator-authenticated local control plane, atomically writes it to `.apg/launcher.json` with mode `0600`, hot-applies it to the running upstream client, clears the browser input, and returns only configured status and the non-secret upstream URL. It never echoes or audits the key.
+The first-run upstream-configuration endpoint is the deliberate provider-connection write path. It accepts a Base URL and API key over the administrator-authenticated local control plane, validates the URL, atomically writes both to `.apg/launcher.json` with mode `0600`, hot-applies them to the running upstream client, clears the browser key input, and returns only configured status, protocol metadata, and the non-secret upstream URL. It never echoes or audits the key.
 
 Protected values are identified by an HMAC-derived `pv_...` administration id. The id supports revocation but cannot be used for placeholder materialization. Revocation tombstones the mapping and clears its stored raw value.
 
@@ -38,7 +38,9 @@ APG binds to `127.0.0.1` by default. If the gateway is deliberately bound to ano
 
 ### Overview
 
-When the launcher has no provider credential, the dashboard opens an upstream API-key setup form before the Agent connection strip. Saving persists the key locally and enables the current process without a restart; subsequent loads show only configured status and an explicit replace action. The key input is never stored by the browser or returned by APG.
+When the launcher has no complete provider connection, the dashboard opens an upstream Base URL and API-key setup form before the Agent connection strip. Saving persists both locally and enables the current process without a restart; subsequent loads show the configured Base URL, protocol, status, and an explicit change action. The key input is never stored by the browser or returned by APG.
+
+The upstream transport is currently OpenAI-compatible. The Agent connection strip separately exposes OpenAI and Anthropic local entrypoints; Anthropic Agent requests are converted inside APG before reaching the OpenAI-compatible upstream. APG does not infer or silently change the upstream protocol from the Base URL. Provider-specific suffixes such as `/anthropic` can be suggestive, but generic gateways, self-hosted proxies, and custom routes make URL-only detection unreliable.
 
 The Agent connection strip switches between the OpenAI-compatible and Anthropic base URLs, keeps the local Agent API key masked by default, and copies either value with one action. An eye icon temporarily reveals the local key. A separate Claude Code action copies a multiline shell environment block containing the local Anthropic URL and local Agent key, DeepSeek `deepseek-v4-pro[1m]` defaults for 1M-context primary work, DeepSeek v4 Flash defaults for Haiku and subagents, and maximum effort. It does not append a `claude` invocation, so users can apply their preferred Claude Code settings and startup command separately. The rest of the view summarizes the latest audit window: requests, interceptions, local tool-argument materializations, active protected values, seven-day activity, and risk distribution. The upstream is represented by hostname only.
 
@@ -76,7 +78,7 @@ The APG core guard is enabled by default. Disabling it requires explicit confirm
 | `GET` | `/api/admin/overview` | Safe dashboard summary |
 | `GET` | `/api/admin/connection` | One local Agent API key and protocol base paths |
 | `GET` | `/api/admin/upstream-configuration` | Provider-key configured status and safe upstream metadata |
-| `PUT` | `/api/admin/upstream-configuration` | Persist and hot-apply a replacement provider API key without echoing it |
+| `PUT` | `/api/admin/upstream-configuration` | Validate, persist, and hot-apply an upstream Base URL and provider API key without echoing the key |
 | `GET` | `/api/admin/audit` | Filtered audit events |
 | `GET` | `/api/admin/audit/operations` | Separate replacement or materialization operation list; optional administrator-only `include_raw=true` |
 | `GET` | `/api/admin/audit/requests` | Request-level replacement/materialization summaries |

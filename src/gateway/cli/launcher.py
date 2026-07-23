@@ -8,6 +8,7 @@ import tempfile
 from collections.abc import Mapping, MutableMapping, Sequence
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlparse
 
 
 DEFAULT_LAUNCHER_PATH = Path(".apg/launcher.json")
@@ -35,8 +36,8 @@ def main(argv: Sequence[str] | None = None) -> None:
     print("Agent Privacy Gateway")
     print(f"WebUI: http://{host}:{port}/ui/")
     print(f"Admin key: {admin_key}")
-    if not config["_resolved_upstream_api_key"]:
-        print("Upstream API key: not configured (finish setup in the WebUI).")
+    if not config["_resolved_upstream_base_url"] or not config["_resolved_upstream_api_key"]:
+        print("Upstream connection: not configured (finish setup in the WebUI).")
     print("Press Ctrl+C to stop.")
 
     from gateway.server import main as server_main
@@ -62,16 +63,18 @@ def prepare_launcher_config(
     if not config.get("admin_api_key"):
         config["admin_api_key"] = config["local_api_key"]
         changed = True
-    if not config.get("upstream_base_url"):
-        config["upstream_base_url"] = "https://api.deepseek.com"
+    if "upstream_base_url" not in config:
+        config["upstream_base_url"] = ""
         changed = True
     if "strip_local_v1" not in config:
         config["strip_local_v1"] = True
         changed = True
 
     provider_key = environment.get("APG_UPSTREAM_API_KEY", "").strip() or str(config.get("upstream_api_key", "")).strip()
+    provider_base_url = environment.get("APG_UPSTREAM_BASE_URL", "").strip() or str(config.get("upstream_base_url", "")).strip()
 
     config["_resolved_upstream_api_key"] = provider_key
+    config["_resolved_upstream_base_url"] = provider_base_url.rstrip("/")
     config["_launcher_config_path"] = str(path.resolve())
     if changed:
         _write_launcher_config(path, {key: value for key, value in config.items() if not key.startswith("_")})
@@ -85,7 +88,7 @@ def apply_launcher_environment(
 ) -> None:
     environment = os.environ if environ is None else environ
     defaults = {
-        "APG_UPSTREAM_BASE_URL": str(config["upstream_base_url"]),
+        "APG_UPSTREAM_BASE_URL": str(config["_resolved_upstream_base_url"]),
         "APG_UPSTREAM_API_KEY": str(config["_resolved_upstream_api_key"]),
         "APG_UPSTREAM_STRIP_LOCAL_V1": "true" if config.get("strip_local_v1", True) else "false",
         "APG_LOCAL_API_KEYS": str(config["local_api_key"]),
@@ -98,14 +101,43 @@ def apply_launcher_environment(
 
 
 def save_launcher_upstream_api_key(path: Path, api_key: str) -> None:
+    config = _read_launcher_config(path)
+    save_launcher_upstream_configuration(path, str(config.get("upstream_base_url", "")), api_key)
+
+
+def save_launcher_upstream_configuration(path: Path, base_url: str, api_key: str) -> tuple[str, str]:
+    normalized_base_url = normalize_upstream_base_url(base_url)
     normalized = api_key.strip()
     if not normalized or len(normalized) > 4096:
         raise LauncherConfigError("The upstream API key must contain between 1 and 4096 characters.")
     if any(ord(char) < 32 or ord(char) == 127 for char in normalized):
         raise LauncherConfigError("The upstream API key contains unsupported control characters.")
     config = _read_launcher_config(path)
+    config["upstream_base_url"] = normalized_base_url
     config["upstream_api_key"] = normalized
     _write_launcher_config(path, config)
+    return normalized_base_url, normalized
+
+
+def normalize_upstream_base_url(base_url: str) -> str:
+    normalized = base_url.strip().rstrip("/")
+    if not normalized or len(normalized) > 2048:
+        raise LauncherConfigError("The upstream Base URL must contain between 1 and 2048 characters.")
+    if any(ord(char) < 32 or ord(char) == 127 for char in normalized):
+        raise LauncherConfigError("The upstream Base URL contains unsupported control characters.")
+    try:
+        parsed = urlparse(normalized)
+        hostname = parsed.hostname
+        parsed.port
+    except ValueError as exc:
+        raise LauncherConfigError("The upstream Base URL is malformed.") from exc
+    if parsed.scheme not in {"http", "https"} or not hostname or any(char.isspace() for char in hostname):
+        raise LauncherConfigError("The upstream Base URL must be an absolute HTTP or HTTPS URL.")
+    if parsed.username is not None or parsed.password is not None:
+        raise LauncherConfigError("The upstream Base URL must not contain embedded credentials.")
+    if parsed.query or parsed.fragment:
+        raise LauncherConfigError("The upstream Base URL must not contain a query string or fragment.")
+    return normalized
 
 
 def _read_launcher_config(path: Path) -> dict[str, Any]:

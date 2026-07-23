@@ -16,7 +16,11 @@ from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Redirect
 
 from gateway.admin_service import AdminNotFoundError, AdminService
 from gateway.audit_logger import AuditLogger
-from gateway.cli.launcher import LauncherConfigError, save_launcher_upstream_api_key
+from gateway.cli.launcher import (
+    LauncherConfigError,
+    normalize_upstream_base_url,
+    save_launcher_upstream_configuration,
+)
 from gateway.config import GatewayConfig, UpstreamConfig, load_config
 from gateway.detector_control import (
     DetectorConfigurationConflict,
@@ -163,9 +167,9 @@ def create_app(config: GatewayConfig | None = None, upstream_client: UpstreamCli
         candidate = getattr(upstream, "config", None)
         return candidate if isinstance(candidate, UpstreamConfig) else runtime_upstream_config
 
-    def update_upstream_api_key(api_key: str) -> UpstreamConfig:
+    def update_upstream_configuration(base_url: str, api_key: str) -> UpstreamConfig:
         nonlocal runtime_upstream_config
-        runtime_upstream_config = replace(active_upstream_config(), api_key=api_key)
+        runtime_upstream_config = replace(active_upstream_config(), base_url=base_url, api_key=api_key)
         update_config = getattr(upstream, "update_config", None)
         if callable(update_config):
             update_config(runtime_upstream_config)
@@ -174,13 +178,18 @@ def create_app(config: GatewayConfig | None = None, upstream_client: UpstreamCli
     def upstream_configuration_info() -> dict[str, Any]:
         active = active_upstream_config()
         return {
-            "configured": bool(active.api_key.strip()),
+            "configured": bool(active.base_url.strip() and active.api_key.strip()),
             "base_url": active.base_url,
+            "protocol": "openai",
             "persistent": launcher_config_path is not None,
         }
 
+    def upstream_is_configured() -> bool:
+        active = active_upstream_config()
+        return bool(active.base_url.strip() and active.api_key.strip())
+
     def upstream_not_configured_response(*, anthropic: bool = False) -> JSONResponse:
-        message = "Configure the upstream API key in the APG WebUI before sending Agent requests."
+        message = "Configure the upstream Base URL and API key in the APG WebUI before sending Agent requests."
         if anthropic:
             payload: dict[str, Any] = {"type": "error", "error": {"type": "api_error", "message": message}}
         else:
@@ -264,7 +273,7 @@ def create_app(config: GatewayConfig | None = None, upstream_client: UpstreamCli
     async def proxy_json(endpoint: str, request: Request, authorization: str | None, x_apg_session_id: str | None, x_api_key: str | None = None) -> Response:
         request_id = f"req_{uuid.uuid4().hex[:12]}"
         session_id = authenticate(authorization, x_apg_session_id, x_api_key)
-        if not active_upstream_config().api_key.strip():
+        if not upstream_is_configured():
             return upstream_not_configured_response()
         try:
             body: Any = await request.json()
@@ -693,7 +702,7 @@ def create_app(config: GatewayConfig | None = None, upstream_client: UpstreamCli
     async def anthropic_messages(request: Request, authorization: str | None, x_apg_session_id: str | None, x_api_key: str | None = None) -> Response:
         request_id = f"req_{uuid.uuid4().hex[:12]}"
         session_id = authenticate(authorization, x_apg_session_id, x_api_key)
-        if not active_upstream_config().api_key.strip():
+        if not upstream_is_configured():
             return upstream_not_configured_response(anthropic=True)
         try:
             body: Any = await request.json()
@@ -791,7 +800,7 @@ def create_app(config: GatewayConfig | None = None, upstream_client: UpstreamCli
     async def models(authorization: str | None = Header(default=None), x_apg_session_id: str | None = Header(default=None), x_api_key: str | None = Header(default=None)) -> Response:
         request_id = f"req_{uuid.uuid4().hex[:12]}"
         session_id = authenticate(authorization, x_apg_session_id, x_api_key)
-        if not active_upstream_config().api_key.strip():
+        if not upstream_is_configured():
             return upstream_not_configured_response()
         try:
             status, headers, body = await upstream.request_json("GET", "/v1/models")
@@ -904,19 +913,28 @@ def create_app(config: GatewayConfig | None = None, upstream_client: UpstreamCli
         ) -> Response:
             authenticate_admin(authorization, x_api_key)
             body = await admin_body(request)
+            base_url = body.get("base_url")
             api_key = body.get("api_key")
+            if not isinstance(base_url, str):
+                raise HTTPException(status_code=400, detail="Expected a string upstream Base URL")
             if not isinstance(api_key, str):
                 raise HTTPException(status_code=400, detail="Expected a string upstream API key")
             try:
                 if launcher_config_path is not None:
-                    await asyncio.to_thread(save_launcher_upstream_api_key, launcher_config_path, api_key)
+                    normalized_base_url, normalized_api_key = await asyncio.to_thread(
+                        save_launcher_upstream_configuration,
+                        launcher_config_path,
+                        base_url,
+                        api_key,
+                    )
                 else:
-                    normalized = api_key.strip()
-                    if not normalized or len(normalized) > 4096:
+                    normalized_base_url = normalize_upstream_base_url(base_url)
+                    normalized_api_key = api_key.strip()
+                    if not normalized_api_key or len(normalized_api_key) > 4096:
                         raise LauncherConfigError("The upstream API key must contain between 1 and 4096 characters.")
-                    if any(ord(char) < 32 or ord(char) == 127 for char in normalized):
+                    if any(ord(char) < 32 or ord(char) == 127 for char in normalized_api_key):
                         raise LauncherConfigError("The upstream API key contains unsupported control characters.")
-                active = update_upstream_api_key(api_key.strip())
+                active = update_upstream_configuration(normalized_base_url, normalized_api_key)
             except LauncherConfigError as exc:
                 raise HTTPException(status_code=400, detail=str(exc)) from exc
             except OSError as exc:
@@ -924,7 +942,7 @@ def create_app(config: GatewayConfig | None = None, upstream_client: UpstreamCli
                     {
                         "phase": "admin_action",
                         "workspace_id": cfg.workspace_id,
-                        "action": "configure_upstream_api_key",
+                        "action": "configure_upstream_connection",
                         "result_code": "PERSISTENCE_ERROR",
                     }
                 )
@@ -933,14 +951,15 @@ def create_app(config: GatewayConfig | None = None, upstream_client: UpstreamCli
                 {
                     "phase": "admin_action",
                     "workspace_id": cfg.workspace_id,
-                    "action": "configure_upstream_api_key",
+                    "action": "configure_upstream_connection",
                     "result_code": "OK",
                 }
             )
             return JSONResponse(
                 {
-                    "configured": bool(active.api_key),
+                    "configured": bool(active.base_url and active.api_key),
                     "base_url": active.base_url,
+                    "protocol": "openai",
                     "persistent": launcher_config_path is not None,
                 },
                 headers={"Cache-Control": "no-store"},

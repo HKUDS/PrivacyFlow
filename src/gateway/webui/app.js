@@ -83,7 +83,7 @@ function bindActions() {
   $("#edit-upstream-key").addEventListener("click", () => {
     state.upstreamEditing = true;
     renderUpstreamConfiguration();
-    setTimeout(() => $("#upstream-api-key").focus(), 30);
+    setTimeout(() => (state.upstream?.base_url ? $("#upstream-api-key") : $("#upstream-base-url-input")).focus(), 30);
   });
   $("#cancel-upstream-key").addEventListener("click", () => {
     state.upstreamEditing = false;
@@ -252,9 +252,10 @@ function renderUpstreamConfiguration() {
   $("#upstream-status").textContent = configured ? "已配置" : "需要配置";
   $("#upstream-status").classList.toggle("is-active", configured);
   $("#upstream-description").textContent = configured
-    ? "上游凭据已生效。APG 不会通过管理接口回显已保存的密钥。"
-    : "输入模型服务商的 API Key 后即可开始使用 Agent。密钥只保存在本机。";
-  $("#upstream-base-url").textContent = state.upstream.base_url || "未指定上游";
+    ? "上游连接配置已生效。APG 不会通过管理接口回显已保存的密钥。"
+    : "输入模型服务商的 Base URL 和 API Key 后即可开始使用 Agent。配置只保存在本机。";
+  $("#upstream-base-url").textContent = state.upstream.base_url || "待填写";
+  $("#upstream-base-url-input").value = state.upstream.base_url || "";
   $("#upstream-key-form").classList.toggle("is-hidden", !editing);
   $("#edit-upstream-key").classList.toggle("is-hidden", !configured || editing);
   $("#cancel-upstream-key").classList.toggle("is-hidden", !configured);
@@ -262,8 +263,17 @@ function renderUpstreamConfiguration() {
 
 async function saveUpstreamApiKey(event) {
   event.preventDefault();
+  const baseUrlInput = $("#upstream-base-url-input");
   const input = $("#upstream-api-key");
+  const baseUrl = baseUrlInput.value.trim().replace(/\/+$/, "");
   const apiKey = input.value.trim();
+  let parsedBaseUrl = null;
+  try { parsedBaseUrl = new URL(baseUrl); } catch (_) {}
+  if (!parsedBaseUrl || !["http:", "https:"].includes(parsedBaseUrl.protocol) || parsedBaseUrl.username || parsedBaseUrl.password || parsedBaseUrl.search || parsedBaseUrl.hash) {
+    $("#upstream-key-error").textContent = "请输入不含凭据、查询参数或片段的完整 HTTP(S) Base URL。";
+    baseUrlInput.focus();
+    return;
+  }
   if (!apiKey) {
     $("#upstream-key-error").textContent = "请输入上游 API Key。";
     return;
@@ -274,12 +284,12 @@ async function saveUpstreamApiKey(event) {
   try {
     state.upstream = await api("/upstream-configuration", {
       method: "PUT",
-      body: JSON.stringify({api_key: apiKey}),
+      body: JSON.stringify({base_url: baseUrl, api_key: apiKey}),
     });
     input.value = "";
     state.upstreamEditing = false;
     renderUpstreamConfiguration();
-    toast(state.upstream.persistent ? "上游 API Key 已安全保存并启用" : "上游 API Key 已在当前进程中启用");
+    toast(state.upstream.persistent ? "上游连接配置已安全保存并启用" : "上游连接配置已在当前进程中启用");
   } catch (error) {
     $("#upstream-key-error").textContent = error.message || "保存失败。";
   } finally {

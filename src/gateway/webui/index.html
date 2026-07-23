@@ -67,12 +67,14 @@
                 <h2 id="upstream-setup-title">配置上游模型</h2>
               </div>
               <span class="configuration-status" id="upstream-status">未配置</span>
-              <p id="upstream-description">输入模型服务商的 API Key 后即可开始使用 Agent。密钥只保存在本机。</p>
-              <button class="secondary-button is-hidden" id="edit-upstream-key" type="button">更换 API Key</button>
+              <p id="upstream-description">输入模型服务商的 Base URL 和 API Key 后即可开始使用 Agent。配置只保存在本机。</p>
+              <p class="upstream-target">当前 Base URL <strong class="mono" id="upstream-base-url"></strong></p>
+              <p class="upstream-protocol">上游协议 <strong>OpenAI-compatible</strong></p>
+              <button class="secondary-button is-hidden" id="edit-upstream-key" type="button">更换上游配置</button>
             </div>
             <form class="upstream-key-form" id="upstream-key-form">
+              <label><span>上游 Base URL</span><input class="mono" id="upstream-base-url-input" type="url" autocomplete="url" spellcheck="false" placeholder="https://api.example.com/v1" required maxlength="2048"></label>
               <label><span>上游 API Key</span><input class="mono" id="upstream-api-key" type="password" autocomplete="new-password" spellcheck="false" required maxlength="4096"></label>
-              <p class="upstream-target">发送至 <strong class="mono" id="upstream-base-url"></strong></p>
               <p class="form-error" id="upstream-key-error" role="alert"></p>
               <div class="upstream-form-actions">
                 <button class="secondary-button is-hidden" id="cancel-upstream-key" type="button">取消</button>
