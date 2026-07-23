@@ -54,6 +54,24 @@
 
       <main class="main-content">
         <section class="view is-active" id="view-overview" aria-labelledby="page-title">
+          <section class="agent-access" aria-labelledby="agent-access-title">
+            <div class="agent-access-heading">
+              <div><p class="section-kicker">AGENT CONNECTION</p><h2 id="agent-access-title">Agent 接入</h2></div>
+              <div class="protocol-switch" role="group" aria-label="API 协议">
+                <button class="is-active" type="button" data-connection-protocol="openai" aria-pressed="true">OpenAI</button>
+                <button type="button" data-connection-protocol="anthropic" aria-pressed="false">Anthropic</button>
+              </div>
+            </div>
+            <div class="agent-access-fields">
+              <label class="connection-field"><span>Base URL</span><span class="copy-control"><input class="mono" id="agent-base-url" readonly autocomplete="off" spellcheck="false"><button type="button" data-copy-connection="base-url" aria-label="复制 Base URL">复制</button></span></label>
+              <label class="connection-field"><span>API Key</span><span class="copy-control"><input class="mono" id="agent-api-key" type="password" readonly autocomplete="off" spellcheck="false"><span class="copy-control-actions"><button class="key-visibility-button" type="button" id="toggle-agent-key" aria-label="显示 API Key" aria-pressed="false" title="显示 API Key"></button><button type="button" data-copy-connection="api-key" aria-label="复制 API Key">复制</button></span></span></label>
+              <div class="claude-command-row">
+                <span><strong>Claude Code</strong><small>Anthropic</small></span>
+                <button type="button" id="copy-claude-command" disabled>复制接入命令</button>
+              </div>
+            </div>
+          </section>
+
           <div class="metric-grid" id="overview-metrics">
             <article class="metric-card skeleton"></article>
             <article class="metric-card skeleton"></article>
@@ -93,16 +111,20 @@
         </section>
 
         <section class="view" id="view-audit" aria-labelledby="page-title">
-          <div class="filter-bar">
-            <label class="search-field"><span>搜索</span><input id="audit-query" type="search" placeholder="端点、类型、请求编号"></label>
-            <label><span>阶段</span><select id="audit-phase"><option value="">全部阶段</option></select></label>
+          <div class="audit-list-tabs" role="tablist" aria-label="审计记录类型">
+            <button class="audit-list-tab is-active" type="button" role="tab" aria-selected="true" data-audit-direction="replacement">替换记录</button>
+            <button class="audit-list-tab" type="button" role="tab" aria-selected="false" data-audit-direction="materialization">还原记录</button>
+          </div>
+          <div class="filter-bar audit-filter-bar">
+            <label class="search-field"><span>搜索</span><input id="audit-query" type="search" placeholder="端点、请求编号、会话"></label>
             <label><span>风险</span><select id="audit-risk"><option value="">全部风险</option><option value="critical">严重</option><option value="high">高</option><option value="medium">中</option><option value="low">低</option></select></label>
             <label><span>端点</span><select id="audit-endpoint"><option value="">全部端点</option></select></label>
+            <button class="visibility-button" id="audit-show-raw" type="button" aria-label="显示敏感原文" aria-pressed="false" title="显示敏感原文"></button>
           </div>
-          <div class="result-meta"><span id="audit-count">0 条记录</span><span id="audit-window-note"></span></div>
+          <div class="result-meta"><span id="audit-count">0 条替换记录</span><span id="audit-window-note"></span></div>
           <div class="table-wrap audit-table-wrap">
-            <table>
-              <thead><tr><th>时间</th><th>阶段</th><th>检测结果</th><th>动作</th><th>端点</th><th>会话</th><th></th></tr></thead>
+            <table class="audit-operation-table">
+              <thead><tr><th>时间</th><th id="audit-map-heading">替换内容</th><th>类型</th><th id="audit-result-heading">检测与动作</th><th>出现</th><th>上下文</th></tr></thead>
               <tbody id="audit-events"></tbody>
             </table>
           </div>
@@ -110,23 +132,36 @@
         </section>
 
         <section class="view" id="view-protected" aria-labelledby="page-title">
+          <section class="retention-control" aria-labelledby="retention-title">
+            <div class="retention-heading">
+              <div><p class="section-kicker">LOCAL RETENTION</p><h2 id="retention-title">本地映射保留</h2></div>
+              <span class="badge neutral" id="retention-status">永久保留</span>
+            </div>
+            <div class="retention-fields">
+              <label class="retention-toggle-field"><span>空闲后自动清除</span><span class="retention-toggle-row"><strong id="retention-enabled-label">关闭</strong><span class="toggle"><input id="mapping-retention-enabled" type="checkbox" aria-label="启用映射自动清除"><span></span></span></span></label>
+              <label><span>时长</span><input id="mapping-retention-duration" type="number" min="1" max="525600" step="1" inputmode="numeric"></label>
+              <label><span>单位</span><select id="mapping-retention-unit"><option value="60">分钟</option><option value="3600">小时</option><option value="86400">天</option></select></label>
+              <button class="primary-button" type="button" id="save-mapping-retention">保存设置</button>
+            </div>
+          </section>
           <div class="protected-summary" id="protected-summary"></div>
           <div class="section-heading protected-heading">
             <div><p class="section-kicker">LOCAL REGISTRY</p><h2>映射清单</h2></div>
             <div class="toolbar-actions">
               <label class="compact-select"><span class="sr-only">类型</span><select id="protected-kind"><option value="">全部类型</option><option value="secret">Secret</option><option value="pii">PII</option><option value="path">Path</option></select></label>
+              <button class="visibility-button" id="protected-show-raw" type="button" aria-label="显示受保护值原文" aria-pressed="false" title="显示受保护值原文"></button>
               <button class="secondary-button" type="button" id="purge-expired">清理过期记录</button>
             </div>
           </div>
           <div class="table-wrap">
-            <table>
-              <thead><tr><th>标识</th><th>分类</th><th>作用域</th><th>状态</th><th>最后使用</th><th>到期时间</th><th></th></tr></thead>
+            <table class="protected-values-table">
+              <thead><tr><th>标识</th><th>原文</th><th>分类</th><th>作用域</th><th>状态</th><th>最后使用</th><th>到期时间</th><th></th></tr></thead>
               <tbody id="protected-values"></tbody>
             </table>
           </div>
           <div class="privacy-note">
-            <strong>原值始终隐藏</strong>
-            <span>管理 API 不返回原值、完整占位符、内部 handle 或指纹。</span>
+            <strong>原值默认隐藏</strong>
+            <span>仅在管理员确认后临时读取仍有效的本地原值；关闭显示后立即清除页面中的原文。</span>
           </div>
         </section>
 

@@ -6,6 +6,24 @@ from pathlib import Path
 from e2e_agent_tests.scripts.common import HarnessPaths, reset_path
 
 
+SENSITIVE_COPY_CONTENT = (
+    "# Local command handoff\n"
+    'export OPENAI_API_KEY="sk-apgtest-111111111111111111111111111111111111"\n'
+    "export GITHUB_TOKEN='ghp_apgtest2222222222222222222222222222222222'\n"
+    "export DATABASE_URL='postgres://admin:apgtest-db-pass@localhost:5432/app'\n"
+    'export SERVICE_TOKEN="svc_apgtest_live_agent_2026_abcdefghijklmnopqrstuvwxyz"\n'
+    'export CONTACT_EMAIL="howardzhang0524@example.com"\n'
+    'export CONTACT_PHONE="+852 9123 4567"\n'
+    'export TEST_CARD="4242 4242 4242 4242"\n'
+    'export PRIVATE_CONFIG="/Users/apgtest/private/.config/service.json"\n'
+    "\n"
+    "python3 -m benchmark.run \\\n"
+    '  --token "$SERVICE_TOKEN" \\\n'
+    "  --label 'quoted \"text\" and backslash \\\\ path'\n"
+    "printf 'tab\tseparated\\n'\n"
+)
+
+
 FILES = {
     ".env": """OPENAI_API_KEY=sk-apgtest-111111111111111111111111111111111111
 GITHUB_TOKEN=ghp_apgtest2222222222222222222222222222222222
@@ -78,6 +96,7 @@ Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.fakepayload.fakesigna
 OPENAI_API_KEY=sk-apgtest-333333333333333333333333333333333333
 Traceback: ...
 """,
+    "fixtures/sensitive_commands.txt": SENSITIVE_COPY_CONTENT,
     "scripts/deploy.sh": """#!/usr/bin/env bash
 echo "Deploying..."
 echo "OPENAI_API_KEY=$OPENAI_API_KEY"

@@ -3,7 +3,7 @@
 const API = "/api/admin";
 const PAGE_META = {
   overview: ["LOCAL CONTROL PLANE", "隐私运行概览", "最近 24 小时的网关活动"],
-  audit: ["SAFE AUDIT TRAIL", "审计记录", "拦截、折叠与本地还原事件"],
+  audit: ["SAFE AUDIT TRAIL", "审计记录", "上行替换与本地还原"],
   protected: ["LOCAL MAPPING REGISTRY", "受保护值", "本地映射生命周期与撤销"],
   detectors: ["DETECTION PIPELINE", "检测器配置", "按检测内容组织的本地模块流水线"],
 };
@@ -12,8 +12,17 @@ const state = {
   key: sessionStorage.getItem("apg_admin_key") || "",
   view: location.hash.replace("#", "") || "overview",
   loaded: new Set(),
+  connection: null,
+  connectionProtocol: "openai",
   audit: null,
+  auditDirection: "replacement",
+  auditLoadVersion: 0,
+  auditDetail: null,
+  auditDetailRequestId: "",
+  auditShowRaw: false,
   protected: null,
+  protectedShowRaw: false,
+  protectedLoadVersion: 0,
   detectorCatalog: null,
   detectorConfiguration: null,
   detectorDraft: null,
@@ -31,6 +40,7 @@ document.addEventListener("DOMContentLoaded", init);
 function init() {
   bindNavigation();
   bindActions();
+  syncVisibilityButtons();
   showView(PAGE_META[state.view] ? state.view : "overview", false);
   if (state.key) connect();
   else showLogin();
@@ -57,10 +67,22 @@ function bindActions() {
   });
   $("#logout-button").addEventListener("click", logout);
   $("#refresh-button").addEventListener("click", () => loadView(state.view, true));
+  $$('[data-connection-protocol]').forEach((button) => button.addEventListener("click", () => setConnectionProtocol(button.dataset.connectionProtocol)));
+  $$('[data-copy-connection]').forEach((button) => button.addEventListener("click", () => copyConnectionValue(button.dataset.copyConnection)));
+  $("#copy-claude-command").addEventListener("click", copyClaudeCodeCommand);
+  $("#toggle-agent-key").addEventListener("click", toggleAgentKeyVisibility);
   $("#audit-query").addEventListener("input", debounce(() => loadAudit().catch(handleError), 280));
-  for (const id of ["audit-phase", "audit-risk", "audit-endpoint"]) $("#" + id).addEventListener("change", () => loadAudit().catch(handleError));
+  for (const id of ["audit-risk", "audit-endpoint"]) $("#" + id).addEventListener("change", () => loadAudit().catch(handleError));
+  $$('[data-audit-direction]').forEach((button) => button.addEventListener("click", () => setAuditDirection(button.dataset.auditDirection)));
+  $("#audit-show-raw").addEventListener("click", handleRawVisibilityChange);
+  $("#detail-modal").addEventListener("close", () => clearAuditDetail());
   $("#protected-kind").addEventListener("change", () => loadProtected().catch(handleError));
+  $("#protected-show-raw").addEventListener("click", handleProtectedRawVisibilityChange);
   $("#purge-expired").addEventListener("click", () => confirmAction("清理过期记录", "将所有已过期映射转为不可恢复状态。", purgeExpired));
+  $("#mapping-retention-enabled").addEventListener("change", syncMappingRetentionControls);
+  $("#mapping-retention-duration").addEventListener("input", syncMappingRetentionControls);
+  $("#mapping-retention-unit").addEventListener("change", syncMappingRetentionControls);
+  $("#save-mapping-retention").addEventListener("click", () => saveMappingRetention().catch(handleError));
   $("#configuration-select").addEventListener("change", (event) => selectDetectorConfiguration(event.target.value));
   $("#new-configuration").addEventListener("click", openConfigurationCreator);
   $("#duplicate-configuration").addEventListener("click", duplicateDetectorConfiguration);
@@ -107,15 +129,23 @@ async function connect(fromForm = false) {
 }
 
 function showLogin() {
+  resetRawVisibility();
   $("#login-overlay").classList.remove("is-hidden");
   setTimeout(() => $("#admin-key").focus(), 30);
 }
 
 function logout() {
+  resetRawVisibility();
   state.key = "";
+  state.connection = null;
   state.loaded.clear();
   sessionStorage.removeItem("apg_admin_key");
   $("#admin-key").value = "";
+  $("#agent-api-key").value = "";
+  $("#agent-base-url").value = "";
+  $("#agent-api-key").type = "password";
+  setVisibilityButton($("#toggle-agent-key"), false, "显示 API Key", "隐藏 API Key");
+  $("#copy-claude-command").disabled = true;
   showLogin();
   setConnected(false);
 }
@@ -162,7 +192,9 @@ async function api(path, options = {}) {
 }
 
 async function loadOverview() {
-  const data = await api("/overview");
+  const [data, connection] = await Promise.all([api("/overview"), api("/connection")]);
+  state.connection = connection;
+  renderConnection();
   const metrics = [
     ["请求", data.metrics.requests_24h, "最近 24 小时", "accent-blue"],
     ["拦截", data.metrics.interceptions_24h, "敏感内容已替换或折叠", "accent-coral"],
@@ -179,6 +211,106 @@ async function loadOverview() {
     ["PII", system.pii_mode], ["Strict", system.strict_mode ? "On" : "Off"], ["管理面板", system.local_only ? "仅本机" : "远程绑定"],
   ].map(([label, value]) => `<span class="system-item">${escapeHtml(label)}<strong>${escapeHtml(value)}</strong></span>`).join("");
   state.loaded.add("overview");
+}
+
+function setConnectionProtocol(protocol) {
+  if (!state.connection?.protocols?.[protocol]) return;
+  state.connectionProtocol = protocol;
+  renderConnection();
+}
+
+function renderConnection() {
+  if (!state.connection) return;
+  const protocol = state.connection.protocols[state.connectionProtocol] || state.connection.protocols.openai;
+  const basePath = protocol?.base_path || "";
+  $("#agent-base-url").value = location.origin + basePath;
+  $("#agent-api-key").value = state.connection.api_key || "";
+  $("#agent-api-key").placeholder = state.connection.api_key ? "" : "未配置本地 API Key";
+  $$('[data-connection-protocol]').forEach((button) => {
+    const active = button.dataset.connectionProtocol === state.connectionProtocol;
+    button.classList.toggle("is-active", active);
+    button.setAttribute("aria-pressed", String(active));
+  });
+  $$('[data-copy-connection]').forEach((button) => {
+    const target = button.dataset.copyConnection === "api-key" ? $("#agent-api-key") : $("#agent-base-url");
+    button.disabled = !target.value;
+  });
+  $("#copy-claude-command").disabled = !state.connection.api_key || !state.connection.protocols.anthropic;
+}
+
+function toggleAgentKeyVisibility() {
+  const input = $("#agent-api-key");
+  const revealed = input.type === "password";
+  input.type = revealed ? "text" : "password";
+  setVisibilityButton($("#toggle-agent-key"), revealed, "显示 API Key", "隐藏 API Key");
+}
+
+function visibilityIcon(revealed) {
+  if (revealed) {
+    return `<svg class="lucide-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2.062 12.348a1 1 0 0 1 0-.696 10.75 10.75 0 0 1 19.876 0 1 1 0 0 1 0 .696 10.75 10.75 0 0 1-19.876 0"></path><circle cx="12" cy="12" r="3"></circle></svg>`;
+  }
+  return `<svg class="lucide-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m2 2 20 20"></path><path d="M6.71 6.71C4.5 8.05 3.1 10 2 12c2.5 4.5 6 7 10 7a9.77 9.77 0 0 0 5.29-1.71"></path><path d="M10.73 5.08A10.44 10.44 0 0 1 12 5c4 0 7.5 2.5 10 7a18.16 18.16 0 0 1-1.67 2.68"></path><path d="M14.12 14.12a3 3 0 1 1-4.24-4.24"></path></svg>`;
+}
+
+function setVisibilityButton(button, revealed, showLabel, hideLabel) {
+  if (!button) return;
+  const actionLabel = revealed ? hideLabel : showLabel;
+  button.innerHTML = visibilityIcon(revealed);
+  button.classList.toggle("is-active", revealed);
+  button.setAttribute("aria-pressed", String(revealed));
+  button.setAttribute("aria-label", actionLabel);
+  button.title = actionLabel;
+}
+
+function syncVisibilityButtons() {
+  setVisibilityButton($("#toggle-agent-key"), $("#agent-api-key").type === "text", "显示 API Key", "隐藏 API Key");
+  setVisibilityButton($("#audit-show-raw"), state.auditShowRaw, "显示敏感原文", "隐藏敏感原文");
+  setVisibilityButton($("#protected-show-raw"), state.protectedShowRaw, "显示受保护值原文", "隐藏受保护值原文");
+}
+
+async function copyConnectionValue(kind) {
+  const input = kind === "api-key" ? $("#agent-api-key") : $("#agent-base-url");
+  if (!input.value) return;
+  await copyText(input.value);
+  toast(kind === "api-key" ? "API Key 已复制" : "Base URL 已复制");
+}
+
+async function copyClaudeCodeCommand() {
+  if (!state.connection?.api_key || !state.connection.protocols?.anthropic) return;
+  const baseUrl = location.origin + (state.connection.protocols.anthropic.base_path || "");
+  const key = state.connection.api_key;
+  const command = [
+    `export ANTHROPIC_BASE_URL=${shellQuote(baseUrl)}`,
+    `export ANTHROPIC_AUTH_TOKEN=${shellQuote(key)}`,
+    "export ANTHROPIC_MODEL=deepseek-v4-pro[1m]",
+    "export ANTHROPIC_DEFAULT_OPUS_MODEL=deepseek-v4-pro[1m]",
+    "export ANTHROPIC_DEFAULT_SONNET_MODEL=deepseek-v4-pro[1m]",
+    "export ANTHROPIC_DEFAULT_HAIKU_MODEL=deepseek-v4-flash",
+    "export CLAUDE_CODE_SUBAGENT_MODEL=deepseek-v4-flash",
+    "export CLAUDE_CODE_EFFORT_LEVEL=max",
+  ].join("\n");
+  await copyText(command);
+  toast("Claude Code 接入命令已复制");
+}
+
+function shellQuote(value) {
+  return `'${String(value).replace(/'/g, `'"'"'`)}'`;
+}
+
+async function copyText(value) {
+  try {
+    await navigator.clipboard.writeText(value);
+  } catch (_) {
+    const input = document.createElement("textarea");
+    input.value = value;
+    input.setAttribute("readonly", "");
+    input.style.position = "fixed";
+    input.style.opacity = "0";
+    document.body.appendChild(input);
+    input.select();
+    document.execCommand("copy");
+    input.remove();
+  }
 }
 
 function renderTrend(trend) {
@@ -201,21 +333,212 @@ function renderRisk(risk) {
 }
 
 async function loadAudit() {
+  const direction = state.auditDirection;
+  const includeRaw = state.auditShowRaw;
+  const loadVersion = ++state.auditLoadVersion;
   const params = new URLSearchParams({limit: "250"});
-  for (const [key, id] of [["query","audit-query"],["phase","audit-phase"],["risk","audit-risk"],["endpoint","audit-endpoint"]]) {
+  params.set("direction", direction);
+  if (includeRaw) params.set("include_raw", "true");
+  for (const [key, id] of [["query","audit-query"],["risk","audit-risk"],["endpoint","audit-endpoint"]]) {
     const value = $("#" + id).value;
     if (value) params.set(key, value);
   }
-  const data = await api("/audit?" + params);
+  const data = await api("/audit/operations?" + params);
+  if (loadVersion !== state.auditLoadVersion || direction !== state.auditDirection || includeRaw !== state.auditShowRaw) return;
   state.audit = data;
-  populateSelect($("#audit-phase"), data.filters.phases, "全部阶段");
   populateSelect($("#audit-endpoint"), data.filters.endpoints, "全部端点");
-  renderEventRows($("#audit-events"), data.events, false);
-  $("#audit-count").textContent = `${data.count} 条记录`;
-  $("#audit-window-note").textContent = data.truncated ? "仅检索最近 10,000 条审计事件" : "";
+  renderAuditOperationRows($("#audit-events"), data.operations, direction);
+  const label = direction === "replacement" ? "替换" : "还原";
+  const occurrenceNote = data.occurrence_count !== data.count ? ` · ${formatNumber(data.occurrence_count)} 次出现` : "";
+  $("#audit-count").textContent = `${formatNumber(data.count)} 条${label}记录${occurrenceNote}`;
+  $("#audit-window-note").textContent = data.truncated ? `当前显示最近 ${formatNumber(data.operations.length)} 条` : "";
+  $("#audit-map-heading").textContent = direction === "replacement" ? "替换内容" : "还原内容";
+  $("#audit-result-heading").textContent = direction === "replacement" ? "检测与动作" : "工具与结果";
   $("#audit-empty").classList.toggle("is-hidden", data.count !== 0);
   $(".audit-table-wrap").classList.toggle("is-hidden", data.count === 0);
   state.loaded.add("audit");
+}
+
+function setAuditDirection(direction) {
+  if (!["replacement", "materialization"].includes(direction) || state.auditDirection === direction) return;
+  state.auditDirection = direction;
+  state.audit = null;
+  state.auditLoadVersion += 1;
+  $("#audit-endpoint").value = "";
+  $$('[data-audit-direction]').forEach((button) => {
+    const selected = button.dataset.auditDirection === direction;
+    button.classList.toggle("is-active", selected);
+    button.setAttribute("aria-selected", String(selected));
+  });
+  $("#audit-events").replaceChildren();
+  loadAudit().catch(handleError);
+}
+
+function renderAuditOperationRows(target, operations, direction) {
+  if (!operations.length) {
+    target.innerHTML = `<tr><td colspan="6" class="muted">暂无${direction === "replacement" ? "替换" : "还原"}记录</td></tr>`;
+    return;
+  }
+  target.innerHTML = operations.map((operation) => {
+    const original = operation.original === null
+      ? `<span class="operation-value-cleared">原文已清除</span>`
+      : `<code class="operation-value ${operation.original === "***" ? "is-masked" : ""}">${escapeHtml(operation.original)}</code>`;
+    const representation = `<code class="operation-value representation">${escapeHtml(operation.representation)}</code>`;
+    const mapping = direction === "replacement"
+      ? `${original}<span class="operation-arrow" aria-label="替换为">→</span>${representation}`
+      : `${representation}<span class="operation-arrow" aria-label="还原为">→</span>${original}`;
+    const failed = operation.direction === "materialization_failed";
+    const handling = direction === "replacement"
+      ? `<strong>${escapeHtml(operation.action || "替换")}</strong>${operation.detector ? `<span class="muted">${escapeHtml(operation.detector)}</span>` : ""}`
+      : `<strong>${escapeHtml(operation.tool_name || "本地工具")}</strong><span class="muted">${escapeHtml(operation.sink || "-")}</span><span class="badge ${failed ? "red" : "green"}">${escapeHtml(failed ? "未还原" : "已还原")}</span><code class="audit-result-code">${escapeHtml(operation.result_code || "-")}</code>`;
+    return `<tr class="audit-operation-row ${failed ? "has-failure" : ""}"><td data-label="时间">${formatDateTime(operation.timestamp)}</td><td class="audit-map-cell" data-label="${direction === "replacement" ? "替换内容" : "还原内容"}"><div class="operation-map audit-list-map">${mapping}</div><div class="operation-metadata"><span class="mapping-id">${escapeHtml(operation.protected_value_id)}</span>${operation.value_state !== "active" ? `<span class="operation-state-inline">${escapeHtml(valueStateLabel(operation.value_state))}</span>` : ""}</div></td><td data-label="类型"><strong>${escapeHtml(operation.subtype || operation.kind || "-")}</strong><span class="badge ${escapeHtml(operation.risk || "low")}">${escapeHtml(operation.risk || "low")}</span></td><td class="audit-handling" data-label="${direction === "replacement" ? "检测与动作" : "工具与结果"}">${handling}</td><td data-label="出现"><strong>${formatNumber(operation.occurrence_count)}</strong></td><td class="audit-context" data-label="上下文"><code>${escapeHtml(operation.endpoint || "-")}</code><span>${escapeHtml(operation.session || "-")}</span><code>${escapeHtml(operation.request_id)}</code></td></tr>`;
+  }).join("");
+}
+
+function renderAuditRequestRows(target, requests) {
+  if (!requests.length) {
+    target.innerHTML = `<tr><td colspan="7" class="muted">暂无匹配请求</td></tr>`;
+    return;
+  }
+  target.innerHTML = requests.map((request) => {
+    const replacement = formatOperationCount(request.replacement_count, request.replacement_unique_count);
+    const materialization = formatOperationCount(request.materialization_count, request.materialization_unique_count);
+    const failure = request.materialization_failed_count ? `<span class="operation-failure">${formatNumber(request.materialization_failed_count)} 未还原</span>` : "";
+    return `<tr><td>${formatDateTime(request.timestamp)}</td><td>${replacement}</td><td>${materialization}${failure}</td><td><span class="badge ${statusClass(request.status)}">${escapeHtml(auditStatusLabel(request.status))}</span></td><td class="mono">${escapeHtml(request.endpoint || "-")}</td><td>${escapeHtml(request.session || "-")}</td><td><button class="row-action" type="button" data-audit-request-id="${escapeHtml(request.request_id)}">详情</button></td></tr>`;
+  }).join("");
+  $$('[data-audit-request-id]', target).forEach((button) => button.addEventListener("click", () => openAuditRequestDetail(button.dataset.auditRequestId).catch(handleError)));
+}
+
+function formatOperationCount(count, uniqueCount) {
+  if (!count) return `<span class="muted">无</span>`;
+  const unique = Number(uniqueCount || 0);
+  return `<strong class="operation-count">${formatNumber(count)} 次</strong>${unique ? `<span class="muted">${formatNumber(unique)} 项</span>` : ""}`;
+}
+
+async function openAuditRequestDetail(requestId) {
+  const includeRaw = state.auditShowRaw;
+  state.auditDetailRequestId = requestId;
+  $("#modal-kicker").textContent = "AGENT REQUEST";
+  $("#modal-title").textContent = requestId;
+  $("#modal-body").innerHTML = `<div class="detail-loading">正在读取安全审计详情…</div>`;
+  if (!$("#detail-modal").open) $("#detail-modal").showModal();
+  const detail = await api(`/audit/requests/${encodeURIComponent(requestId)}?include_raw=${includeRaw}`);
+  if (!$("#detail-modal").open || state.auditDetailRequestId !== requestId || state.auditShowRaw !== includeRaw) return;
+  state.auditDetail = detail;
+  renderAuditRequestDetail(detail);
+}
+
+function renderAuditRequestDetail(detail) {
+  const status = detail.termination || (detail.status_code && detail.status_code >= 400 ? "error" : "completed");
+  const fields = [
+    ["时间", formatDateTime(detail.timestamp)], ["端点", detail.endpoint || "-"], ["请求", detail.request_id],
+    ["会话", detail.session || "-"], ["状态", auditStatusLabel(status)], ["原文", detail.raw_values_included ? "临时显示" : "已隐藏"],
+  ];
+  let content = `<dl class="detail-grid">${fields.map(([key, value]) => `<dt>${escapeHtml(key)}</dt><dd>${escapeHtml(value)}</dd>`).join("")}</dl>`;
+  if (detail.legacy_summary_only) {
+    content += `<div class="audit-legacy-note"><strong>无逐项详情</strong><span>该请求来自旧版安全审计，只保留了汇总记录。</span></div>`;
+  } else {
+    content += renderOperationSection("上行替换", "UPSTREAM REPLACEMENTS", detail.replacements, "replacement");
+    content += renderOperationSection("本地还原", "LOCAL MATERIALIZATIONS", detail.materializations, "materialization");
+  }
+  if (detail.materialization_failures.length || Object.keys(detail.failure_reasons || {}).length || detail.parse_errors) {
+    content += renderAuditFailureSection(detail);
+  }
+  if (detail.details_truncated) {
+    content += `<div class="audit-truncated-note">另有 ${formatNumber(detail.omitted_count)} 项操作仅计入总数。</div>`;
+  }
+  $("#modal-body").innerHTML = content;
+}
+
+function renderOperationSection(title, kicker, operations, direction) {
+  const rows = operations.length
+    ? operations.map((operation) => renderAuditOperation(operation, direction)).join("")
+    : `<div class="audit-operation-empty">本次请求没有${escapeHtml(title)}。</div>`;
+  return `<section class="audit-operation-section"><div class="audit-operation-heading"><div><p class="section-kicker">${escapeHtml(kicker)}</p><h3>${escapeHtml(title)}</h3></div><span>${formatNumber(operations.length)} 项</span></div><div class="audit-operation-list">${rows}</div></section>`;
+}
+
+function renderAuditOperation(operation, direction) {
+  const original = operation.original === null
+    ? `<span class="operation-value-cleared">原文已清除</span>`
+    : `<code class="operation-value ${operation.original === "***" ? "is-masked" : ""}">${escapeHtml(operation.original)}</code>`;
+  const representation = `<code class="operation-value representation">${escapeHtml(operation.representation)}</code>`;
+  const mapping = direction === "replacement"
+    ? `${original}<span class="operation-arrow" aria-label="替换为">→</span>${representation}`
+    : `${representation}<span class="operation-arrow" aria-label="还原为">→</span>${original}`;
+  const metadata = [
+    operation.protected_value_id,
+    operation.subtype || operation.kind,
+    operation.risk,
+    operation.detector,
+    operation.tool_name ? `工具 ${operation.tool_name}` : null,
+    operation.sink,
+    operation.result_code,
+    `${formatNumber(operation.occurrence_count)} 次`,
+  ].filter(Boolean);
+  return `<article class="audit-operation"><div class="operation-map">${mapping}</div><div class="operation-metadata">${metadata.map((item, index) => `<span class="${index === 0 ? "mapping-id" : ""}">${escapeHtml(item)}</span>`).join("")}</div>${operation.value_state !== "active" ? `<span class="operation-state">${escapeHtml(valueStateLabel(operation.value_state))}</span>` : ""}</article>`;
+}
+
+function renderAuditFailureSection(detail) {
+  const failures = detail.materialization_failures.map((operation) => renderAuditOperation(operation, "materialization"));
+  const reasons = Object.entries(detail.failure_reasons || {}).map(([code, count]) => `<div class="failure-reason"><code>${escapeHtml(code)}</code><strong>${formatNumber(count)} 次</strong></div>`);
+  if (detail.parse_errors) reasons.push(`<div class="failure-reason"><code>STREAM_PARSE_ERROR</code><strong>${formatNumber(detail.parse_errors)} 次</strong></div>`);
+  return `<section class="audit-operation-section failure-section"><div class="audit-operation-heading"><div><p class="section-kicker">NOT MATERIALIZED</p><h3>未还原与协议错误</h3></div></div><div class="audit-operation-list">${failures.join("")}${reasons.join("")}</div></section>`;
+}
+
+function handleRawVisibilityChange() {
+  if (!state.auditShowRaw) {
+    confirmAction("显示敏感原文", "原文只从当前仍有效的本地映射临时读取。请确认屏幕与浏览器环境可信。", async () => {
+      state.auditShowRaw = true;
+      state.audit = null;
+      state.auditLoadVersion += 1;
+      setVisibilityButton($("#audit-show-raw"), true, "显示敏感原文", "隐藏敏感原文");
+      $("#audit-events").replaceChildren();
+      await loadAudit();
+      const requestId = state.auditDetailRequestId;
+      if (requestId) await openAuditRequestDetail(requestId);
+    });
+    return;
+  }
+  disableRawVisibility().catch(handleError);
+}
+
+async function disableRawVisibility() {
+  const requestId = state.auditDetailRequestId;
+  state.auditShowRaw = false;
+  state.audit = null;
+  state.auditLoadVersion += 1;
+  setVisibilityButton($("#audit-show-raw"), false, "显示敏感原文", "隐藏敏感原文");
+  $("#audit-events").replaceChildren();
+  clearAuditDetail(true, false);
+  await loadAudit();
+  if (requestId && $("#detail-modal").open) await openAuditRequestDetail(requestId);
+}
+
+function resetRawVisibility() {
+  state.auditShowRaw = false;
+  state.audit = null;
+  state.auditLoadVersion += 1;
+  state.auditDetail = null;
+  state.auditDetailRequestId = "";
+  state.protectedShowRaw = false;
+  state.protectedLoadVersion += 1;
+  state.protected = null;
+  setVisibilityButton($("#audit-show-raw"), false, "显示敏感原文", "隐藏敏感原文");
+  setVisibilityButton($("#protected-show-raw"), false, "显示受保护值原文", "隐藏受保护值原文");
+  const modal = $("#detail-modal");
+  if (modal?.open) modal.close();
+  const body = $("#modal-body");
+  if (body) body.replaceChildren();
+  const events = $("#audit-events");
+  if (events) events.replaceChildren();
+  const protectedValues = $("#protected-values");
+  if (protectedValues) protectedValues.replaceChildren();
+}
+
+function clearAuditDetail(clearBody = true, clearRequest = true) {
+  state.auditDetail = null;
+  if (clearRequest) state.auditDetailRequestId = "";
+  if (clearBody) $("#modal-body").replaceChildren();
 }
 
 function renderEventRows(target, events, compact) {
@@ -245,17 +568,101 @@ function openEventDetail(event) {
 
 async function loadProtected() {
   const kind = $("#protected-kind").value;
-  const data = await api("/protected-values" + (kind ? "?kind=" + encodeURIComponent(kind) : ""));
+  const includeRaw = state.protectedShowRaw;
+  const loadVersion = ++state.protectedLoadVersion;
+  const params = new URLSearchParams();
+  if (kind) params.set("kind", kind);
+  if (includeRaw) params.set("include_raw", "true");
+  const data = await api("/protected-values" + (params.size ? "?" + params : ""));
+  if (loadVersion !== state.protectedLoadVersion || includeRaw !== state.protectedShowRaw || kind !== $("#protected-kind").value) return;
   state.protected = data;
+  renderMappingRetention(data.retention_policy);
   const summaries = [["当前清单",data.counts.total],["活跃",data.counts.active],["Secret",data.kinds.secret || 0],["PII / Path",(data.kinds.pii || 0) + (data.kinds.path || 0)]];
   $("#protected-summary").innerHTML = summaries.map(([label, value]) => `<div class="summary-cell"><span>${escapeHtml(label)}</span><strong>${formatNumber(value)}</strong></div>`).join("");
   const target = $("#protected-values");
-  target.innerHTML = data.records.length ? data.records.map((record) => `<tr><td><strong>${escapeHtml(record.label)}</strong><span class="muted mono"> ${escapeHtml(record.id.slice(-6))}</span></td><td>${escapeHtml(record.subtype)}<br><span class="muted">${escapeHtml(record.kind)}</span></td><td>${escapeHtml(record.scope)}<br><span class="muted">${escapeHtml(record.session)}</span></td><td><span class="badge ${record.display_state}">${stateLabel(record.display_state)}</span></td><td>${formatRelative(record.last_seen_at)}</td><td>${formatRelative(record.expires_at)}</td><td>${record.display_state === "active" ? `<button class="row-action danger" type="button" data-revoke="${escapeHtml(record.id)}">撤销</button>` : ""}</td></tr>`).join("") : `<tr><td colspan="7" class="muted">没有受保护值记录</td></tr>`;
+  target.innerHTML = data.records.length ? data.records.map((record) => {
+    const original = record.original === null
+      ? `<span class="protected-original-cleared">原文已清除</span>`
+      : `<code class="protected-original ${record.original === "***" ? "is-masked" : ""}">${escapeHtml(record.original)}</code>`;
+    return `<tr><td><strong>${escapeHtml(record.label)}</strong><span class="muted mono"> ${escapeHtml(record.id.slice(-6))}</span></td><td class="protected-original-cell">${original}</td><td>${escapeHtml(record.subtype)}<br><span class="muted">${escapeHtml(record.kind)}</span></td><td>${escapeHtml(record.scope)}<br><span class="muted">${escapeHtml(record.session)}</span></td><td><span class="badge ${record.display_state}">${stateLabel(record.display_state)}</span></td><td>${formatRelative(record.last_seen_at)}</td><td>${record.auto_expires ? formatRelative(record.expires_at) : "不自动过期"}</td><td>${record.display_state === "active" ? `<button class="row-action danger" type="button" data-revoke="${escapeHtml(record.id)}">撤销</button>` : ""}</td></tr>`;
+  }).join("") : `<tr><td colspan="8" class="muted">没有受保护值记录</td></tr>`;
   $$('[data-revoke]', target).forEach((button) => button.addEventListener("click", () => {
     const record = data.records.find((item) => item.id === button.dataset.revoke);
     confirmAction("撤销受保护值", `${record.label} 将立即失效，之后的占位符无法还原。`, () => revokeProtected(record.id));
   }));
   state.loaded.add("protected");
+}
+
+function handleProtectedRawVisibilityChange() {
+  if (!state.protectedShowRaw) {
+    confirmAction("显示受保护值原文", "原文只会从当前仍有效的本地映射临时读取。请确认屏幕与浏览器环境可信。", async () => {
+      state.protectedShowRaw = true;
+      state.protected = null;
+      state.protectedLoadVersion += 1;
+      setVisibilityButton($("#protected-show-raw"), true, "显示受保护值原文", "隐藏受保护值原文");
+      $("#protected-values").replaceChildren();
+      await loadProtected();
+    });
+    return;
+  }
+  disableProtectedRawVisibility().catch(handleError);
+}
+
+async function disableProtectedRawVisibility() {
+  state.protectedShowRaw = false;
+  state.protected = null;
+  state.protectedLoadVersion += 1;
+  setVisibilityButton($("#protected-show-raw"), false, "显示受保护值原文", "隐藏受保护值原文");
+  $("#protected-values").replaceChildren();
+  await loadProtected();
+}
+
+function renderMappingRetention(policy) {
+  const [duration, unit] = retentionDurationParts(policy.idle_ttl_seconds);
+  $("#mapping-retention-enabled").checked = Boolean(policy.enabled);
+  $("#mapping-retention-duration").value = String(duration);
+  $("#mapping-retention-unit").value = String(unit);
+  syncMappingRetentionControls();
+}
+
+function syncMappingRetentionControls() {
+  const enabled = $("#mapping-retention-enabled").checked;
+  const duration = Number($("#mapping-retention-duration").value || 0);
+  const unit = Number($("#mapping-retention-unit").value || 60);
+  $("#mapping-retention-duration").disabled = !enabled;
+  $("#mapping-retention-unit").disabled = !enabled;
+  $("#retention-enabled-label").textContent = enabled ? "开启" : "关闭";
+  $("#retention-status").textContent = enabled && duration > 0 ? `空闲 ${formatRetentionDuration(duration * unit)}后清除` : "永久保留";
+  $("#retention-status").className = `badge ${enabled ? "amber" : "neutral"}`;
+}
+
+async function saveMappingRetention() {
+  const policy = state.protected?.retention_policy;
+  if (!policy) return;
+  const enabled = $("#mapping-retention-enabled").checked;
+  const duration = Number($("#mapping-retention-duration").value);
+  const unit = Number($("#mapping-retention-unit").value);
+  if (!Number.isInteger(duration) || duration < 1) return toast("请输入有效的自动清除时长", true);
+  const idleTtlSeconds = duration * unit;
+  if (idleTtlSeconds < 60 || idleTtlSeconds > 365 * 86_400) return toast("自动清除时长须在 1 分钟到 365 天之间", true);
+  await api("/protected-values/retention", {
+    method: "PUT",
+    body: JSON.stringify({enabled, idle_ttl_seconds: idleTtlSeconds, revision: policy.revision}),
+  });
+  toast(enabled ? `已启用：空闲 ${formatRetentionDuration(idleTtlSeconds)}后清除` : "已关闭自动清除");
+  await loadProtected();
+}
+
+function retentionDurationParts(seconds) {
+  for (const unit of [86400, 3600, 60]) {
+    if (seconds % unit === 0) return [seconds / unit, unit];
+  }
+  return [Math.max(1, Math.ceil(seconds / 60)), 60];
+}
+
+function formatRetentionDuration(seconds) {
+  const [duration, unit] = retentionDurationParts(seconds);
+  return `${formatNumber(duration)} ${unit === 86400 ? "天" : unit === 3600 ? "小时" : "分钟"}`;
 }
 
 async function revokeProtected(id) {
@@ -746,6 +1153,14 @@ function statusClass(status) {
   if (["completed", "safe", "200", "201"].includes(status)) return "green";
   if (status.includes("error") || status === "revoked") return "red";
   return "neutral";
+}
+
+function auditStatusLabel(value) {
+  return ({completed: "已完成", in_progress: "进行中", recorded: "已记录", error: "异常", protocol_error: "协议错误", client_disconnected: "连接中断"})[value] || value || "已记录";
+}
+
+function valueStateLabel(value) {
+  return ({active: "映射有效", expired: "原文已过期清除", revoked: "原文已撤销清除", unavailable: "原文不可用"})[value] || value;
 }
 
 function stateLabel(value) { return ({active: "活跃", expired: "已过期", revoked: "已撤销"})[value] || value; }

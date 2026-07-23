@@ -1,8 +1,45 @@
 # Live Validation Results
 
-Date: 2026-07-02
+## Default-Persistent Mapping Retention
 
-## Current 11-Scenario Matrix
+Date: 2026-07-22
+
+- The Protected Values page was exercised at desktop and 390px mobile widths. The default state was `永久保留`, the duration controls were disabled, and neither layout had horizontal overflow or browser-console errors.
+- Enabling a two-hour idle policy through the real WebUI updated all 22 active mappings with deadlines. Disabling it again cleared every active deadline while remembering the two-hour preference for the next enable action.
+- Claude Code then ran `exact_sensitive_copy` through APG and the real DeepSeek API using only its built-in Read/Edit tools. The destination was byte-identical to the sensitive source, 13 local materializations succeeded, and upstream, final-answer, audit, and provider-key scans were clean.
+- The isolated live-agent database used the default disabled policy and retained all 12 active mappings without idle or maximum expiry deadlines.
+- Existing tombstones were not revived. The administration API and WebUI now distinguish mappings that expired under an earlier policy from mappings that were manually revoked.
+
+Evidence: `/private/tmp/apg-retention-live/summary.json` and the isolated state database below that directory.
+
+## Operation-Level Audit Pairing
+
+Date: 2026-07-22
+
+- Claude Code and OpenCode each reran `exact_sensitive_copy` through APG and the real DeepSeek API using only built-in file tools.
+- Claude used Read/Edit; OpenCode used Read/Write. Both generated files were byte-identical to the sensitive source (`394c1ea45571d357096ec2a921fe9ff1f03e3fb3270f0b9659c67bc4923ce17b`).
+- Claude recorded 11 local materializations and 10 unique replacement/materialization representation pairs. OpenCode recorded 10 materializations and 9 pairs.
+- Failed materializations, omitted operation details, upstream private-path leaks, safe-log canary hits, final-answer canary/APG-handle hits, and provider-key file hits were all zero.
+- A separate live DeepSeek tool call was inspected through the WebUI: masked and temporarily revealed detail views used the same `pv_...` id in both directions, disabling raw display cleared the DOM immediately, refresh restored the hidden default, and desktop/390px layouts had no horizontal overflow.
+
+Evidence: `/private/tmp/apg-readable-audit-live/summary.json`.
+
+## Tool-Argument JSON And Exact-Copy Regression
+
+Date: 2026-07-22
+
+- Claude Code `2.1.217` connected to DeepSeek through Anthropic `/v1/messages` and APG.
+- Existing `secret_tool` and `parallel_materialization` scenarios both passed: 6 completed streams, 8 local materializations, and zero upstream/audit/final/provider-key leak hits.
+- A new `exact_sensitive_copy` scenario gave each Agent only a natural instruction and built-in file tools. Claude used Read/Edit through Anthropic Messages; OpenCode used Read/Write through OpenAI Chat Completions. Both copied a file containing multiple credentials, PII, a private path, quotes, backslashes, and a literal tab.
+- Source and destination SHA-256 values matched exactly: `394c1ea45571d357096ec2a921fe9ff1f03e3fb3270f0b9659c67bc4923ce17b`.
+- The successful Claude exact-copy run completed 4 streams and 12 local materializations; OpenCode completed 4 streams and 10 materializations. Both had zero upstream canary hits, zero final APG handles, and zero provider-key file hits.
+- Two preceding attempts exposed and then verified fixes for shell `export KEY=value` detection and line-number-decorated Claude Read output. Both attempts still produced byte-identical local files, but correctly failed the upstream leak assertion until the detector gap was closed.
+
+Evidence: `/private/tmp/apg-tool-json-fix-live/summary.json`, `/private/tmp/apg-exact-sensitive-copy-live-final/summary.json`, and `/private/tmp/apg-exact-sensitive-copy-opencode-final/summary.json`.
+
+The checked-in real-agent matrix now contains 12 scenarios per agent. A complete 12-by-2 matrix rerun has not yet been performed for this change.
+
+## Historical 11-Scenario Matrix
 
 Date: 2026-07-21
 
@@ -21,7 +58,7 @@ Evidence: `/private/tmp/apg-live-11x2-latest/summary.json` and `/private/tmp/apg
 
 Date: 2026-07-10
 
-The current checked-in `run_live_agents` matrix contains 11 scenarios per agent:
+At the time of this run, `run_live_agents` contained 11 scenarios per agent:
 
 - `secret_tool`, `pii_tool`, and `parallel_materialization`
 - `config_debug`, `pii_summary`, and `log_analysis`

@@ -1,0 +1,15 @@
+#!/bin/sh
+set -eu
+
+ROOT=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+PYTHON=${APG_PYTHON:-"$ROOT/.venv/bin/python"}
+
+if [ ! -x "$PYTHON" ]; then
+  printf '%s\n' "APG virtual environment not found." >&2
+  printf '%s\n' "Run: python3 -m venv .venv && .venv/bin/pip install -e '.[dev]'" >&2
+  exit 1
+fi
+
+cd "$ROOT"
+export PYTHONPATH="$ROOT/src${PYTHONPATH:+:$PYTHONPATH}"
+exec "$PYTHON" -m gateway.cli "$@"

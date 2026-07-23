@@ -6,7 +6,7 @@
 - Rule-based detectors
 - Signed placeholders
 - Redaction and pseudonymization
-- SQLite mapping store with TTL and tombstones
+- SQLite mapping store with default-persistent values, configurable idle retention, and tombstones
 - Response scanner
 - Audit logs
 - Basic policy engine

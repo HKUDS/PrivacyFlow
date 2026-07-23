@@ -206,6 +206,19 @@ def test_openai_streaming_tool_call_arguments_materialize_locally(tmp_path) -> N
     assert "APG-managed protected value" not in body
     audit = (tmp_path / "audit.jsonl").read_text()
     assert '"materialized": 1' in audit
+    request_summary = client.get(
+        "/api/admin/audit/requests",
+        headers={"Authorization": "Bearer local"},
+    ).json()["requests"][0]
+    detail = client.get(
+        f"/api/admin/audit/requests/{request_summary['request_id']}",
+        headers={"Authorization": "Bearer local"},
+    ).json()
+    assert request_summary["replacement_count"] == 1
+    assert request_summary["materialization_count"] == 1
+    assert detail["replacements"][0]["representation"] == detail["materializations"][0]["representation"]
+    assert detail["materializations"][0]["tool_name"] == "use_key"
+    assert detail["materializations"][0]["original"] == "***"
 
 
 @pytest.mark.parametrize("emit_raw", [False, True])
@@ -343,6 +356,66 @@ def test_invalid_streaming_tool_placeholder_is_preserved_and_audited(tmp_path) -
     assert forged not in audit
 
 
+@pytest.mark.parametrize("endpoint", ["/v1/chat/completions", "/v1/messages"])
+def test_malformed_streaming_tool_arguments_return_safe_error_and_specific_audit(tmp_path, endpoint: str) -> None:
+    secret = "sk-proj-abcdefghijklmnopqrstuvwxyz0"
+
+    def factory(payload):
+        placeholder = PLACEHOLDER_RE.search(json.dumps(payload)).group(0)
+
+        async def chunks():
+            event = {
+                "choices": [
+                    {
+                        "index": 0,
+                        "delta": {
+                            "tool_calls": [
+                                {
+                                    "index": 0,
+                                    "id": "call_bad",
+                                    "type": "function",
+                                    "function": {
+                                        "name": "use_key",
+                                        "arguments": '{"api_key":"' + placeholder,
+                                    },
+                                }
+                            ]
+                        },
+                        "finish_reason": "tool_calls",
+                    }
+                ]
+            }
+            yield ("data: " + json.dumps(event) + "\n\n").encode()
+            yield b"data: [DONE]\n\n"
+
+        return chunks()
+
+    client = TestClient(create_app(_cfg(tmp_path), StaticStreamUpstream(factory)))
+    headers = {"x-api-key": "local"} if endpoint == "/v1/messages" else {"Authorization": "Bearer local"}
+    request_body = {
+        "model": "claude-sonnet" if endpoint == "/v1/messages" else "x",
+        "stream": True,
+        "messages": [{"role": "user", "content": "use " + secret}],
+    }
+    if endpoint == "/v1/messages":
+        request_body["max_tokens"] = 64
+
+    body = _stream_request(client, endpoint, request_body, headers)
+
+    assert secret not in body
+    assert "<APG:v1:" not in body
+    assert "not valid JSON" in body
+    if endpoint == "/v1/chat/completions":
+        assert "APG_TOOL_ARGUMENTS_INVALID" in body
+    else:
+        assert "event: error" in body
+    audit = (tmp_path / "audit.jsonl").read_text()
+    assert '"parse_errors": 1' in audit
+    assert '"stream_parse_errors": 0' in audit
+    assert '"tool_argument_json_errors": {"invalid_tool_arguments_json": 1}' in audit
+    assert '"termination": "protocol_error"' in audit
+
+
 def test_malformed_openai_stream_fails_closed(tmp_path) -> None:
     raw = "sk-proj-abcdefghijklmnopqrstuvwxyz0"
 
@@ -363,6 +436,8 @@ def test_malformed_openai_stream_fails_closed(tmp_path) -> None:
     assert "APG_STREAM_PARSE_ERROR" in body
     audit = (tmp_path / "audit.jsonl").read_text()
     assert '"parse_errors": 1' in audit
+    assert '"stream_parse_errors": 1' in audit
+    assert '"tool_argument_json_errors": {}' in audit
     assert '"termination": "protocol_error"' in audit
 
 
@@ -437,6 +512,18 @@ def test_anthropic_streaming_text_and_tool_args_are_protected(tmp_path) -> None:
     assert "<APG:v1:" not in body
     assert '"name": "use_key"' in body
     assert body.index(PROTECTED_VALUE) < body.index(secret)
+    request_summary = client.get(
+        "/api/admin/audit/requests",
+        headers={"Authorization": "Bearer local"},
+    ).json()["requests"][0]
+    detail = client.get(
+        f"/api/admin/audit/requests/{request_summary['request_id']}",
+        headers={"Authorization": "Bearer local"},
+    ).json()
+    assert request_summary["replacement_count"] == 1
+    assert request_summary["materialization_count"] == 1
+    assert detail["replacements"][0]["protected_value_id"] == detail["materializations"][0]["protected_value_id"]
+    assert detail["materializations"][0]["tool_name"] == "use_key"
 
 
 def test_malformed_anthropic_stream_returns_safe_error(tmp_path) -> None:

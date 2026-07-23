@@ -4,13 +4,14 @@ import codecs
 import copy
 import json
 import re
+import time
 from collections import Counter
 from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
 from typing import Any, Callable
 
 from gateway.detector_manager import DetectorManager
-from gateway.mapping_store import MappingStore
+from gateway.mapping_store import MappingRecord, MappingStore
 from gateway.materialization_engine import MaterializationEngine
 from gateway.path_alias_manager import PathAliasManager
 from gateway.placeholder_parser import APG_PLACEHOLDER_FORMAT_EXAMPLE, PlaceholderSigner
@@ -40,6 +41,12 @@ _PEM_END_RE = re.compile(r"-----END (?:RSA |OPENSSH |EC |DSA )?PRIVATE KEY-----"
 
 class StreamProtocolError(ValueError):
     pass
+
+
+class ToolArgumentsJSONError(StreamProtocolError):
+    def __init__(self, reason_code: str) -> None:
+        super().__init__(reason_code)
+        self.reason_code = reason_code
 
 
 class SSEDecoder:
@@ -109,7 +116,12 @@ class StreamAuditSummary:
     materialized: int = 0
     failures: Counter[str] = field(default_factory=Counter)
     parse_errors: int = 0
+    stream_parse_errors: int = 0
+    tool_argument_json_errors: Counter[str] = field(default_factory=Counter)
     termination: str = "completed"
+    audit_operations: list[dict[str, Any]] = field(default_factory=list)
+    audit_operations_omitted: int = 0
+    _audit_operation_indexes: dict[tuple[tuple[str, str], ...], int] = field(default_factory=dict, repr=False)
 
     def record(self, events: list[dict[str, Any]]) -> None:
         for event in events:
@@ -119,6 +131,32 @@ class StreamAuditSummary:
                 self.materialized += 1
             elif event.get("action") == "preserve":
                 self.failures[str(event.get("result_code") or "APG_MATERIALIZATION_FAILED")] += 1
+            operation = event.get("_audit_operation")
+            if isinstance(operation, dict):
+                self._record_audit_operation(operation)
+
+    def _record_audit_operation(self, operation: dict[str, Any]) -> None:
+        occurrence_count = max(1, int(operation.get("occurrence_count", 1) or 1))
+        key = tuple(sorted((str(k), str(v)) for k, v in operation.items() if k != "occurrence_count"))
+        existing_index = self._audit_operation_indexes.get(key)
+        if existing_index is not None:
+            existing = self.audit_operations[existing_index]
+            existing["occurrence_count"] = int(existing.get("occurrence_count", 1)) + occurrence_count
+            return
+        if len(self.audit_operations) >= 1000:
+            self.audit_operations_omitted += occurrence_count
+            return
+        stored = dict(operation)
+        stored["occurrence_count"] = occurrence_count
+        self._audit_operation_indexes[key] = len(self.audit_operations)
+        self.audit_operations.append(stored)
+
+    def record_protocol_error(self, error: StreamProtocolError) -> None:
+        self.parse_errors += 1
+        if isinstance(error, ToolArgumentsJSONError):
+            self.tool_argument_json_errors[error.reason_code] += 1
+        else:
+            self.stream_parse_errors += 1
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -126,7 +164,11 @@ class StreamAuditSummary:
             "materialized": self.materialized,
             "materialization_failures": dict(self.failures),
             "parse_errors": self.parse_errors,
+            "stream_parse_errors": self.stream_parse_errors,
+            "tool_argument_json_errors": dict(self.tool_argument_json_errors),
             "termination": self.termination,
+            "_audit_operations": self.audit_operations,
+            "audit_operations_omitted": self.audit_operations_omitted,
         }
 
 
@@ -516,7 +558,7 @@ class RedactionEngine:
                 continue
             if det.type == "path" and decision.action == "alias":
                 alias = self._hierarchical_path_alias(raw, session_id)
-                self.mapping_store.upsert_mapping(
+                rec = self.mapping_store.upsert_mapping(
                     session_id=session_id,
                     workspace_id=self.workspace_id,
                     scope="workspace",
@@ -525,10 +567,10 @@ class RedactionEngine:
                     value=raw,
                     store_value=True,
                     materialization_class="path",
-                    ttl_seconds=14 * 86_400,
-                    max_ttl_seconds=90 * 86_400,
                 )
                 replacement = alias
+                representation_type = "path_alias"
+                issued_at = 0
             else:
                 # In pii_mode == "redact" PII is routed onto the secret track:
                 # signed <APG:v1:secret:...> placeholder, mapping kind == "secret",
@@ -549,58 +591,99 @@ class RedactionEngine:
                     value=raw,
                     store_value=True,
                     materialization_class=materialization_class,
-                    ttl_seconds=7 * 86_400 if det.type == "pii" else 1800,
-                    max_ttl_seconds=30 * 86_400 if det.type == "pii" else 7200,
                 )
-                if det.type == "pii" and decision.action == "pseudonymize":
-                    replacement = self.signer.issue("pii", rec.handle_id, session_id)
-                else:
-                    replacement = self.signer.issue(mapping_kind, rec.handle_id, session_id)
-            events.append(
-                {
-                    "type": det.type,
-                    "subtype": det.subtype,
-                    "detector": det.detector_name,
+                placeholder_kind = "pii" if det.type == "pii" and decision.action == "pseudonymize" else mapping_kind
+                issued_at = int(time.time())
+                replacement = self.signer.issue(placeholder_kind, rec.handle_id, session_id, issued_at)
+                representation_type = "signed_placeholder"
+            event = {
+                "type": det.type,
+                "subtype": det.subtype,
+                "detector": det.detector_name,
+                "risk": det.risk,
+                "action": decision.action,
+                "safe_preview": det.safe_preview,
+            }
+            if scope != "response":
+                event["_audit_operation"] = {
+                    "direction": "replacement",
+                    "handle_id": rec.handle_id,
+                    "kind": rec.kind,
+                    "subtype": rec.subtype,
                     "risk": det.risk,
+                    "detector": det.detector_name,
                     "action": decision.action,
-                    "safe_preview": det.safe_preview,
+                    "sink": "remote_llm",
+                    "result_code": "OK",
+                    "representation_type": representation_type,
+                    "placeholder_session_id": session_id if representation_type == "signed_placeholder" else "",
+                    "issued_at": issued_at,
+                    "suffix": "",
+                    "alias": replacement if representation_type == "path_alias" else "",
+                    "tool_name": "",
                 }
-            )
+            events.append(event)
             out.append(replacement)
             cursor = det.span_end
         out.append(text[cursor:])
         return "".join(out), events
 
-    def materialize_local_json(self, data: Any, session_id: str) -> Any:
+    def materialize_local_json_with_events(
+        self,
+        data: Any,
+        session_id: str,
+        *,
+        tool_name: str = "",
+    ) -> tuple[Any, list[dict[str, Any]]]:
+        events: list[dict[str, Any]] = []
+
         def walk(value: Any) -> Any:
             if isinstance(value, str):
-                return self.materialize_local_text(value, session_id)
+                materialized, materialization_events = self.materialize_local_text_with_events(
+                    value,
+                    session_id,
+                    tool_name=tool_name,
+                )
+                events.extend(materialization_events)
+                return materialized
             if isinstance(value, list):
                 return [walk(v) for v in value]
             if isinstance(value, dict):
                 return {k: walk(v) for k, v in value.items()}
             return value
 
-        return walk(copy.deepcopy(data))
+        return walk(copy.deepcopy(data)), events
+
+    def materialize_local_json(self, data: Any, session_id: str) -> Any:
+        materialized, _ = self.materialize_local_json_with_events(data, session_id)
+        return materialized
 
     def materialize_local_text(self, text: str, session_id: str) -> str:
         materialized, _ = self.materialize_local_text_with_events(text, session_id)
         return materialized
 
-    def materialize_local_text_with_events(self, text: str, session_id: str) -> tuple[str, list[dict[str, Any]]]:
+    def materialize_local_text_with_events(
+        self,
+        text: str,
+        session_id: str,
+        *,
+        tool_name: str = "",
+    ) -> tuple[str, list[dict[str, Any]]]:
         materialized = text
         events: list[dict[str, Any]] = []
-        for alias, value in self._active_path_mapping(session_id):
+        for alias, value, rec in self._active_path_mapping(session_id):
             if alias in materialized:
                 materialized = materialized.replace(alias, value)
                 events.append(
-                    {
-                        "type": "materialization",
-                        "kind": "path",
-                        "sink": "local_tool",
-                        "action": "materialize",
-                        "result_code": "OK",
-                    }
+                    self._materialization_event(
+                        rec,
+                        sink="local_tool",
+                        action="materialize",
+                        result_code="OK",
+                        representation_type="path_alias",
+                        alias=alias,
+                        tool_name=tool_name,
+                    )
                 )
         for ph in self.signer.parse(materialized):
             result = self._materializer.materialize_placeholder(ph, session_id=session_id, sink_type="local_tool")
@@ -611,15 +694,31 @@ class RedactionEngine:
             else:
                 action = "preserve"
                 result_code = result.error_code or "APG_MATERIALIZATION_FAILED"
-            events.append(
-                {
-                    "type": "materialization",
-                    "kind": ph.kind,
-                    "sink": "local_tool",
-                    "action": action,
-                    "result_code": result_code,
-                }
-            )
+            rec = self.mapping_store.get(ph.handle_id) if self.signer.is_valid(ph) else None
+            if rec is None:
+                events.append(
+                    {
+                        "type": "materialization",
+                        "kind": ph.kind,
+                        "sink": "local_tool",
+                        "action": action,
+                        "result_code": result_code,
+                    }
+                )
+            else:
+                events.append(
+                    self._materialization_event(
+                        rec,
+                        sink="local_tool",
+                        action=action,
+                        result_code=result_code,
+                        representation_type="signed_placeholder",
+                        placeholder_session_id=ph.session_id,
+                        issued_at=ph.issued_at,
+                        suffix=ph.suffix,
+                        tool_name=tool_name,
+                    )
+                )
         return materialized, events
 
     def active_secret_values(self, session_id: str) -> list[str]:
@@ -630,10 +729,15 @@ class RedactionEngine:
         )
         return sorted(set(values), key=len, reverse=True)
 
-    def _active_path_mapping(self, session_id: str) -> list[tuple[str, str]]:
+    def _active_path_mapping(self, session_id: str) -> list[tuple[str, str, MappingRecord]]:
         pairs = [
-            (self.path_aliases.alias_for(value), value)
-            for value in self.mapping_store.active_path_values(session_id, self.workspace_id)
+            (self._hierarchical_path_alias(str(record.value), session_id), str(record.value), record)
+            for record in self.mapping_store.active_records(
+                session_id,
+                self.workspace_id,
+                materialization_class="path",
+            )
+            if record.value
         ]
         return sorted(set(pairs), key=lambda item: len(item[0]), reverse=True)
 
@@ -646,7 +750,47 @@ class RedactionEngine:
         return self.path_aliases.alias_for(raw)
 
     def active_path_aliases(self, session_id: str) -> list[str]:
-        return [alias for alias, _ in self._active_path_mapping(session_id)]
+        return [alias for alias, _, _ in self._active_path_mapping(session_id)]
+
+    def _materialization_event(
+        self,
+        record: MappingRecord,
+        *,
+        sink: str,
+        action: str,
+        result_code: str,
+        representation_type: str,
+        placeholder_session_id: str = "",
+        issued_at: int = 0,
+        suffix: str = "",
+        alias: str = "",
+        tool_name: str = "",
+    ) -> dict[str, Any]:
+        return {
+            "type": "materialization",
+            "kind": record.kind,
+            "subtype": record.subtype,
+            "sink": sink,
+            "action": action,
+            "result_code": result_code,
+            "_audit_operation": {
+                "direction": "materialization" if action == "materialize" else "materialization_failed",
+                "handle_id": record.handle_id,
+                "kind": record.kind,
+                "subtype": record.subtype,
+                "risk": "",
+                "detector": "",
+                "action": action,
+                "sink": sink,
+                "result_code": result_code,
+                "representation_type": representation_type,
+                "placeholder_session_id": placeholder_session_id,
+                "issued_at": issued_at,
+                "suffix": suffix,
+                "alias": alias,
+                "tool_name": tool_name,
+            },
+        }
 
     def stream_requires_strict_buffering(self) -> bool:
         modules = self.detector_manager.hierarchical.flow.modules
@@ -655,6 +799,32 @@ class RedactionEngine:
     def materialize_local_tool_args(self, data: Any, session_id: str) -> Any:
         materialized, _ = self.materialize_local_tool_args_with_events(data, session_id)
         return materialized
+
+    def materialize_local_tool_arguments_json_with_events(
+        self,
+        arguments: str,
+        session_id: str,
+        *,
+        tool_name: str = "",
+    ) -> tuple[str, list[dict[str, Any]]]:
+        """Validate, materialize, and re-encode one standard tool argument object."""
+        if not isinstance(arguments, str):
+            raise ToolArgumentsJSONError("invalid_tool_arguments_type")
+
+        source = arguments.strip() or "{}"
+
+        def reject_nonstandard_constant(_: str) -> None:
+            raise ValueError("nonstandard JSON constant")
+
+        try:
+            parsed = json.loads(source, parse_constant=reject_nonstandard_constant)
+        except (ValueError, TypeError) as exc:
+            raise ToolArgumentsJSONError("invalid_tool_arguments_json") from exc
+        if not isinstance(parsed, dict):
+            raise ToolArgumentsJSONError("invalid_tool_arguments_type")
+
+        materialized, events = self.materialize_local_json_with_events(parsed, session_id, tool_name=tool_name)
+        return json.dumps(materialized, ensure_ascii=False, allow_nan=False), events
 
     def materialize_local_tool_args_with_events(self, data: Any, session_id: str) -> tuple[Any, list[dict[str, Any]]]:
         """Materialize placeholders back to raw values, but only inside
@@ -667,34 +837,7 @@ class RedactionEngine:
         Fail-closed: an invalid/hallucinated placeholder is left as-is rather
         than partially replaced.
         """
-        import json as _json
         events: list[dict[str, Any]] = []
-
-        def materialize_text(s: str, sid: str) -> str:
-            value, materialization_events = self.materialize_local_text_with_events(s, sid)
-            events.extend(materialization_events)
-            return value
-
-        def materialize_string(s: str) -> str:
-            # arguments is a JSON-encoded string in the OpenAI shape; try to
-            # materialize inside the decoded structure so keys/positions are
-            # preserved, then re-encode. If it isn't valid JSON, treat the
-            # whole string as a free-form argument and materialize directly.
-            try:
-                parsed = _json.loads(s)
-            except (ValueError, TypeError):
-                return materialize_text(s, session_id)
-            materialized = _materialize_json_node(parsed, session_id)
-            return _json.dumps(materialized, ensure_ascii=False)
-
-        def _materialize_json_node(node: Any, sid: str) -> Any:
-            if isinstance(node, str):
-                return materialize_text(node, sid)
-            if isinstance(node, list):
-                return [_materialize_json_node(v, sid) for v in node]
-            if isinstance(node, dict):
-                return {k: _materialize_json_node(v, sid) for k, v in node.items()}
-            return node
 
         def walk(value: Any, path: tuple[str, ...]) -> Any:
             if isinstance(value, list):
@@ -703,11 +846,26 @@ class RedactionEngine:
                 out: dict[str, Any] = {}
                 for k, v in value.items():
                     child_path = path + (str(k),)
-                    if _is_tool_arg_container(value, str(k), path) and isinstance(v, (str, dict, list)):
-                        if isinstance(v, str):
-                            out[k] = materialize_string(v)
+                    if _is_tool_arg_container(value, str(k), path):
+                        tool_name = str(value.get("name") or "")
+                        if k == "arguments":
+                            if not isinstance(v, str):
+                                raise ToolArgumentsJSONError("invalid_tool_arguments_type")
+                            out[k], argument_events = self.materialize_local_tool_arguments_json_with_events(
+                                v,
+                                session_id,
+                                tool_name=tool_name,
+                            )
+                            events.extend(argument_events)
                         else:
-                            out[k] = _materialize_json_node(v, session_id)
+                            if not isinstance(v, dict):
+                                raise ToolArgumentsJSONError("invalid_tool_arguments_type")
+                            out[k], argument_events = self.materialize_local_json_with_events(
+                                v,
+                                session_id,
+                                tool_name=tool_name,
+                            )
+                            events.extend(argument_events)
                     else:
                         out[k] = walk(v, child_path)
                 return out
@@ -776,10 +934,19 @@ class RedactionEngine:
             restorations[token] = raw
             return token
 
-        for alias, value in self._active_path_mapping(session_id):
+        for alias, value, rec in self._active_path_mapping(session_id):
             if alias in protected:
                 protected = protected.replace(alias, protect(value))
-                events.append({"type": "materialization", "kind": "path", "sink": "local_user", "action": "materialize", "result_code": "OK"})
+                events.append(
+                    self._materialization_event(
+                        rec,
+                        sink="local_user",
+                        action="materialize",
+                        result_code="OK",
+                        representation_type="path_alias",
+                        alias=alias,
+                    )
+                )
         for ph in self.signer.parse(protected):
             if ph.kind == "secret":
                 continue
@@ -791,7 +958,21 @@ class RedactionEngine:
             else:
                 action = "preserve"
                 result_code = result.error_code or "APG_MATERIALIZATION_FAILED"
-            events.append({"type": "materialization", "kind": ph.kind, "sink": "local_user", "action": action, "result_code": result_code})
+            rec = self.mapping_store.get(ph.handle_id) if result.allowed and self.signer.is_valid(ph) else None
+            if rec is None:
+                events.append({"type": "materialization", "kind": ph.kind, "sink": "local_user", "action": action, "result_code": result_code})
+            else:
+                events.append(
+                    self._materialization_event(
+                        rec,
+                        sink="local_user",
+                        action=action,
+                        result_code=result_code,
+                        representation_type="signed_placeholder",
+                        issued_at=ph.issued_at,
+                        suffix=ph.suffix,
+                    )
+                )
 
         safe, scan_events = self.sanitize_text(
             protected,
@@ -809,7 +990,19 @@ class RedactionEngine:
             result = self._materializer.materialize_placeholder(ph, session_id=session_id, sink_type="local_user")
             if result.allowed and result.value is not None:
                 safe = safe.replace(ph.raw + ph.suffix, result.value)
-                post_events.append({"type": "materialization", "kind": ph.kind, "sink": "local_user", "action": "materialize", "result_code": "OK"})
+                rec = self.mapping_store.get(ph.handle_id)
+                if rec is not None:
+                    post_events.append(
+                        self._materialization_event(
+                            rec,
+                            sink="local_user",
+                            action="materialize",
+                            result_code="OK",
+                            representation_type="signed_placeholder",
+                            issued_at=ph.issued_at,
+                            suffix=ph.suffix,
+                        )
+                    )
         return safe, [*events, *scan_events, *post_events]
 
     def _is_protocol_value(self, path: tuple[str, ...]) -> bool:
@@ -862,29 +1055,37 @@ class RedactionEngine:
                 summary.record(events)
                 if safe:
                     output.append(payload_bytes(choice_payload(base, choice_index, {"content": safe})))
+            prepared_tools: list[tuple[_OpenAIToolBuffer, str]] = []
+            materialization_events: list[dict[str, Any]] = []
             for key, tool in sorted(tool_buffers.items()):
                 if key[0] != choice_index or tool.flushed:
                     continue
-                args, events = self.materialize_local_text_with_events(tool.arguments, session_id)
-                summary.record(events)
+                args, events = self.materialize_local_tool_arguments_json_with_events(
+                    tool.arguments,
+                    session_id,
+                    tool_name=tool.name,
+                )
+                prepared_tools.append((tool, args))
+                materialization_events.extend(events)
+            summary.record(materialization_events)
+            for tool, args in prepared_tools:
                 tool.flushed = True
-                if args:
-                    output.append(
-                        payload_bytes(
-                            choice_payload(
-                                base,
-                                choice_index,
-                                {
-                                    "tool_calls": [
-                                        {
-                                            "index": tool.call_index,
-                                            "function": {"arguments": args},
-                                        }
-                                    ]
-                                },
-                            )
+                output.append(
+                    payload_bytes(
+                        choice_payload(
+                            base,
+                            choice_index,
+                            {
+                                "tool_calls": [
+                                    {
+                                        "index": tool.call_index,
+                                        "function": {"arguments": args},
+                                    }
+                                ]
+                            },
                         )
                     )
+                )
             finished_choices.add(choice_index)
             return output
 
@@ -993,13 +1194,18 @@ class RedactionEngine:
                 for item in flush_choice(choice_index, last_base.get(choice_index, {})):
                     yield item
             normal_end = True
-        except StreamProtocolError:
-            summary.parse_errors += 1
+        except StreamProtocolError as exc:
+            summary.record_protocol_error(exc)
             summary.termination = "protocol_error"
+            tool_error = isinstance(exc, ToolArgumentsJSONError)
             error = {
                 "error": {
-                    "code": "APG_STREAM_PARSE_ERROR",
-                    "message": "The upstream stream could not be safely parsed.",
+                    "code": "APG_TOOL_ARGUMENTS_INVALID" if tool_error else "APG_STREAM_PARSE_ERROR",
+                    "message": (
+                        "The upstream tool-call arguments were not valid JSON."
+                        if tool_error
+                        else "The upstream stream could not be safely parsed."
+                    ),
                     "retryable": True,
                 }
             }
@@ -1193,8 +1399,8 @@ class RedactionEngine:
                 for item in flush_tool(key):
                     yield item
             normal_end = True
-        except StreamProtocolError:
-            summary.parse_errors += 1
+        except StreamProtocolError as exc:
+            summary.record_protocol_error(exc)
             summary.termination = "protocol_error"
             error = {
                 "type": "error",

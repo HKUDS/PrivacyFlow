@@ -194,6 +194,40 @@ def test_v1_state_migrates_module_overrides_and_custom_rules(tmp_path) -> None:
     assert os.stat(backup).st_mode & 0o777 == 0o600
 
 
+def test_v2_copied_template_upgrades_historical_builtin_rule_without_losing_active_state(tmp_path) -> None:
+    historical_pattern = (
+        r"^\s*[A-Z0-9_]*(?:API_KEY|TOKEN|SECRET|PASSWORD|PASSWD|PASS|CREDENTIAL|PRIVATE_KEY|DATABASE_URL)"
+        r"[A-Z0-9_]*\s*=\s*(?P<value>.+)$"
+    )
+    detector_control, _ = control(tmp_path)
+    created = detector_control.create_configuration({"name": "No entropy", "source_id": "builtin.comprehensive"})
+    next(module for module in created["modules"] if module["id"] == "entropy")["enabled"] = False
+    saved = detector_control.save_configuration(created["id"], created)
+    detector_control.activate_configuration(saved["id"])
+
+    state_path = tmp_path / "detector-control.json"
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    active = next(item for item in state["configurations"] if item["id"] == saved["id"])
+    env_rule = next(
+        rule
+        for module in active["modules"]
+        if module["type"] == "regex"
+        for rule in module["config"]["rules"]
+        if rule["id"] == "secret.env_assignment"
+    )
+    env_rule["pattern"] = historical_pattern
+    state_path.write_text(json.dumps(state), encoding="utf-8")
+
+    reloaded, _ = control(tmp_path)
+    restored = reloaded.active_configuration()
+    assert restored["id"] == saved["id"]
+    assert next(module for module in restored["modules"] if module["id"] == "entropy")["enabled"] is False
+    assert "env_assignment" in subtypes(
+        reloaded.manager_for_configuration(restored["id"]),
+        '    42\u2192export SERVICE_TOKEN="secret-value"',
+    )
+
+
 def test_v1_migration_failure_keeps_original_state_and_runtime(tmp_path) -> None:
     state_path = tmp_path / "detector-control.json"
     state_path.write_text(

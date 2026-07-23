@@ -21,6 +21,7 @@ The generated `apg-agent-test-repo` contains:
 - `src/client.py` with token-to-arbitrary-URL flow
 - `docs/customer_notes.md` with PII and a test credit card
 - `logs/error.log` with JWT-like and API-key-like canaries
+- `fixtures/sensitive_commands.txt` with credentials, PII, a private path, shell quoting, a backslash, and a literal tab for exact-copy validation
 - shell/script/package fixtures
 
 All secrets are fake canaries. Never add real credentials.
@@ -72,9 +73,9 @@ The scenario YAML files provide prompts, required files, expected agent actions,
 
 `run_live_agents` launches Claude Code and OpenCode themselves in isolated synthetic repositories and validates their real streaming tool trajectories.
 
-The live matrix contains 11 scenarios per agent: secret and PII validator calls, parallel secret/PII materialization, configuration debugging, PII summary, log analysis, absolute-path restoration, multi-file privacy review, safe `.env.example` generation, a sanitized customer reply, and a generated debug script that is executed under a canary environment. Each case validates the APG contract, stream audit, tool trajectory, workspace diff, generated files, final answer, and exact provider-key absence.
+The live matrix contains 12 scenarios per agent: secret and PII validator calls, parallel secret/PII materialization, configuration debugging, PII summary, log analysis, absolute-path restoration, multi-file privacy review, safe `.env.example` generation, an exact sensitive-file copy, a sanitized customer reply, and a generated debug script that is executed under a canary environment. The exact-copy case disables the entropy module, gives only a natural instruction, requires the Agent's built-in Read and file-writing tools, and compares source/destination SHA-256 values without a prewritten validator. Each case validates the APG contract, stream audit, tool trajectory, workspace diff, generated files, final answer, and exact provider-key absence.
 
-The provider credential is inherited only by the local APG server. Agent CLI subprocesses receive an environment allowlist plus the local `apg-local` credential. A stream passes when all entries have `parse_errors=0`, no protocol failure occurred, and at least one stream completed; an explicitly audited `client_disconnected` entry is permitted because agent CLIs may cancel auxiliary title/background streams.
+The provider credential is inherited only by the local APG server. Agent CLI subprocesses receive an environment allowlist plus the local `apg-local` credential. A stream passes when all entries have `parse_errors=0`, `stream_parse_errors=0`, no `tool_argument_json_errors`, no protocol failure occurred, and at least one stream completed; an explicitly audited `client_disconnected` entry is permitted because agent CLIs may cancel auxiliary title/background streams.
 
 ## Mock External Sink
 

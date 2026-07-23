@@ -2,15 +2,20 @@ from __future__ import annotations
 
 import json
 import os
+import sqlite3
 import threading
 import time
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from gateway.mapping_store import MappingStore
 
 
 class AuditLogger:
-    def __init__(self, path: str) -> None:
+    def __init__(self, path: str, operation_store: MappingStore | None = None) -> None:
         self.path = Path(path)
+        self.operation_store = operation_store
         self._lock = threading.RLock()
         self.path.parent.mkdir(parents=True, exist_ok=True)
         if self.path.exists():
@@ -20,8 +25,25 @@ class AuditLogger:
                 pass
 
     def log(self, event: dict[str, Any]) -> None:
-        safe = scrub_audit_value(event)
-        safe.setdefault("timestamp", int(time.time()))
+        source = dict(event)
+        source.setdefault("timestamp", int(time.time()))
+        operations = _collect_audit_operations(source)
+        operation_error = False
+        if operations and self.operation_store is not None:
+            try:
+                self.operation_store.record_audit_operations(
+                    request_id=str(source.get("request_id") or ""),
+                    session_id=str(source.get("session_id") or ""),
+                    workspace_id=str(source.get("workspace_id") or ""),
+                    endpoint=str(source.get("endpoint") or ""),
+                    timestamp=int(source["timestamp"]),
+                    operations=operations,
+                )
+            except (OSError, sqlite3.Error, TypeError, ValueError):
+                operation_error = True
+        safe = scrub_audit_value(source)
+        if operation_error:
+            safe["audit_operation_capture_error"] = True
         with self._lock:
             with self.path.open("a", encoding="utf-8") as f:
                 f.write(json.dumps(safe, sort_keys=True) + "\n")
@@ -39,7 +61,16 @@ def scrub_audit_value(value: Any, depth: int = 0) -> Any:
         return {
             k: scrub_audit_value(v, depth + 1)
             for k, v in value.items()
-            if k not in {"raw", "value", "secret", "handle", "handle_id", "fingerprint"}
+            if k not in {
+                "raw",
+                "value",
+                "secret",
+                "handle",
+                "handle_id",
+                "fingerprint",
+                "_audit_operation",
+                "_audit_operations",
+            }
         }
     if isinstance(value, list):
         return [scrub_audit_value(v, depth + 1) for v in value]
@@ -70,3 +101,25 @@ _SCRUB_MARKERS = (
     "eyJ",             # JWT header prefix
     "tss_",            # GitHub token prefix (undocumented format)
 )
+
+
+def _collect_audit_operations(value: Any) -> list[dict[str, Any]]:
+    operations: list[dict[str, Any]] = []
+
+    def walk(node: Any) -> None:
+        if isinstance(node, dict):
+            operation = node.get("_audit_operation")
+            if isinstance(operation, dict):
+                operations.append(operation)
+            operation_list = node.get("_audit_operations")
+            if isinstance(operation_list, list):
+                operations.extend(item for item in operation_list if isinstance(item, dict))
+            for key, item in node.items():
+                if key not in {"_audit_operation", "_audit_operations"}:
+                    walk(item)
+        elif isinstance(node, list):
+            for item in node:
+                walk(item)
+
+    walk(value)
+    return operations

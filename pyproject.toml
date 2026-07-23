@@ -21,7 +21,7 @@ models = [
 ]
 
 [project.scripts]
-apg = "gateway.server:main"
+apg = "gateway.cli:main"
 
 [build-system]
 requires = ["hatchling"]

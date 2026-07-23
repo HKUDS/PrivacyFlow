@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+import json
 import os
+import re
 import sqlite3
 
 from fastapi.testclient import TestClient
 
 from gateway.config import GatewayConfig, UpstreamConfig, load_config
+from gateway.mapping_store import MappingStore
 from gateway.server import create_app
 
 
@@ -21,6 +24,30 @@ class AdminFakeUpstream:
             yield b"data: [DONE]\n\n"
 
         return 200, {"content-type": "text/event-stream"}, chunks()
+
+
+class AuditRoundTripUpstream(AdminFakeUpstream):
+    async def request_json(self, method, path, payload=None):
+        serialized = str(payload)
+        placeholders = re.findall(r"<APG:v1:[^>]+>", serialized)
+        placeholder = next((candidate for candidate in placeholders if candidate.startswith("<APG:v1:secret:")), None)
+        assert placeholder is not None
+        return 200, {"content-type": "application/json"}, {
+            "choices": [{
+                "message": {
+                    "content": "Writing the protected value locally.",
+                    "tool_calls": [{
+                        "id": "call_audit",
+                        "type": "function",
+                        "function": {
+                            "name": "Write",
+                            "arguments": json.dumps({"content": placeholder}),
+                        },
+                    }],
+                },
+                "finish_reason": "tool_calls",
+            }],
+        }
 
 
 def _config(tmp_path) -> GatewayConfig:
@@ -45,12 +72,63 @@ def test_webui_assets_and_admin_auth_are_separated(tmp_path) -> None:
         assert page.status_code == 200
         assert "APG Control" in page.text
         assert "frame-ancestors 'none'" in page.headers["content-security-policy"]
-        assert client.get("/ui/assets/app.js").status_code == 200
+        app_js = client.get("/ui/assets/app.js")
+        assert app_js.status_code == 200
+        assert "ANTHROPIC_BASE_URL" in app_js.text
+        assert "export ANTHROPIC_MODEL=deepseek-v4-pro[1m]" in app_js.text
+        assert "export ANTHROPIC_DEFAULT_SONNET_MODEL=deepseek-v4-pro[1m]" in app_js.text
+        assert "export CLAUDE_CODE_SUBAGENT_MODEL=deepseek-v4-flash" in app_js.text
+        assert "claude --setting-sources project,local" not in app_js.text
         assert client.get("/ui/assets/unknown.js").status_code == 404
 
         assert client.get("/api/admin/overview").status_code == 401
         assert client.get("/api/admin/overview", headers={"Authorization": "Bearer agent-key"}).status_code == 401
         assert client.get("/api/admin/overview", headers=_admin_headers()).status_code == 200
+        assert client.get("/api/admin/audit/requests").status_code == 401
+        assert client.get("/api/admin/audit/requests", headers={"Authorization": "Bearer agent-key"}).status_code == 401
+        assert client.get("/api/admin/audit/operations?direction=replacement").status_code == 401
+        assert client.get(
+            "/api/admin/audit/operations?direction=replacement",
+            headers={"Authorization": "Bearer agent-key"},
+        ).status_code == 401
+        assert client.get(
+            "/api/admin/audit/operations?direction=all",
+            headers=_admin_headers(),
+        ).status_code == 400
+
+        connection = client.get("/api/admin/connection", headers=_admin_headers())
+        assert connection.status_code == 200
+        assert connection.headers["cache-control"] == "no-store"
+        assert connection.json() == {
+            "api_key": "agent-key",
+            "available_key_count": 1,
+            "protocols": {"openai": {"base_path": "/v1"}, "anthropic": {"base_path": ""}},
+        }
+        assert client.get("/api/admin/connection", headers={"Authorization": "Bearer agent-key"}).status_code == 401
+
+        assert "Agent 接入" in page.text
+        assert "agent-api-key" in page.text
+        assert '"agent-key"' not in page.text
+        assert "data-copy-connection" in page.text
+        assert "copy-claude-command" in page.text
+        assert "复制接入命令" in page.text
+        assert 'data-audit-direction="replacement"' in page.text
+        assert 'data-audit-direction="materialization"' in page.text
+        assert "替换记录" in page.text
+        assert "还原记录" in page.text
+        assert "audit-activity" not in page.text
+        assert 'api("/audit/operations?" + params)' in app_js.text
+        assert "本地映射保留" in page.text
+        assert "mapping-retention-enabled" in page.text
+        assert "protected-show-raw" in page.text
+        assert "visibility-button" in page.text
+        assert "visibilityIcon" in app_js.text
+        assert 'api("/protected-values/retention"' in app_js.text
+
+        audit_text = (tmp_path / "audit.jsonl").read_text(encoding="utf-8")
+        assert "view_agent_connection_info" in audit_text
+        assert "agent-key" not in audit_text
+        assert "provider-key" not in audit_text
 
 
 def test_admin_audit_and_protected_values_never_return_raw_capabilities(tmp_path) -> None:
@@ -95,6 +173,283 @@ def test_admin_audit_and_protected_values_never_return_raw_capabilities(tmp_path
     with sqlite3.connect(cfg.database_path) as connection:
         row = connection.execute("SELECT state, value, session_id, fingerprint FROM mappings").fetchone()
     assert row == ("tombstoned", None, "", "")
+
+
+def test_admin_can_temporarily_reveal_active_protected_values(tmp_path) -> None:
+    secret = "sk-proj-protected-reveal-abcdefghijklmnopqrstuvwxyz"
+    cfg = _config(tmp_path)
+    with TestClient(create_app(cfg, AdminFakeUpstream())) as client:
+        response = client.post(
+            "/v1/chat/completions",
+            headers={"Authorization": "Bearer agent-key"},
+            json={"model": "test", "messages": [{"role": "user", "content": f"Use {secret}"}]},
+        )
+        assert response.status_code == 200
+
+        hidden = client.get("/api/admin/protected-values", headers=_admin_headers())
+        assert hidden.status_code == 200
+        assert hidden.headers["cache-control"] == "no-store"
+        assert hidden.json()["raw_values_included"] is False
+        assert hidden.json()["records"][0]["original"] == "***"
+        assert secret not in hidden.text
+
+        assert client.get("/api/admin/protected-values?include_raw=true").status_code == 401
+        assert client.get(
+            "/api/admin/protected-values?include_raw=true",
+            headers={"Authorization": "Bearer agent-key"},
+        ).status_code == 401
+
+        revealed = client.get("/api/admin/protected-values?include_raw=true", headers=_admin_headers())
+        assert revealed.status_code == 200
+        assert revealed.headers["cache-control"] == "no-store"
+        assert revealed.json()["raw_values_included"] is True
+        record = revealed.json()["records"][0]
+        assert record["original"] == secret
+        assert "handle_id" not in revealed.text
+        assert "fingerprint" not in revealed.text
+        assert "<APG" not in revealed.text
+
+        revoked = client.post(f"/api/admin/protected-values/{record['id']}/revoke", headers=_admin_headers())
+        assert revoked.status_code == 200
+        cleared = client.get("/api/admin/protected-values?include_raw=true", headers=_admin_headers())
+        assert cleared.status_code == 200
+        assert cleared.json()["records"] == []
+        assert secret not in cleared.text
+
+    audit_text = (tmp_path / "audit.jsonl").read_text(encoding="utf-8")
+    assert "view_protected_raw_values" in audit_text
+    assert secret not in audit_text
+
+
+def test_admin_can_configure_mapping_retention_with_revision_protection(tmp_path) -> None:
+    secret = "sk-proj-retention-abcdefghijklmnopqrstuvwxyz"
+    cfg = _config(tmp_path)
+    with TestClient(create_app(cfg, AdminFakeUpstream())) as client:
+        response = client.post(
+            "/v1/chat/completions",
+            headers={"Authorization": "Bearer agent-key"},
+            json={"model": "test", "messages": [{"role": "user", "content": f"Use {secret}"}]},
+        )
+        assert response.status_code == 200
+
+        protected = client.get("/api/admin/protected-values", headers=_admin_headers()).json()
+        assert protected["retention_policy"]["enabled"] is False
+        assert protected["retention_policy"]["idle_ttl_seconds"] == 86_400
+        assert protected["retention_policy"]["revision"] == 0
+        assert isinstance(protected["retention_policy"]["updated_at"], int)
+        assert protected["records"][0]["auto_expires"] is False
+        assert protected["records"][0]["expires_at"] is None
+
+        assert client.put(
+            "/api/admin/protected-values/retention",
+            json={"enabled": True, "idle_ttl_seconds": 3600, "revision": 0},
+        ).status_code == 401
+        enabled = client.put(
+            "/api/admin/protected-values/retention",
+            headers=_admin_headers(),
+            json={"enabled": True, "idle_ttl_seconds": 3600, "revision": 0},
+        )
+        assert enabled.status_code == 200
+        assert enabled.headers["cache-control"] == "no-store"
+        assert enabled.json()["enabled"] is True
+        assert enabled.json()["revision"] == 1
+
+        expiring = client.get("/api/admin/protected-values", headers=_admin_headers()).json()
+        assert expiring["records"][0]["auto_expires"] is True
+        assert expiring["records"][0]["expires_at"] is not None
+
+        conflict = client.put(
+            "/api/admin/protected-values/retention",
+            headers=_admin_headers(),
+            json={"enabled": False, "idle_ttl_seconds": 3600, "revision": 0},
+        )
+        assert conflict.status_code == 409
+
+        disabled = client.put(
+            "/api/admin/protected-values/retention",
+            headers=_admin_headers(),
+            json={"enabled": False, "idle_ttl_seconds": 3600, "revision": 1},
+        )
+        assert disabled.status_code == 200
+        assert disabled.json()["enabled"] is False
+        retained = client.get("/api/admin/protected-values", headers=_admin_headers()).json()
+        assert retained["records"][0]["auto_expires"] is False
+        assert retained["records"][0]["expires_at"] is None
+
+    audit_text = (tmp_path / "audit.jsonl").read_text(encoding="utf-8")
+    assert "update_mapping_retention_policy" in audit_text
+    assert secret not in audit_text
+
+
+def test_request_audit_pairs_replacement_and_materialization_without_persisting_raw(tmp_path) -> None:
+    secret = "sk-proj-audit-readable-abcdefghijklmnopqrstuvwxyz"
+    cfg = _config(tmp_path)
+    with TestClient(create_app(cfg, AuditRoundTripUpstream())) as client:
+        response = client.post(
+            "/v1/chat/completions",
+            headers={"Authorization": "Bearer agent-key"},
+            json={"model": "test", "messages": [{"role": "user", "content": f"Write {secret} twice: {secret}"}]},
+        )
+        assert response.status_code == 200
+        arguments = response.json()["choices"][0]["message"]["tool_calls"][0]["function"]["arguments"]
+        assert secret in arguments
+
+        requests = client.get("/api/admin/audit/requests", headers=_admin_headers())
+        assert requests.status_code == 200
+        request_summary = requests.json()["requests"][0]
+        assert request_summary["replacement_count"] == 2
+        assert request_summary["replacement_unique_count"] == 1
+        assert request_summary["materialization_count"] == 1
+        assert request_summary["details_available"] is True
+
+        request_id = request_summary["request_id"]
+        replacement_list = client.get(
+            "/api/admin/audit/operations?direction=replacement",
+            headers=_admin_headers(),
+        )
+        assert replacement_list.status_code == 200
+        assert replacement_list.headers["cache-control"] == "no-store"
+        replacement_body = replacement_list.json()
+        assert replacement_body["direction"] == "replacement"
+        assert replacement_body["count"] == 1
+        assert replacement_body["occurrence_count"] == 2
+        assert replacement_body["operations"][0]["original"] == "***"
+        assert replacement_body["operations"][0]["request_id"] == request_id
+        assert replacement_body["operations"][0]["endpoint"] == "/v1/chat/completions"
+        assert replacement_body["operations"][0]["session"].startswith("Session ")
+        assert secret not in replacement_list.text
+
+        materialization_list = client.get(
+            "/api/admin/audit/operations?direction=materialization&query=Write",
+            headers=_admin_headers(),
+        )
+        assert materialization_list.status_code == 200
+        materialization_body = materialization_list.json()
+        assert materialization_body["count"] == 1
+        assert materialization_body["operations"][0]["direction"] == "materialization"
+        assert materialization_body["operations"][0]["tool_name"] == "Write"
+        assert all(item["direction"] != "replacement" for item in materialization_body["operations"])
+
+        hidden = client.get(f"/api/admin/audit/requests/{request_id}", headers=_admin_headers())
+        assert hidden.status_code == 200
+        assert hidden.headers["cache-control"] == "no-store"
+        hidden_body = hidden.json()
+        assert hidden_body["replacements"][0]["original"] == "***"
+        assert hidden_body["materializations"][0]["original"] == "***"
+        placeholder = hidden_body["replacements"][0]["representation"]
+        assert placeholder.startswith("<APG:v1:secret:")
+        assert hidden_body["replacements"][0]["occurrence_count"] == 2
+        assert hidden_body["materializations"][0]["representation"] == placeholder
+        assert hidden_body["materializations"][0]["tool_name"] == "Write"
+        assert hidden_body["replacements"][0]["protected_value_id"] == hidden_body["materializations"][0]["protected_value_id"]
+
+        revealed = client.get(
+            f"/api/admin/audit/requests/{request_id}?include_raw=true",
+            headers=_admin_headers(),
+        )
+        assert revealed.status_code == 200
+        assert revealed.headers["cache-control"] == "no-store"
+        assert revealed.json()["replacements"][0]["original"] == secret
+        assert revealed.json()["materializations"][0]["original"] == secret
+
+        revealed_list = client.get(
+            "/api/admin/audit/operations?direction=materialization&include_raw=true",
+            headers=_admin_headers(),
+        )
+        assert revealed_list.status_code == 200
+        assert revealed_list.json()["operations"][0]["original"] == secret
+
+        stored_materialization = client.app.state.admin_service.store.audit_operations_for_request(
+            request_id,
+            cfg.workspace_id,
+        )[-1]
+        client.app.state.admin_service.store.record_audit_operations(
+            request_id=request_id,
+            session_id=stored_materialization.session_id,
+            workspace_id=cfg.workspace_id,
+            endpoint=stored_materialization.endpoint,
+            timestamp=stored_materialization.timestamp + 1,
+            operations=[{
+                "direction": "materialization_failed",
+                "handle_id": stored_materialization.handle_id,
+                "kind": stored_materialization.kind,
+                "subtype": stored_materialization.subtype,
+                "risk": stored_materialization.risk,
+                "detector": stored_materialization.detector,
+                "action": "preserve",
+                "sink": stored_materialization.sink,
+                "result_code": "APG_POLICY_DENIED",
+                "representation_type": stored_materialization.representation_type,
+                "placeholder_session_id": stored_materialization.placeholder_session_id,
+                "issued_at": stored_materialization.issued_at,
+                "suffix": stored_materialization.suffix,
+                "alias": stored_materialization.alias,
+                "tool_name": stored_materialization.tool_name,
+            }],
+        )
+        materializations_with_failure = client.get(
+            "/api/admin/audit/operations?direction=materialization",
+            headers=_admin_headers(),
+        ).json()
+        assert materializations_with_failure["count"] == 2
+        assert {item["direction"] for item in materializations_with_failure["operations"]} == {
+            "materialization",
+            "materialization_failed",
+        }
+
+        protected_id = revealed.json()["replacements"][0]["protected_value_id"]
+        revoked = client.post(f"/api/admin/protected-values/{protected_id}/revoke", headers=_admin_headers())
+        assert revoked.status_code == 200
+        cleared = client.get(
+            f"/api/admin/audit/requests/{request_id}?include_raw=true",
+            headers=_admin_headers(),
+        ).json()
+        assert cleared["replacements"][0]["original"] is None
+        assert cleared["replacements"][0]["value_state"] == "revoked"
+        cleared_list = client.get(
+            "/api/admin/audit/operations?direction=replacement&include_raw=true",
+            headers=_admin_headers(),
+        ).json()
+        assert cleared_list["operations"][0]["original"] is None
+        assert cleared_list["operations"][0]["value_state"] == "revoked"
+
+        safe_audit = client.get("/api/admin/audit", headers=_admin_headers())
+        assert secret not in safe_audit.text
+        assert "<APG:v1:" not in safe_audit.text
+
+    audit_text = (tmp_path / "audit.jsonl").read_text(encoding="utf-8")
+    assert secret not in audit_text
+    assert "<APG:v1:" not in audit_text
+    assert "view_audit_raw_values" in audit_text
+    with sqlite3.connect(cfg.database_path) as connection:
+        operation_rows = connection.execute("SELECT * FROM audit_operations").fetchall()
+    serialized_operations = repr(operation_rows)
+    assert secret not in serialized_operations
+    assert "<APG:v1:" not in serialized_operations
+
+
+def test_request_audit_keeps_legacy_jsonl_as_summary_only(tmp_path) -> None:
+    cfg = _config(tmp_path)
+    with TestClient(create_app(cfg, AdminFakeUpstream())) as client:
+        client.app.state.admin_service.audit.log(
+            {
+                "request_id": "req_abcdef123456",
+                "session_id": "sess_legacy",
+                "workspace_id": "default",
+                "endpoint": "/v1/messages",
+                "phase": "request",
+                "detections": [{"type": "secret", "subtype": "legacy", "risk": "high", "action": "redact"}],
+            }
+        )
+        summary = client.get("/api/admin/audit/requests", headers=_admin_headers()).json()["requests"][0]
+        assert summary["replacement_count"] == 1
+        assert summary["details_available"] is False
+        detail = client.get(
+            "/api/admin/audit/requests/req_abcdef123456",
+            headers=_admin_headers(),
+        ).json()
+        assert detail["legacy_summary_only"] is True
+        assert detail["replacements"] == []
 
 
 def test_detector_control_hot_reload_and_persistence(tmp_path) -> None:
@@ -220,6 +575,70 @@ def test_audit_logger_scrubs_apg_handles_before_they_reach_webui(tmp_path) -> No
         assert "secr_private" not in response.text
         assert "handle_id" not in response.text
         assert os.stat(cfg.audit_log_path).st_mode & 0o777 == 0o600
+
+
+def test_admin_projects_stream_summary_counters(tmp_path) -> None:
+    cfg = _config(tmp_path)
+    with TestClient(create_app(cfg, AdminFakeUpstream())) as client:
+        client.app.state.admin_service.audit.log(
+            {
+                "phase": "response_stream_complete",
+                "materialized": 8,
+                "folded": 2,
+                "termination": "completed",
+            }
+        )
+
+        event = client.get("/api/admin/audit", headers=_admin_headers()).json()["events"][0]
+        assert event["materialized_count"] == 8
+        assert event["folded_count"] == 2
+
+        overview = client.get("/api/admin/overview", headers=_admin_headers()).json()
+        assert overview["metrics"]["materializations_24h"] == 8
+
+
+def test_audit_operation_storage_merges_occurrences_and_caps_distinct_details(tmp_path) -> None:
+    store = MappingStore(str(tmp_path / "state.sqlite3"))
+    operations = [
+        {
+            "direction": "replacement",
+            "handle_id": f"path_{index}",
+            "kind": "path",
+            "subtype": "local_path",
+            "risk": "medium",
+            "detector": "path",
+            "action": "alias",
+            "sink": "remote_llm",
+            "result_code": "OK",
+            "representation_type": "path_alias",
+            "alias": f"/workspace/path-{index}",
+        }
+        for index in range(1002)
+    ]
+    store.record_audit_operations(
+        request_id="req_123456789abc",
+        session_id="sess",
+        workspace_id="default",
+        endpoint="/v1/chat/completions",
+        timestamp=1,
+        operations=operations,
+    )
+    records = store.audit_operations_for_request("req_123456789abc", "default")
+    assert len(records) == 1000
+    assert store.audit_operation_omitted_count("req_123456789abc", "default") == 2
+
+    duplicate = {**operations[0], "occurrence_count": 3}
+    store.record_audit_operations(
+        request_id="req_123456789abc",
+        session_id="sess",
+        workspace_id="default",
+        endpoint="/v1/chat/completions",
+        timestamp=2,
+        operations=[duplicate],
+    )
+    records = store.audit_operations_for_request("req_123456789abc", "default")
+    assert records[0].occurrence_count == 4
+    store.close()
 
 
 def test_admin_configuration_loads_from_environment(monkeypatch, tmp_path) -> None:

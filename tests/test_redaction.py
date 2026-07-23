@@ -20,6 +20,20 @@ def test_env_assignment_preserves_key_and_redacts_only_value(redactor) -> None:
     assert sanitized.startswith("SERVICE_TOKEN=<APG:v1:secret:")
     assert "sk-apgtest" not in sanitized
 
+    exported, _ = redactor.sanitize_text(
+        'export SERVICE_TOKEN="svc_apgtest_live_agent_2026_abcdefghijklmnopqrstuvwxyz"',
+        "sess_1",
+    )
+    assert exported.startswith("export SERVICE_TOKEN=<APG:v1:secret:")
+    assert "svc_apgtest" not in exported
+
+    read_output, _ = redactor.sanitize_text(
+        '    42\u2192export SERVICE_TOKEN="svc_apgtest_live_agent_2026_abcdefghijklmnopqrstuvwxyz"',
+        "sess_1",
+    )
+    assert read_output.startswith("    42\u2192export SERVICE_TOKEN=<APG:v1:secret:")
+    assert "svc_apgtest" not in read_output
+
 
 def test_email_pseudonymized_consistently(redactor) -> None:
     a, _ = redactor.sanitize_text("howard@example.com", "sess_1")
@@ -52,10 +66,20 @@ def test_same_basename_paths_get_distinct_aliases(redactor) -> None:
 def test_child_path_reuses_existing_parent_alias(redactor) -> None:
     root = "/private/tmp/project/apg-agent-test-repo"
     root_alias, _ = redactor.sanitize_text(root, "sess_1")
-    child_alias, _ = redactor.sanitize_text(root + "/scripts/validate_secret.py", "sess_1")
+    child_alias, replacement_events = redactor.sanitize_text(root + "/scripts/validate_secret.py", "sess_1")
     assert child_alias == root_alias + "/scripts/validate_secret.py"
-    restored = redactor.materialize_local_text(child_alias, "sess_1")
+    restored, materialization_events = redactor.materialize_local_text_with_events(
+        child_alias,
+        "sess_1",
+        tool_name="Read",
+    )
     assert restored == root + "/scripts/validate_secret.py"
+    replacement = replacement_events[-1]["_audit_operation"]
+    materialization = materialization_events[-1]["_audit_operation"]
+    assert replacement["alias"] == child_alias
+    assert materialization["alias"] == child_alias
+    assert replacement["handle_id"] == materialization["handle_id"]
+    assert materialization["tool_name"] == "Read"
 
 
 def test_tool_call_protocol_ids_are_not_redacted(redactor) -> None:

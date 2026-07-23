@@ -320,7 +320,7 @@ BUILTIN_RULES: tuple[dict[str, Any], ...] = (
     },
     {
         "id": "secret.env_assignment",
-        "pattern": r"^\s*[A-Z0-9_]*(?:API_KEY|TOKEN|SECRET|PASSWORD|PASSWD|PASS|CREDENTIAL|PRIVATE_KEY|DATABASE_URL)[A-Z0-9_]*\s*=\s*(?P<value>.+)$",
+        "pattern": r"(?<![A-Z0-9_])(?:export\s+)?[A-Z0-9_]*(?:API_KEY|TOKEN|SECRET|PASSWORD|PASSWD|PASS|CREDENTIAL|PRIVATE_KEY|DATABASE_URL)[A-Z0-9_]*\s*=\s*(?P<value>[^\r\n]+)$",
         "type": "MACHINE_SECRET",
         "subtype": "env_assignment",
         "confidence": 0.98,

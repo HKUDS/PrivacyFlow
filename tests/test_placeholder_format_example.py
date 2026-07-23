@@ -13,6 +13,7 @@ from gateway.server import APG_UPSTREAM_SYSTEM_PROMPT
 
 def test_prompt_uses_the_reserved_placeholder_format_example() -> None:
     assert f"`{APG_PLACEHOLDER_FORMAT_EXAMPLE}`" in APG_UPSTREAM_SYSTEM_PROMPT
+    assert "never substitute one placeholder for another" in APG_UPSTREAM_SYSTEM_PROMPT
     assert PLACEHOLDER_RE.fullmatch(APG_PLACEHOLDER_FORMAT_EXAMPLE) is None
 
 
@@ -69,15 +70,16 @@ def test_example_does_not_hide_real_secrets_or_signed_placeholders(redactor) -> 
     materialized, materialization_events = redactor.materialize_local_text_with_events(sanitized, session_id)
     assert APG_PLACEHOLDER_FORMAT_EXAMPLE in materialized
     assert secret in materialized
-    assert materialization_events == [
-        {
-            "type": "materialization",
-            "kind": "secret",
-            "sink": "local_tool",
-            "action": "materialize",
-            "result_code": "OK",
-        }
-    ]
+    assert len(materialization_events) == 1
+    event = materialization_events[0]
+    assert {key: event[key] for key in ("type", "kind", "sink", "action", "result_code")} == {
+        "type": "materialization",
+        "kind": "secret",
+        "sink": "local_tool",
+        "action": "materialize",
+        "result_code": "OK",
+    }
+    assert event["_audit_operation"]["direction"] == "materialization"
 
 
 @pytest.mark.parametrize("split", range(len(APG_PLACEHOLDER_FORMAT_EXAMPLE) + 1))

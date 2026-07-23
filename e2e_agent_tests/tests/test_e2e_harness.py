@@ -7,9 +7,11 @@ from e2e_agent_tests.scripts.check_leaks import scan_paths
 from e2e_agent_tests.scripts.common import HarnessPaths
 from e2e_agent_tests.scripts.run_scenario import run_scenario
 from e2e_agent_tests.scripts.setup_test_repo import setup_test_repo
+from gateway.mapping_store import MappingStore
 from e2e_agent_tests.scripts.run_live_agents import (
     LIVE_SCENARIOS,
     _agent_command,
+    _audit_operation_evidence,
     _contains_non_example_apg_marker,
     _extract_final_output,
     _extract_tool_summary,
@@ -119,9 +121,12 @@ def test_live_server_bypasses_system_proxy_only_for_its_upstream(monkeypatch) ->
     assert server_env["no_proxy"] == server_env["NO_PROXY"]
     assert "HTTPS_PROXY" not in server_env
 
+    no_entropy_env = _server_environment(disable_entropy=True)
+    assert no_entropy_env["APG_LIVE_DISABLE_ENTROPY"] == "1"
+
 
 def test_live_agent_matrix_covers_real_read_tool_path_and_write_workflows() -> None:
-    assert len(LIVE_SCENARIOS) == 11
+    assert len(LIVE_SCENARIOS) == 12
     assert {
         "secret_tool",
         "pii_tool",
@@ -131,10 +136,13 @@ def test_live_agent_matrix_covers_real_read_tool_path_and_write_workflows() -> N
         "path_alias",
         "multi_file_review",
         "safe_env_example",
+        "exact_sensitive_copy",
         "sanitized_customer_reply",
         "safe_debug_script",
     }.issubset(LIVE_SCENARIOS)
     assert LIVE_SCENARIOS["safe_env_example"].allow_write is True
+    assert LIVE_SCENARIOS["exact_sensitive_copy"].disable_entropy is True
+    assert LIVE_SCENARIOS["exact_sensitive_copy"].exact_copy_pairs
     assert LIVE_SCENARIOS["path_alias"].required_read_paths == ("private/path_probe.txt",)
 
 
@@ -174,6 +182,7 @@ def test_live_agent_write_permissions_are_scenario_scoped(tmp_path: Path) -> Non
     write_command, _ = _agent_command("claude", "task", 8765, run_root, "safe_env_example")
     assert "Edit" not in read_command[read_command.index("--tools") + 1]
     assert "Edit" in write_command[write_command.index("--tools") + 1]
+    assert "Write" in write_command[write_command.index("--tools") + 1]
 
     _agent_command("opencode", "task", 8765, run_root, "pii_summary")
     config = json.loads((run_root / "xdg-config/opencode/opencode.json").read_text())
@@ -203,3 +212,39 @@ def test_live_stream_status_allows_audited_client_cancellation() -> None:
     assert _streams_are_safe([completed, disconnected]) is True
     assert _streams_are_safe([disconnected]) is False
     assert _streams_are_safe([completed, {"parse_errors": 1, "termination": "protocol_error"}]) is False
+
+
+def test_live_audit_evidence_counts_pairs_without_exposing_identifiers(tmp_path: Path) -> None:
+    database = tmp_path / "state.sqlite3"
+    store = MappingStore(str(database))
+    shared = {
+        "handle_id": "secr_internal_only",
+        "kind": "secret",
+        "subtype": "api_key",
+        "representation_type": "signed_placeholder",
+        "placeholder_session_id": "sess_internal_only",
+        "issued_at": 123,
+        "suffix": "",
+        "alias": "",
+        "result_code": "OK",
+    }
+    store.record_audit_operations(
+        request_id="req_123456789abc",
+        session_id="sess_internal_only",
+        workspace_id="ws",
+        endpoint="/v1/messages",
+        timestamp=1,
+        operations=[
+            {**shared, "direction": "replacement", "action": "redact", "sink": "remote_llm"},
+            {**shared, "direction": "materialization", "action": "materialize", "sink": "local_tool", "tool_name": "Write"},
+        ],
+    )
+    store.close()
+
+    evidence = _audit_operation_evidence(database)
+
+    assert evidence["replacement_count"] == 1
+    assert evidence["materialization_count"] == 1
+    assert evidence["paired_representation_unique"] == 1
+    assert "secr_internal_only" not in json.dumps(evidence)
+    assert "sess_internal_only" not in json.dumps(evidence)

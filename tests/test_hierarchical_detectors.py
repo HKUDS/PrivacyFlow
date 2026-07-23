@@ -41,12 +41,22 @@ def test_bearer_token_detected() -> None:
 
 def test_env_api_key_assignment_detected() -> None:
     assert "env_assignment" in subtypes("MY_API_KEY=x")
+    assert "env_assignment" in subtypes('export SERVICE_TOKEN="secret-value"')
+    assert "env_assignment" in subtypes('    42\u2192export SERVICE_TOKEN="secret-value"')
 
 
 def test_env_assignment_finding_covers_value_only() -> None:
     text = "SERVICE_TOKEN=secret-value"
     finding = by_subtype(text, "env_assignment")
     assert text[finding.original_start : finding.original_end] == "secret-value"
+
+    exported = 'export SERVICE_TOKEN="secret-value"'
+    exported_finding = by_subtype(exported, "env_assignment")
+    assert exported[exported_finding.original_start : exported_finding.original_end] == '"secret-value"'
+
+    read_output = '    42\u2192export SERVICE_TOKEN="secret-value"'
+    read_finding = by_subtype(read_output, "env_assignment")
+    assert read_output[read_finding.original_start : read_finding.original_end] == '"secret-value"'
 
 
 def test_database_url_with_password_detected() -> None:

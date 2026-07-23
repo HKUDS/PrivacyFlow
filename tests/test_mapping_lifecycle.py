@@ -1,6 +1,108 @@
 from __future__ import annotations
 
+import sqlite3
 import time
+
+import pytest
+
+from gateway.mapping_store import MappingRetentionConflictError, MappingStore
+
+
+def test_mapping_retention_is_disabled_by_default(components) -> None:
+    store, _, _ = components
+    policy = store.mapping_retention_policy("ws")
+    assert policy.enabled is False
+    assert policy.idle_ttl_seconds == 86_400
+
+    record = store.upsert_mapping(
+        session_id="sess",
+        workspace_id="ws",
+        scope="session",
+        kind="secret",
+        subtype="api_key",
+        value="secret-value",
+        store_value=True,
+        materialization_class="secret",
+    )
+    assert record.idle_expires_at == 0
+    assert record.max_expires_at == 0
+    assert store.tombstone_expired() == 0
+    assert store.validate_active(record.handle_id, "sess", "ws")[0] is True
+
+
+def test_mapping_retention_policy_updates_existing_records_and_checks_revision(components) -> None:
+    store, _, _ = components
+    record = store.upsert_mapping(
+        session_id="sess",
+        workspace_id="ws",
+        scope="session",
+        kind="secret",
+        subtype="api_key",
+        value="secret-value",
+        store_value=True,
+        materialization_class="secret",
+    )
+    enabled = store.set_mapping_retention_policy(
+        workspace_id="ws",
+        enabled=True,
+        idle_ttl_seconds=3600,
+        expected_revision=0,
+    )
+    assert enabled.enabled is True
+    assert enabled.revision == 1
+    expiring = store.get(record.handle_id)
+    assert expiring is not None
+    assert expiring.idle_expires_at > int(time.time())
+    assert expiring.max_expires_at == 0
+
+    with pytest.raises(MappingRetentionConflictError):
+        store.set_mapping_retention_policy(
+            workspace_id="ws",
+            enabled=False,
+            idle_ttl_seconds=3600,
+            expected_revision=0,
+        )
+
+    disabled = store.set_mapping_retention_policy(
+        workspace_id="ws",
+        enabled=False,
+        idle_ttl_seconds=3600,
+        expected_revision=1,
+    )
+    assert disabled.enabled is False
+    retained = store.get(record.handle_id)
+    assert retained is not None
+    assert retained.idle_expires_at == 0
+    assert retained.max_expires_at == 0
+
+
+def test_old_mapping_database_migrates_to_default_no_expiry(tmp_path) -> None:
+    database = tmp_path / "legacy.sqlite3"
+    with sqlite3.connect(database) as connection:
+        connection.execute(
+            """
+            CREATE TABLE mappings (
+              handle_id TEXT PRIMARY KEY, session_id TEXT NOT NULL, workspace_id TEXT NOT NULL,
+              scope TEXT NOT NULL, kind TEXT NOT NULL, subtype TEXT NOT NULL, value TEXT,
+              fingerprint TEXT NOT NULL, created_at INTEGER NOT NULL, last_seen_at INTEGER NOT NULL,
+              idle_expires_at INTEGER NOT NULL, max_expires_at INTEGER NOT NULL, state TEXT NOT NULL,
+              policy_hash TEXT NOT NULL, materialization_class TEXT NOT NULL
+            )
+            """
+        )
+        connection.execute(
+            "INSERT INTO mappings VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            ("secr_legacy", "sess", "ws", "session", "secret", "api_key", "secret-value", "fp", 1, 1, 2, 3, "active", "default", "secret"),
+        )
+    store = MappingStore(str(database))
+    record = store.get("secr_legacy")
+    assert record is not None
+    assert record.state == "active"
+    assert record.idle_expires_at == 0
+    assert record.max_expires_at == 0
+    assert record.tombstone_reason == ""
+    assert store.mapping_retention_policy("ws").enabled is False
+    store.close()
 
 
 def test_request_scoped_mapping_expires(components) -> None:

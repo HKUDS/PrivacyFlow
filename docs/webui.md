@@ -4,7 +4,7 @@ APG serves a zero-build management panel at `/ui/`. It is designed for repeated 
 
 ## Security Boundary
 
-The browser receives only operational metadata. The control plane does not return:
+The authenticated overview can return one configured local Agent credential from `APG_LOCAL_API_KEYS` so it can be copied into an Agent client. This is an APG-local access key, not the upstream provider key. Ordinary control-plane summaries do not return:
 
 - Raw values from the mapping database
 - Complete APG placeholders or internal mapping handles
@@ -13,6 +13,8 @@ The browser receives only operational metadata. The control plane does not retur
 - Full APG session ids
 
 Protected values are identified by an HMAC-derived `pv_...` administration id. The id supports revocation but cannot be used for placeholder materialization. Revocation tombstones the mapping and clears its stored raw value.
+
+The administrator-only operation-list, request-detail, and protected-value endpoints provide a deliberate opt-in exception. With `include_raw=false` they return `***`; with `include_raw=true` they read an original only while the referenced mapping is active. Audit-operation rows do not duplicate the original or store a complete signed placeholder, and `.apg/audit.jsonl` remains free of both. Every raw read records a safe `view_audit_raw_values` or `view_protected_raw_values` administrator event without the viewed content.
 
 Set a dedicated administrator key where possible:
 
@@ -28,15 +30,20 @@ APG binds to `127.0.0.1` by default. If the gateway is deliberately bound to ano
 
 ### Overview
 
-The dashboard summarizes the latest audit window: requests, interceptions, local tool-argument materializations, active protected values, seven-day activity, and risk distribution. The upstream is represented by hostname only.
+The dashboard provides an Agent connection strip above the metrics. It switches between the OpenAI-compatible and Anthropic base URLs, keeps the local Agent API key masked by default, and copies either value with one action. An eye icon temporarily reveals the local key. A separate Claude Code action copies a multiline shell environment block containing the local Anthropic URL and local Agent key, DeepSeek `deepseek-v4-pro[1m]` defaults for 1M-context primary work, DeepSeek v4 Flash defaults for Haiku and subagents, and maximum effort. It does not append a `claude` invocation, so users can apply their preferred Claude Code settings and startup command separately. The rest of the view summarizes the latest audit window: requests, interceptions, local tool-argument materializations, active protected values, seven-day activity, and risk distribution. The upstream is represented by hostname only.
 
 ### Audit
 
-Audit events can be filtered by phase, risk, endpoint, and safe metadata. Session ids are one-way shortened for correlation. Detection rows expose type, subtype, detector, risk, action, sink, and safe result code; previews and raw values are omitted.
+The audit view has two independent operation-level lists: **Replacement records** and **Materialization records**. Every row is one distinct recorded transformation rather than an Agent-request summary. The replacement list contains only upstream replacements; the materialization list contains successful and failed local materialization attempts. Both lists support risk, endpoint, and safe metadata filters, and use the same `pv_...` id to connect:
+
+- `original or *** -> exact placeholder/path alias` for upstream replacement
+- `exact placeholder/path alias -> original or ***` for local materialization
+
+Repeated uses of one mapping and representation are merged with an occurrence count. Historical JSONL events created before per-operation storage remain available through the compatibility request-summary API, but APG does not invent operation rows for them. The eye control is off by default and requires confirmation; it is not written to browser storage. Turning it off clears the operation list and fetches masked data, while page reload, logout, and reauthentication restore the hidden state. Expired, revoked, or unavailable mappings display `原文已清除` rather than recovering an audit copy.
 
 ### Protected Values
 
-The registry exposes kind, subtype, scope, lifecycle state, materialization class, timestamps, and whether a local value is currently stored. It never provides a reveal operation. Active mappings can be revoked individually, and expired records can be purged.
+The registry exposes kind, subtype, scope, lifecycle state, materialization class, timestamps, and whether a local value is currently stored. Originals are masked by default. Its eye control requires confirmation and temporarily fetches originals only for active mappings; closing it immediately clears rendered and in-memory originals and reloads `***`. Automatic clearing is disabled by default, so active mappings display `不自动过期`. The retention control can enable idle-time clearing and set a duration from one minute to 365 days. Enabling starts a fresh deadline for all active mappings; disabling removes their pending deadlines. Active mappings can still be revoked individually, and expired records can be purged. Expired and manually revoked tombstones are displayed separately.
 
 ### Detector Configurations
 
@@ -57,8 +64,13 @@ The APG core guard is enabled by default. Disabling it requires explicit confirm
 | Method | Endpoint | Purpose |
 | --- | --- | --- |
 | `GET` | `/api/admin/overview` | Safe dashboard summary |
+| `GET` | `/api/admin/connection` | One local Agent API key and protocol base paths |
 | `GET` | `/api/admin/audit` | Filtered audit events |
-| `GET` | `/api/admin/protected-values` | Safe mapping metadata |
+| `GET` | `/api/admin/audit/operations` | Separate replacement or materialization operation list; optional administrator-only `include_raw=true` |
+| `GET` | `/api/admin/audit/requests` | Request-level replacement/materialization summaries |
+| `GET` | `/api/admin/audit/requests/{request_id}` | Per-operation detail; optional administrator-only `include_raw=true` |
+| `GET` | `/api/admin/protected-values` | Mapping metadata; optional administrator-only `include_raw=true` |
+| `PUT` | `/api/admin/protected-values/retention` | Save revision-protected automatic-clearing state and idle duration |
 | `POST` | `/api/admin/protected-values/{id}/revoke` | Tombstone one mapping |
 | `POST` | `/api/admin/protected-values/purge-expired` | Tombstone expired mappings |
 | `GET` | `/api/admin/detector-configurations` | Templates, user configurations, active id, and module catalog |

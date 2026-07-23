@@ -67,7 +67,17 @@ def _rule_dict(rule: Any) -> dict[str, Any]:
 
 
 BUILTIN_RULE_VALUES = tuple(_rule_dict(rule) for rule in builtin_rules())
-TRUSTED_RULE_PATTERNS = {(str(rule["id"]), str(rule["pattern"])) for rule in BUILTIN_RULE_VALUES}
+_CURRENT_RULE_PATTERNS = {str(rule["id"]): str(rule["pattern"]) for rule in BUILTIN_RULE_VALUES}
+_ENV_ASSIGNMENT_V1_PATTERN = (
+    r"^\s*[A-Z0-9_]*(?:API_KEY|TOKEN|SECRET|PASSWORD|PASSWD|PASS|CREDENTIAL|PRIVATE_KEY|DATABASE_URL)"
+    r"[A-Z0-9_]*\s*=\s*(?P<value>.+)$"
+)
+TRUSTED_RULE_PATTERN_UPGRADES = {
+    ("secret.env_assignment", _ENV_ASSIGNMENT_V1_PATTERN): _CURRENT_RULE_PATTERNS["secret.env_assignment"],
+}
+TRUSTED_RULE_PATTERNS = {
+    (str(rule["id"]), str(rule["pattern"])) for rule in BUILTIN_RULE_VALUES
+} | set(TRUSTED_RULE_PATTERN_UPGRADES)
 CORE_RULES = [copy.deepcopy(rule) for rule in BUILTIN_RULE_VALUES if str(rule["id"]).startswith("apg.")]
 CREDENTIAL_RULES = [copy.deepcopy(rule) for rule in BUILTIN_RULE_VALUES if str(rule["id"]).startswith("secret.")]
 PII_RULES = [copy.deepcopy(rule) for rule in BUILTIN_RULE_VALUES if str(rule["id"]).startswith("pii.")]
@@ -473,6 +483,7 @@ class DetectorControlPlane:
             pattern = str(raw.get("pattern", ""))
             if not pattern or len(pattern) > 512:
                 raise DetectorControlError("Pattern must be between 1 and 512 characters")
+            pattern = TRUSTED_RULE_PATTERN_UPGRADES.get((rule_id, pattern), pattern)
             if (rule_id, pattern) not in TRUSTED_RULE_PATTERNS and (
                 _UNSAFE_GROUP_REPEAT_RE.search(pattern) or _UNSAFE_REGEX_FEATURE_RE.search(pattern)
             ):

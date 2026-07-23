@@ -8,6 +8,7 @@ from pathlib import Path
 import uvicorn
 
 from gateway.config import GatewayConfig, UpstreamConfig
+from gateway.detectors.rules import builtin_rules
 from gateway.server import create_app
 
 from e2e_agent_tests.scripts.common import HarnessPaths
@@ -23,6 +24,7 @@ def build_app(workdir: Path, upstream_base_url: str, upstream_api_key: str, mode
         signing_secret=f"opencode-real-agent-{uuid.uuid4().hex}",
         local_api_keys={"apg-local"},
         workspace_id="opencode-real-agent",
+        detectors_config=_detectors_config(),
         upstream=UpstreamConfig(
             base_url=upstream_base_url,
             api_key=upstream_api_key,
@@ -32,6 +34,31 @@ def build_app(workdir: Path, upstream_base_url: str, upstream_api_key: str, mode
     )
     upstream = RecordingUpstreamClient(config.upstream, paths.upstream_log)
     return create_app(config, upstream)
+
+
+def _detectors_config() -> dict:
+    if os.getenv("APG_LIVE_DISABLE_ENTROPY") != "1":
+        return {}
+    return {
+        "flow": {
+            "id": "live_no_entropy",
+            "modules": [
+                {
+                    "id": "builtin_rules",
+                    "type": "regex_rules",
+                    "rules": [rule.__dict__ for rule in builtin_rules()],
+                    "fail_open": False,
+                    "stream_safe": True,
+                },
+                {
+                    "id": "paths",
+                    "type": "path_detector",
+                    "fail_open": False,
+                    "stream_safe": True,
+                },
+            ],
+        }
+    }
 
 
 def main() -> None:

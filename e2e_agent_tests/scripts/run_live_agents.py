@@ -6,6 +6,7 @@ import json
 import os
 import shutil
 import socket
+import sqlite3
 import subprocess
 import sys
 import time
@@ -16,7 +17,7 @@ from typing import Any, Callable
 from urllib.parse import urlparse
 
 from e2e_agent_tests.scripts.check_leaks import scan_paths
-from e2e_agent_tests.scripts.common import CANARY_STRINGS, HarnessPaths, file_snapshot, read_jsonl, reset_path
+from e2e_agent_tests.scripts.common import CANARY_STRINGS, HarnessPaths, file_snapshot, read_jsonl, reset_path, sha256_file
 from e2e_agent_tests.scripts.setup_test_repo import setup_test_repo
 from gateway.placeholder_parser import APG_PLACEHOLDER_FORMAT_EXAMPLE
 
@@ -34,6 +35,9 @@ class LiveScenario:
     validator_files: tuple[str, ...] = ()
     generated_files: tuple[str, ...] = ()
     generated_file_alternatives: tuple[tuple[str, ...], ...] = ()
+    exact_copy_pairs: tuple[tuple[str, str], ...] = ()
+    allow_generated_sensitive: bool = False
+    disable_entropy: bool = False
     required_final_all: tuple[str, ...] = ()
     required_final_any: tuple[str, ...] = ()
 
@@ -149,6 +153,22 @@ LIVE_SCENARIOS: dict[str, LiveScenario] = {
         allow_write=True,
         generated_files=(".env.example",),
     ),
+    "exact_sensitive_copy": LiveScenario(
+        prompt=(
+            "Read fixtures/sensitive_commands.txt with the Read tool, then use a built-in file writing tool to create "
+            "copied_commands.txt with exactly the same bytes. Preserve every line, quote, backslash, tab, value, and "
+            "trailing newline. Do not use shell commands or scripts, and do not print or summarize the contents. "
+            "Reply only that the copy completed."
+        ),
+        allow_write=True,
+        required_tool_counts=(("read", 1),),
+        required_read_paths=("fixtures/sensitive_commands.txt",),
+        generated_files=("copied_commands.txt",),
+        exact_copy_pairs=(("fixtures/sensitive_commands.txt", "copied_commands.txt"),),
+        allow_generated_sensitive=True,
+        disable_entropy=True,
+        required_final_all=("copy completed",),
+    ),
     "sanitized_customer_reply": LiveScenario(
         prompt=(
             "Read docs/customer_notes.md and use the Edit tool to create customer_reply.md with a concise status update for CASE-731. "
@@ -213,7 +233,7 @@ def _agent_environment(repo: Path) -> dict[str, str]:
     return env
 
 
-def _server_environment() -> dict[str, str]:
+def _server_environment(*, disable_entropy: bool = False) -> dict[str, str]:
     env = _base_child_environment()
     env["DEEPSEEK_API_KEY"] = os.environ["DEEPSEEK_API_KEY"]
     upstream_base_url = os.getenv("APG_UPSTREAM_BASE_URL", "https://api.deepseek.com")
@@ -224,6 +244,8 @@ def _server_environment() -> dict[str, str]:
     env["NO_PROXY"] = no_proxy
     env["no_proxy"] = no_proxy
     env["PYTHONUNBUFFERED"] = "1"
+    if disable_entropy:
+        env["APG_LIVE_DISABLE_ENTROPY"] = "1"
     return env
 
 
@@ -310,8 +332,8 @@ def _agent_command(
         available_tools = ["Read", "Glob", "Grep"]
         allowed_tools = ["Read", "Glob", "Grep"]
         if scenario.allow_write:
-            available_tools.append("Edit")
-            allowed_tools.append("Edit")
+            available_tools.extend(["Edit", "Write"])
+            allowed_tools.extend(["Edit", "Write"])
         if scenario.bash_patterns:
             available_tools.append("Bash")
             allowed_tools.extend(f"Bash({pattern})" for pattern in scenario.bash_patterns)
@@ -472,6 +494,65 @@ def _streams_are_safe(stream_events: list[dict[str, Any]]) -> bool:
     )
 
 
+def _audit_operation_evidence(database_path: Path) -> dict[str, int]:
+    empty = {
+        "replacement_count": 0,
+        "materialization_count": 0,
+        "materialization_failed_count": 0,
+        "replacement_unique": 0,
+        "materialization_unique": 0,
+        "paired_representation_unique": 0,
+        "omitted_count": 0,
+    }
+    if not database_path.exists():
+        return empty
+    try:
+        with sqlite3.connect(database_path) as connection:
+            connection.row_factory = sqlite3.Row
+            rows = connection.execute(
+                """
+                SELECT direction, handle_id, kind, representation_type,
+                       placeholder_session_id, issued_at, suffix, alias,
+                       SUM(occurrence_count) AS occurrence_count
+                FROM audit_operations
+                GROUP BY direction, handle_id, kind, representation_type,
+                         placeholder_session_id, issued_at, suffix, alias
+                """
+            ).fetchall()
+            omitted = connection.execute(
+                "SELECT COALESCE(SUM(omitted_count), 0) FROM audit_operation_stats"
+            ).fetchone()[0]
+    except sqlite3.Error:
+        return empty
+
+    evidence = dict(empty)
+    replacement_representations: set[tuple[Any, ...]] = set()
+    materialization_representations: set[tuple[Any, ...]] = set()
+    for row in rows:
+        direction = str(row["direction"])
+        count = int(row["occurrence_count"] or 0)
+        if direction in {"replacement", "materialization", "materialization_failed"}:
+            evidence[f"{direction}_count"] += count
+        representation = (
+            row["handle_id"],
+            row["kind"],
+            row["representation_type"],
+            row["placeholder_session_id"],
+            row["issued_at"],
+            row["suffix"],
+            row["alias"],
+        )
+        if direction == "replacement":
+            replacement_representations.add(representation)
+        elif direction == "materialization":
+            materialization_representations.add(representation)
+    evidence["replacement_unique"] = len(replacement_representations)
+    evidence["materialization_unique"] = len(materialization_representations)
+    evidence["paired_representation_unique"] = len(replacement_representations & materialization_representations)
+    evidence["omitted_count"] = int(omitted or 0)
+    return evidence
+
+
 def _validate_debug_script(path: Path) -> tuple[list[str], dict[str, Any]]:
     failures: list[str] = []
     details: dict[str, Any] = {"executed": False, "returncode": None, "stdout_safe": False}
@@ -535,6 +616,7 @@ def _scenario_validation(
     changed_files: list[str],
     upstream_events: list[dict[str, Any]],
     audit_events: list[dict[str, Any]],
+    audit_operation_evidence: dict[str, int],
 ) -> tuple[list[str], dict[str, Any]]:
     failures: list[str] = []
     details: dict[str, Any] = {}
@@ -561,6 +643,27 @@ def _scenario_validation(
         if not (paths.repo / generated).is_file():
             failures.append(f"expected generated file is missing: {generated}")
 
+    exact_copies: list[dict[str, Any]] = []
+    for source_name, destination_name in scenario.exact_copy_pairs:
+        source = paths.repo / source_name
+        destination = paths.repo / destination_name
+        source_digest = sha256_file(source) if source.is_file() else None
+        destination_digest = sha256_file(destination) if destination.is_file() else None
+        matched = source_digest is not None and source_digest == destination_digest
+        exact_copies.append(
+            {
+                "source": source_name,
+                "destination": destination_name,
+                "matched": matched,
+                "source_sha256": source_digest,
+                "destination_sha256": destination_digest,
+            }
+        )
+        if not matched:
+            failures.append(f"generated file is not an exact copy of {source_name}: {destination_name}")
+    if exact_copies:
+        details["exact_copies"] = exact_copies
+
     selected_alternatives: list[str] = []
     for alternatives in scenario.generated_file_alternatives:
         present = [candidate for candidate in alternatives if (paths.repo / candidate).is_file()]
@@ -585,7 +688,7 @@ def _scenario_validation(
         text = path.read_text(encoding="utf-8", errors="ignore")
         if _contains_non_example_apg_marker(text) or "APG_REDACTED" in text:
             marker_files.append(str(path.relative_to(paths.repo)))
-    if changed_leak_hits:
+    if changed_leak_hits and not scenario.allow_generated_sensitive:
         failures.append("generated/modified files contain canaries")
     if marker_files:
         failures.append("generated/modified files contain APG markers")
@@ -595,6 +698,10 @@ def _scenario_validation(
         failures.append("expected at least one streamed local materialization")
     if scenario_name == "parallel_materialization" and materialized_count < 2:
         failures.append("expected at least two streamed local materializations")
+    if scenario.exact_copy_pairs and materialized_count < 1:
+        failures.append("expected streamed local materialization for the exact copy")
+    if scenario.exact_copy_pairs and audit_operation_evidence["paired_representation_unique"] < 1:
+        failures.append("replacement and materialization audit operations were not paired")
 
     if scenario_name == "safe_env_example" and (paths.repo / ".env.example").is_file():
         content = (paths.repo / ".env.example").read_text(encoding="utf-8")
@@ -629,6 +736,7 @@ def _scenario_validation(
             "changed_leak_files": sorted(str(path) for path in changed_leak_hits),
             "apg_marker_files": marker_files,
             "materialized_count": materialized_count,
+            "audit_operations": audit_operation_evidence,
             "upstream_private_path_leaks": len(private_path_leaks),
         }
     )
@@ -675,7 +783,7 @@ def run_live_case(agent: str, scenario_name: str, base: Path, timeout: float) ->
         server = subprocess.Popen(
             server_command,
             cwd=Path(__file__).resolve().parents[2],
-            env=_server_environment(),
+            env=_server_environment(disable_entropy=scenario.disable_entropy),
             text=True,
             stdout=log,
             stderr=subprocess.STDOUT,
@@ -711,6 +819,7 @@ def run_live_case(agent: str, scenario_name: str, base: Path, timeout: float) ->
     final_leaks = [value for value in CANARY_STRINGS if value in final_output]
     upstream_events = read_jsonl(paths.upstream_log)
     audit_events = read_jsonl(paths.audit_log)
+    audit_operation_evidence = _audit_operation_evidence(paths.artifacts / "apg_proxy_state.sqlite3")
     stream_events = [event for event in audit_events if event.get("phase") == "response_stream_complete"]
     contracts_ok = bool(upstream_events) and all(_payload_has_contract(event) for event in upstream_events)
     streams_ok = _streams_are_safe(stream_events)
@@ -723,6 +832,7 @@ def run_live_case(agent: str, scenario_name: str, base: Path, timeout: float) ->
         changed_files,
         upstream_events,
         audit_events,
+        audit_operation_evidence,
     )
     passed = all(
         [
