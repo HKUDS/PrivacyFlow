@@ -90,7 +90,8 @@ def test_pii_mode_redact_treats_pii_as_secret(tmp_path) -> None:
     assert "<APG:v1:secret:" in out
     assert "alice@example.com" not in out
     assert ev and ev[0]["action"] == "redact"
-    # Stored mapping kind is "secret" so materialization is gated to local_tool only.
+    # Stored mapping kind is "secret", so it can be restored only at local
+    # user/tool sinks and never into upstream traffic.
     import re
 
     placeholder = re.search(r"<APG:v1:secret:(?P<handle>[^:]+):", out).group("handle")

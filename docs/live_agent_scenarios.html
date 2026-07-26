@@ -1639,7 +1639,7 @@
               `).join("")}
             </ol>
           ` : `<p class="trace-empty">该场景没有记录到结构化本地工具调用；Agent 直接完成了任务。</p>`}
-          <p class="privacy-proof">泄露文件 ${result.leak_file_count} · 最终回答泄露 ${result.final_leak_count} · APG marker ${result.final_has_apg_handle ? "残留" : "0"} · materialization 失败 ${result.failed_materializations}</p>
+          <p class="privacy-proof">泄露文件 ${result.leak_file_count} · 最终回答本地还原 ${result.final_materialized_value_count} · 还原授权 ${result.final_values_authorized ? "通过" : "失败"} · APG marker ${result.final_has_apg_handle ? "残留" : "0"} · materialization 失败 ${result.failed_materializations}</p>
           <p class="artifact-path">变更文件：${changedFiles}</p>
           <p class="artifact-path">原始运行证据：${escapeHTML(result.artifacts)}</p>
           ${failures}

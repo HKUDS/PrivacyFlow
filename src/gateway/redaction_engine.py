@@ -4,6 +4,7 @@ import codecs
 import copy
 import json
 import re
+import secrets
 import time
 from collections import Counter
 from collections.abc import AsyncIterator
@@ -20,9 +21,9 @@ from gateway.policy_engine import PolicyEngine
 PROTOCOL_KEYS = {"model", "tool_call_id", "tool_use_id", "call_id", "item_id", "previous_response_id"}
 PROTOCOL_ID_PARENTS = {"tool_calls", "tool_use"}
 PROTOCOL_NAME_PARENTS = {"function"}
-# Tool-call argument fields are the only sink where APG materializes secrets
-# back to raw values on the downlink, so the agent harness receives the real
-# credential when executing the tool. All other string fields stay redacted.
+# Structured tool-call arguments and user-visible local response text are the
+# two downlink sinks where exact, valid APG placeholders may be materialized.
+# Raw values are never materialized into upstream/model-visible traffic.
 TOOL_ARG_FIELDS = {"arguments", "input"}
 TOOL_ARG_PARENTS = {"function", "tool_use"}
 STREAM_MATERIALIZATION_TAIL = 4096
@@ -574,7 +575,7 @@ class RedactionEngine:
             else:
                 # In pii_mode == "redact" PII is routed onto the secret track:
                 # signed <APG:v1:secret:...> placeholder, mapping kind == "secret",
-                # so it can never be materialized back to user-visible text.
+                # so it follows secret-grade storage and sink validation.
                 pii_on_secret_track = det.type == "pii" and decision.action == "redact"
                 mapping_kind = "secret" if pii_on_secret_track else det.kind
                 materialization_class = "secret" if pii_on_secret_track else {
@@ -915,22 +916,23 @@ class RedactionEngine:
     def scan_local_text(self, text: str, session_id: str, *, fold_apg_markers: bool = True) -> tuple[str, list[dict[str, Any]]]:
         """Stream-safe downlink scan.
 
-        Materializes path aliases and PII placeholders back to raw values
-        (PII is safe enough to surface to a local viewer), but deliberately
-        leaves secret placeholders intact — in the streaming path APG cannot
-        reliably route a materialized secret into a structured tool-call
-        argument field, so failing closed (keeping the placeholder) is
-        safer than handing raw secrets out to an arbitrary stream consumer.
-
-        After PII/path restoration, the text is re-scanned for any raw secret
-        the model might echo, and echoing secrets are re-redacted away.
+        Materializes exact valid same-session placeholders and path aliases
+        back to raw values for the local user. Restored values are temporarily
+        protected while the rest of the text is scanned, so an authorized
+        restoration is not immediately redacted again. Any raw secret echoed
+        directly by the model still gets folded.
         """
         protected = text
         restorations: dict[str, str] = {}
         events: list[dict[str, Any]] = []
+        restore_nonce = secrets.token_hex(8).upper()
 
         def protect(raw: str) -> str:
-            token = f"APGLOCALRESTORE{len(restorations):08d}"
+            # Use an environment-reference-shaped sentinel so credential
+            # assignment detection treats it as an intentionally unresolved
+            # local value rather than folding it as another secret. Restore
+            # only the occurrence created here below.
+            token = f"$APG_LOCAL_RESTORE_{restore_nonce}_{len(restorations):08d}"
             restorations[token] = raw
             return token
 
@@ -948,8 +950,6 @@ class RedactionEngine:
                     )
                 )
         for ph in self.signer.parse(protected):
-            if ph.kind == "secret":
-                continue
             result = self._materializer.materialize_placeholder(ph, session_id=session_id, sink_type="local_user")
             if result.allowed and result.value is not None:
                 protected = protected.replace(ph.raw + ph.suffix, protect(result.value))
@@ -969,6 +969,7 @@ class RedactionEngine:
                         action=action,
                         result_code=result_code,
                         representation_type="signed_placeholder",
+                        placeholder_session_id=ph.session_id,
                         issued_at=ph.issued_at,
                         suffix=ph.suffix,
                     )
@@ -982,11 +983,9 @@ class RedactionEngine:
             fold_apg_markers=fold_apg_markers and self.detector_manager.core_guard_enabled,
         )
         for token, value in restorations.items():
-            safe = safe.replace(token, value)
+            safe = safe.replace(token, value, 1)
         post_events: list[dict[str, Any]] = []
         for ph in self.signer.parse(safe):
-            if ph.kind == "secret":
-                continue
             result = self._materializer.materialize_placeholder(ph, session_id=session_id, sink_type="local_user")
             if result.allowed and result.value is not None:
                 safe = safe.replace(ph.raw + ph.suffix, result.value)
@@ -999,6 +998,7 @@ class RedactionEngine:
                             action="materialize",
                             result_code="OK",
                             representation_type="signed_placeholder",
+                            placeholder_session_id=ph.session_id,
                             issued_at=ph.issued_at,
                             suffix=ph.suffix,
                         )

@@ -62,7 +62,7 @@ def _stream(client: TestClient, body: dict) -> str:
         return response.read().decode()
 
 
-def test_responses_stream_injects_instructions_and_folds_split_secret(tmp_path) -> None:
+def test_responses_stream_injects_instructions_and_restores_split_placeholder(tmp_path) -> None:
     def factory(payload):
         placeholder = _placeholder_of_kind(json.dumps(payload), "secret")
 
@@ -103,9 +103,9 @@ def test_responses_stream_injects_instructions_and_folds_split_secret(tmp_path) 
     assert APG_UPSTREAM_SYSTEM_PROMPT in sent["instructions"]
     assert sent["instructions"].endswith("Be concise.")
     assert SECRET not in json.dumps(sent)
-    assert SECRET not in body
+    assert SECRET in body
     assert "<APG:v1:" not in body
-    assert PROTECTED_VALUE in body
+    assert PROTECTED_VALUE not in body
     assert 'event: response.output_text.delta' in body
     assert 'event: response.completed' in body
 
@@ -205,7 +205,7 @@ def test_non_streaming_responses_materializes_function_call_and_restores_pii(tmp
     arguments = json.loads(body["output"][0]["arguments"])
     assert arguments["api_key"] == SECRET
     visible = body["output"][1]["content"][0]["text"]
-    assert visible == f"Email alice@example.com; key {PROTECTED_VALUE}"
+    assert visible == f"Email alice@example.com; key {SECRET}"
 
 
 def test_responses_stream_flushes_tool_arguments_at_eof_and_rejects_malformed_json(tmp_path) -> None:

@@ -54,13 +54,13 @@ def test_path_traversal_suffix_blocked(components) -> None:
     assert len(parsed) == 0  # traversal suffix blocks parsing entirely
 
 
-def test_secret_placeholder_blocked_for_user_visible_sinks(components) -> None:
+def test_secret_placeholder_materializes_for_local_user(components) -> None:
     store, signer, policy = components
     rec = store.upsert_mapping(session_id="sess_a", workspace_id="ws", scope="request", kind="secret", subtype="api_key", value="sk-secret", store_value=True, materialization_class="secret")
     ph = signer.parse(signer.issue("secret", rec.handle_id, "sess_a"))[0]
     result = MaterializationEngine(store, signer, policy, "ws").materialize_placeholder(ph, session_id="sess_a", sink_type="local_user")
-    assert not result.allowed
-    assert result.error_code == "secret_not_local_tool"
+    assert result.allowed
+    assert result.value == "sk-secret"
 
 
 def test_secret_placeholder_only_materializes_into_local_tool_args(components) -> None:

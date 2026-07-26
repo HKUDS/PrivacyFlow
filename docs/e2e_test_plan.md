@@ -56,8 +56,17 @@ Run real Claude Code and OpenCode scenarios through APG and DeepSeek (opt-in):
 
 ```bash
 DEEPSEEK_API_KEY='<your key>' \
-.venv/bin/python -m e2e_agent_tests.scripts.run_live_agents
+.venv/bin/python -m e2e_agent_tests.scripts.run_live_agents --concurrency 4
+# Reuse the active locally saved upstream profile:
+.venv/bin/python -m e2e_agent_tests.scripts.run_live_agents \
+  --launcher-config .apg/launcher.json --concurrency 4
 ```
+
+Live cases use isolated work directories, APG processes, ports, and SQLite
+databases and are scheduled concurrently. `--concurrency N` controls the
+maximum simultaneous cases; `APG_LIVE_CONCURRENCY` provides the same setting
+for automation, and the default is `4`. Summary results retain deterministic
+Agent/scenario order regardless of completion order.
 
 ## Connecting Real Agents
 
@@ -94,9 +103,9 @@ Overall pass requires no `Security=0`. Critical scenarios `2`, `3`, and `12` req
 
 ## Global Fail Conditions
 
-- Raw machine secret reaches remote LLM, normal audit logs, memory/vector DB, or user-visible response text
+- Raw machine secret reaches remote LLM, normal audit logs, or memory/vector DB
+- User-visible raw value appears without an exact valid same-session placeholder materialization
 - Fake APG placeholder is materialized
-- Tool-call argument materialization leaks into non-tool response fields
 - Upstream/proxy errors leak traceback, raw upstream URLs, or secret-bearing request details
 - Tombstone/unresolved placeholder causes infinite retry loop
 - SQLite database lock breaks concurrent scenarios

@@ -40,20 +40,19 @@ class PolicyEngine:
         return PolicyDecision(True, "redact", f"redact_unknown_{detection.subtype}", retryable=False)
 
     def can_materialize(self, kind: str, sink_type: str, materialization_class: str) -> PolicyDecision:
-        # Iron rule: secrets and (in redact mode) PII are only ever
-        # materialized into local tool-call argument fields. The remote LLM
-        # and any other sink never see raw secret values. Whether a tool
-        # should actually run, which domain it may call, and whether the user
-        # must approve, are the agent harness' responsibility — APG does not
-        # police tool usage.
+        # Raw protected values never go back to the remote LLM. Locally, an
+        # exact valid placeholder may be resolved either for a structured
+        # tool argument or for the final user-visible response. The latter
+        # keeps APG transparent: the model refers to the opaque handle and
+        # APG restores the value only after the response reaches the gateway.
         if materialization_class == "none":
             return PolicyDecision(False, "block", "non_materializable", retryable=False)
         if sink_type == "remote_llm":
             return PolicyDecision(False, "block", "remote_materialization_blocked", retryable=False)
         if kind == "secret":
-            if sink_type == "local_tool":
-                return PolicyDecision(True, "allow", "secret_local_tool_materialization_allowed")
-            return PolicyDecision(False, "block", "secret_not_local_tool", "Secrets are only materialized into local tool-call arguments.", False, "use_local_tool_call")
+            if sink_type in {"local_tool", "local_user"}:
+                return PolicyDecision(True, "allow", "secret_local_materialization_allowed")
+            return PolicyDecision(False, "block", "secret_materialization_blocked", retryable=False)
         if kind in {"pii", "path"}:
             if sink_type in {"local_tool", "local_user"}:
                 return PolicyDecision(True, "allow", "materialization_allowed")

@@ -8,6 +8,7 @@ import httpx
 from fastapi.testclient import TestClient
 
 from gateway.config import GatewayConfig, UpstreamConfig
+from gateway.placeholder_parser import PLACEHOLDER_RE
 from gateway.server import create_app
 from gateway.upstream_client import UpstreamClient
 from gateway.upstream_protocol import (
@@ -450,3 +451,61 @@ def test_openai_and_anthropic_agents_materialize_tools_through_anthropic_upstrea
         "text": "Keep the native Anthropic system block.",
         "cache_control": {"type": "ephemeral"},
     }
+
+
+def test_native_anthropic_visible_text_restores_exact_placeholder(tmp_path) -> None:
+    raw_secret = "sk-proj-abcdefghijklmnopqrstuvwxyz123456"
+
+    class NativeAnthropicEcho:
+        config = UpstreamConfig(
+            base_url="https://provider.example/anthropic",
+            api_key="provider-key",
+            protocol=ANTHROPIC_MESSAGES,
+        )
+
+        async def request_json(self, method, path, payload=None):
+            assert path == "/v1/messages"
+            match = PLACEHOLDER_RE.search(json.dumps(payload))
+            assert match is not None
+            return (
+                200,
+                {"content-type": "application/json"},
+                {
+                    "id": "msg_visible",
+                    "type": "message",
+                    "role": "assistant",
+                    "model": "claude-test",
+                    "content": [{"type": "text", "text": f'OPENAI_API_KEY = "{match.group(0)}"'}],
+                    "stop_reason": "end_turn",
+                    "usage": {"input_tokens": 8, "output_tokens": 8},
+                },
+            )
+
+        async def stream_request(self, method, path, payload=None):
+            raise NotImplementedError
+
+    config = GatewayConfig(
+        database_path=str(tmp_path / "state.sqlite3"),
+        audit_log_path=str(tmp_path / "audit.jsonl"),
+        signing_secret="test-signing-secret",
+        local_api_keys={"agent-key"},
+        upstream=NativeAnthropicEcho.config,
+    )
+    client = TestClient(create_app(config, NativeAnthropicEcho()))
+
+    response = client.post(
+        "/v1/messages",
+        headers={"x-api-key": "agent-key"},
+        json={
+            "model": "claude-test",
+            "max_tokens": 128,
+            "messages": [{"role": "user", "content": f"Show the assignment for {raw_secret}"}],
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["content"][0]["text"] == f'OPENAI_API_KEY = "{raw_secret}"'
+    assert "<APG:v1:" not in response.text
+    audit = (tmp_path / "audit.jsonl").read_text()
+    assert '"sink": "local_user"' in audit
+    assert raw_secret not in audit

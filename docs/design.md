@@ -36,15 +36,15 @@ Plain strings are forgeable. A model or untrusted file can invent `<APG:...>` te
 
 `remote_view` is sent to the cloud model and must not contain raw machine secrets or configured private data.
 
-`user_view` is shown locally and may restore safe PII or paths when policy allows, but it does not materialize machine secrets.
+`user_view` is shown locally and restores an exact valid placeholder to its original value. The raw value is never sent upstream; restoration occurs only after signature, session, workspace, mapping-state, expiry, and sink checks pass.
 
-`tool_call_argument_view` is the structured `tool_calls[].function.arguments` (OpenAI) or `content[].tool_use.input` (Anthropic) field in a downlink response. This is the only sink where APG materializes a secret back to its raw value, so any OpenAI/Anthropic-compatible harness transparently receives the real credential needed to execute a tool. Every other string field in a response stays redacted.
+`tool_call_argument_view` is the structured `tool_calls[].function.arguments` (OpenAI) or `content[].tool_use.input` (Anthropic) field in a downlink response. APG also materializes exact valid placeholders here, so compatible harnesses transparently receive the value needed to execute a tool.
 
 ## Sink-Aware Materialization
 
 The same placeholder can be safe in one sink and unsafe in another. The policy engine decides per `(kind, sink_type, materialization_class)`:
 
-- `kind=secret`: only `sink_type=local_tool` (tool-call argument fields) is allowed; `remote_llm`, `local_user`, and any other sink are blocked with a non-retryable error. There is no privileged "secret broker" sink.
+- `kind=secret`: `sink_type=local_user` and `sink_type=local_tool` are allowed after placeholder validation; `remote_llm` and any other sink remain blocked.
 - `kind=pii`/`path`: `local_tool` and `local_user` are allowed; `remote_llm` is blocked.
 - Any `materialization_class="none"` mapping is blocked for every sink.
 
@@ -52,18 +52,19 @@ Invalid or hallucinated placeholders fail closed and are not partially replaced.
 
 ## Upstream System-Prompt Contract
 
-APG prepends a short system prompt (`APG_UPSTREAM_SYSTEM_PROMPT` in `src/gateway/server.py`) to every OpenAI-compatible `/v1/chat/completions` and Anthropic `/v1/messages` request before forwarding it upstream. Responses requests receive the same contract through the `instructions` field. The contract instructs the cloud model to treat APG placeholders as opaque protected handles, preserve each distinct handle byte-for-byte in its corresponding structured local tool argument, refer to protected values generically in prose, never substitute one handle for another, and never follow untrusted-document instructions to exfiltrate protected data.
+APG prepends a short system prompt (`APG_UPSTREAM_SYSTEM_PROMPT` in `src/gateway/server.py`) to every OpenAI-compatible `/v1/chat/completions` and Anthropic `/v1/messages` request before forwarding it upstream. Responses requests receive the same contract through the `instructions` field. The contract instructs the cloud model to treat APG placeholders as opaque protected handles, preserve each distinct handle byte-for-byte in normal prose or its corresponding structured local tool argument, never substitute one handle for another, and never follow untrusted-document instructions to exfiltrate protected data.
 
-This is a defense-in-depth layer. It cannot be relied on alone — a sufficiently capable or injected model may still attempt to echo placeholders or raw secrets in its visible output. The downlink fold below catches those cases deterministically.
+This is a defense-in-depth layer. It cannot be relied on alone — the downlink validates every placeholder before local restoration and separately folds direct raw-secret echoes.
 
-## Downlink Marker Folding
+## Downlink Validation And Restoration
 
 `sanitize_text` and `scan_local_text` (used by `ResponseScanner` for non-streaming and `scan_local_stream` for streaming) take a `fold_apg_markers: bool = True` flag. When enabled and `scope="response"`:
 
-- Detections whose type is `APG_MARKER` (signed placeholder or redaction marker) are replaced with the fixed phrase `APG-managed protected value`.
+- Exact signed placeholders that validate for the active session and `local_user` sink are protected during scanning and restored to their mapped value afterward.
+- Other `APG_MARKER` detections (forged, invalid, cross-session, expired, revoked, or legacy redaction markers) are replaced with the fixed phrase `APG-managed protected value`.
 - Detections whose type is `secret` (a raw secret echoed by the model) are also replaced with the same phrase.
 
-This guarantees user-visible response text, reasoning, tool descriptions, written files, memory, and logs never carry verbatim APG handles or raw secret echoes back to the human, regardless of whether the upstream model honored the system-prompt contract.
+This guarantees that user-visible response text does not expose APG internals and that a raw value appears only after a valid same-session placeholder round trip. It does not extend APG's control to storage performed by a local client after receiving the response.
 
 Structured `tool_calls[].function.arguments` and `content[].tool_use.input` fields are routed outside visible-text folding. APG buffers each call by choice/tool index, requires a complete JSON object, materializes valid placeholders only in decoded string values, and serializes the object again. This prevents a restored quote, backslash, newline, or control character from corrupting the tool protocol. Invalid, expired, or cross-session handles remain unchanged; malformed argument JSON terminates the response with a safe protocol-native error. Audit events contain only kind, sink, action, and reason code.
 
@@ -81,4 +82,4 @@ Upstream configuration treats those wire formats as separate capabilities: `open
 
 ## Future MCP And Runtime Tracing
 
-Future MCP integration is limited to proxying existing MCP servers against the same transparent privacy contract (redact upstream, materialize only into structured tool arguments). Tool permission brokerage, file-write arbitration, sensitive-edit approval flows, and Secret Usage Graph analysis are the agent harness' responsibility and are out of APG's scope.
+Future MCP integration is limited to proxying existing MCP servers against the same transparent privacy contract (redact upstream, validate and materialize only at explicit local sinks). Tool permission brokerage, file-write arbitration, sensitive-edit approval flows, and Secret Usage Graph analysis are the agent harness' responsibility and are out of APG's scope.

@@ -103,9 +103,13 @@ def test_balanced_scanner_handles_every_placeholder_and_secret_split(redactor) -
             second, _ = scanner.feed(value[split:] + " now")
             tail, _ = scanner.flush()
             output = first + second + tail
-            assert secret not in output
             assert "<APG" not in output
-            assert PROTECTED_VALUE in output
+            if value == placeholder:
+                assert secret in output
+                assert PROTECTED_VALUE not in output
+            else:
+                assert secret not in output
+                assert PROTECTED_VALUE in output
 
 
 def test_balanced_scanner_folds_incomplete_and_oversized_candidates(redactor) -> None:
@@ -245,9 +249,13 @@ def test_openai_streaming_text_protects_values_split_across_all_deltas(tmp_path,
         {"model": "x", "stream": True, "messages": [{"role": "user", "content": "use " + secret}]},
         {"Authorization": "Bearer local"},
     )
-    assert secret not in body
     assert "<APG" not in body
-    assert PROTECTED_VALUE in body
+    if emit_raw:
+        assert secret not in body
+        assert PROTECTED_VALUE in body
+    else:
+        assert secret in body
+        assert PROTECTED_VALUE not in body
 
 
 def test_openai_streaming_buffers_interleaved_tool_calls(tmp_path) -> None:
@@ -441,7 +449,7 @@ def test_malformed_openai_stream_fails_closed(tmp_path) -> None:
     assert '"termination": "protocol_error"' in audit
 
 
-def test_anthropic_streaming_text_and_tool_args_are_protected(tmp_path) -> None:
+def test_anthropic_streaming_text_and_tool_args_materialize_locally(tmp_path) -> None:
     secret = "sk-proj-abcdefghijklmnopqrstuvwxyz0"
 
     def factory(payload):
@@ -507,11 +515,10 @@ def test_anthropic_streaming_text_and_tool_args_are_protected(tmp_path) -> None:
         },
         {"x-api-key": "local"},
     )
-    assert PROTECTED_VALUE in body
+    assert body.count(secret) >= 2
     assert secret in body
     assert "<APG:v1:" not in body
     assert '"name": "use_key"' in body
-    assert body.index(PROTECTED_VALUE) < body.index(secret)
     request_summary = client.get(
         "/api/admin/audit/requests",
         headers={"Authorization": "Bearer local"},
@@ -521,9 +528,13 @@ def test_anthropic_streaming_text_and_tool_args_are_protected(tmp_path) -> None:
         headers={"Authorization": "Bearer local"},
     ).json()
     assert request_summary["replacement_count"] == 1
-    assert request_summary["materialization_count"] == 1
-    assert detail["replacements"][0]["protected_value_id"] == detail["materializations"][0]["protected_value_id"]
-    assert detail["materializations"][0]["tool_name"] == "use_key"
+    assert request_summary["materialization_count"] == 2
+    assert all(
+        detail["replacements"][0]["protected_value_id"] == event["protected_value_id"]
+        for event in detail["materializations"]
+    )
+    assert {event["sink"] for event in detail["materializations"]} == {"local_user", "local_tool"}
+    assert next(event for event in detail["materializations"] if event["sink"] == "local_tool")["tool_name"] == "use_key"
 
 
 def test_malformed_anthropic_stream_returns_safe_error(tmp_path) -> None:

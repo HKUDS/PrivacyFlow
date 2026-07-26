@@ -10,12 +10,13 @@ class ResponseScanner:
         self.redaction_engine = redaction_engine
 
     def scan_response_json(self, data: Any, session_id: str) -> tuple[Any, list[dict[str, Any]]]:
-        # Pass 1: materialize placeholders back to raw values ONLY inside
-        # structured tool-call argument fields. This is the transparent path
-        # that lets an agent harness receive real secrets to execute a tool.
-        materialized, materialization_events = self.redaction_engine.materialize_local_tool_args_with_events(data, session_id)
-        # Pass 2: redact any echoed secrets/PII in every other string field
-        # (assistant-visible text, reasoning, etc.) but skip tool-call args
-        # so the values we just materialized are not re-redacted away.
+        # Pass 1: materialize exact valid placeholders in structured tool-call
+        # arguments. Pass 2 scans all other response-visible strings; that
+        # scanner restores valid placeholders for the local user while still
+        # folding raw values echoed directly by the remote model.
+        materialized, materialization_events = self.redaction_engine.materialize_local_tool_args_with_events(
+            data,
+            session_id,
+        )
         sanitized, scan_events = self.redaction_engine.scan_local_json(materialized, session_id, skip_tool_args=True)
         return sanitized, [*materialization_events, *scan_events]

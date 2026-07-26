@@ -1,7 +1,13 @@
 from __future__ import annotations
 
+import argparse
 import json
+import os
+import threading
+import time
 from pathlib import Path
+
+import pytest
 
 from e2e_agent_tests.scripts.check_leaks import scan_paths
 from e2e_agent_tests.scripts.common import HarnessPaths
@@ -15,12 +21,15 @@ from e2e_agent_tests.scripts.setup_test_repo import setup_test_repo
 from gateway.mapping_store import MappingStore
 from e2e_agent_tests.scripts.run_live_agents import (
     LIVE_SCENARIOS,
+    _apply_live_launcher_config,
     _agent_command,
     _audit_operation_evidence,
     _contains_non_example_apg_marker,
     _extract_final_output,
     _extract_tool_summary,
     _extract_tool_trace,
+    _positive_int,
+    _run_live_matrix,
     _server_environment,
     _streams_are_safe,
     _successful_validator_outputs,
@@ -71,6 +80,100 @@ def test_live_agent_prerequisites_report_missing_key(monkeypatch) -> None:
     monkeypatch.delenv("DEEPSEEK_API_KEY", raising=False)
     missing = detect_live_prerequisites([])
     assert missing == ["DEEPSEEK_API_KEY"]
+
+
+def test_live_runner_can_load_active_launcher_profile_without_printing_key(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    launcher = tmp_path / "launcher.json"
+    launcher.write_text(
+        json.dumps(
+            {
+                "signing_secret": "local-signing-secret",
+                "local_api_key": "local-agent-key",
+                "active_upstream_profile_id": "up_test",
+                "upstream_profiles": [
+                    {
+                        "id": "up_test",
+                        "name": "Live test",
+                        "protocol": "openai_chat_completions",
+                        "base_url": "https://provider.example/v1",
+                        "api_key": "provider-key-from-launcher",
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    launcher.chmod(0o600)
+    monkeypatch.delenv("DEEPSEEK_API_KEY", raising=False)
+    monkeypatch.delenv("APG_UPSTREAM_BASE_URL", raising=False)
+    monkeypatch.delenv("APG_UPSTREAM_PROTOCOL", raising=False)
+
+    _apply_live_launcher_config(launcher)
+
+    assert detect_live_prerequisites([]) == []
+    assert os.environ["DEEPSEEK_API_KEY"] == "provider-key-from-launcher"
+    assert os.environ["APG_UPSTREAM_BASE_URL"] == "https://provider.example/v1"
+    assert os.environ["APG_UPSTREAM_PROTOCOL"] == "openai_chat_completions"
+
+
+def test_live_matrix_runs_concurrently_preserves_order_and_isolates_failures(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    state = {"active": 0, "maximum": 0}
+    lock = threading.Lock()
+
+    def fake_case(agent: str, scenario: str, base: Path, timeout: float) -> dict:
+        assert base == tmp_path
+        assert timeout == 12.0
+        with lock:
+            state["active"] += 1
+            state["maximum"] = max(state["maximum"], state["active"])
+        try:
+            time.sleep(0.03 if scenario == "slow" else 0.01)
+            if scenario == "broken":
+                raise RuntimeError("synthetic failure")
+            return {"agent": agent, "scenario": scenario, "passed": True}
+        finally:
+            with lock:
+                state["active"] -= 1
+
+    monkeypatch.setattr(
+        "e2e_agent_tests.scripts.run_live_agents.run_live_case",
+        fake_case,
+    )
+
+    results = _run_live_matrix(
+        ["claude", "opencode"],
+        ["slow", "broken"],
+        tmp_path,
+        timeout=12.0,
+        concurrency=3,
+    )
+
+    assert [(item["agent"], item["scenario"]) for item in results] == [
+        ("claude", "slow"),
+        ("claude", "broken"),
+        ("opencode", "slow"),
+        ("opencode", "broken"),
+    ]
+    assert state["maximum"] == 3
+    assert results[0]["passed"] is True
+    assert results[1]["passed"] is False
+    assert "RuntimeError: synthetic failure" in results[1]["run_error"]
+    assert results[2]["passed"] is True
+    assert results[3]["passed"] is False
+
+
+def test_live_concurrency_requires_a_positive_integer() -> None:
+    assert _positive_int("1") == 1
+    assert _positive_int("8") == 8
+    for value in ("0", "-1", "many"):
+        with pytest.raises(argparse.ArgumentTypeError, match="positive integer"):
+            _positive_int(value)
 
 
 def test_live_agent_final_output_excludes_tool_trajectory() -> None:
@@ -483,6 +586,7 @@ def test_live_audit_evidence_counts_pairs_without_exposing_identifiers(tmp_path:
         operations=[
             {**shared, "direction": "replacement", "action": "redact", "sink": "remote_llm"},
             {**shared, "direction": "materialization", "action": "materialize", "sink": "local_tool", "tool_name": "Write"},
+            {**shared, "direction": "materialization", "action": "materialize", "sink": "local_user", "tool_name": ""},
         ],
     )
     store.close()
@@ -490,7 +594,9 @@ def test_live_audit_evidence_counts_pairs_without_exposing_identifiers(tmp_path:
     evidence = _audit_operation_evidence(database)
 
     assert evidence["replacement_count"] == 1
-    assert evidence["materialization_count"] == 1
+    assert evidence["materialization_count"] == 2
+    assert evidence["local_tool_materialization_count"] == 1
+    assert evidence["local_user_materialization_count"] == 1
     assert evidence["paired_representation_unique"] == 1
     assert "secr_internal_only" not in json.dumps(evidence)
     assert "sess_internal_only" not in json.dumps(evidence)

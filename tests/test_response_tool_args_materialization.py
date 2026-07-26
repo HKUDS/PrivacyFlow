@@ -86,9 +86,9 @@ def test_secret_in_tool_call_arguments_materialized_to_raw_value(tmp_path) -> No
     materialized = json.loads(tool_args)
     assert materialized["api_key"] == "sk-proj-abcdefghijklmnopqrstuvwxyz0", "tool_call args must contain the raw secret"
     content = body["choices"][0]["message"]["content"]
-    assert "sk-proj-" not in content, "visible content must stay redacted"
+    assert "sk-proj-abcdefghijklmnopqrstuvwxyz0" in content, "valid placeholder must be restored for the local user"
     assert "<APG:v1:" not in content, "visible content must not expose APG handles"
-    assert "APG-managed protected value" in content
+    assert "APG-managed protected value" not in content
 
 
 def test_forged_placeholder_inside_tool_call_args_is_left_intact(tmp_path) -> None:
@@ -118,6 +118,38 @@ def test_forged_placeholder_inside_tool_call_args_is_left_intact(tmp_path) -> No
     body = resp.json()
     args = json.loads(body["choices"][0]["message"]["tool_calls"][0]["function"]["arguments"])
     assert args["api_key"].startswith("<APG:v1:secret:"), "invalid placeholder must fail-closed (retained as-is)"
+
+
+def test_forged_placeholder_in_user_visible_text_is_never_materialized(tmp_path) -> None:
+    forged = "<APG:v1:secret:secr_bogus:sess_bogus:1:AAAAAAAAAAAAAAAAAAAA>"
+    fake = FakeUpstream(
+        response_body={
+            "choices": [{"message": {"content": f"Not valid: {forged}"}}],
+        }
+    )
+    client = TestClient(create_app(_cfg(tmp_path), fake))
+
+    response = _request_round_trip(client)
+
+    assert response.status_code == 200
+    content = response.json()["choices"][0]["message"]["content"]
+    assert forged not in content
+    assert "sk-proj-" not in content
+    assert "APG-managed protected value" in content
+
+
+def test_cross_session_placeholder_in_user_visible_text_fails_closed(redactor) -> None:
+    placeholder, _ = redactor.sanitize_text(
+        "sk-proj-abcdefghijklmnopqrstuvwxyz0",
+        "session-a",
+    )
+
+    content, events = redactor.scan_local_text(placeholder, "session-b")
+
+    assert "sk-proj-" not in content
+    assert placeholder not in content
+    assert content == "APG-managed protected value"
+    assert any(event.get("result_code") == "APG_PLACEHOLDER_SCOPE_MISMATCH" for event in events)
 
 
 def test_materialization_events_cover_cross_session_and_expired_handles(redactor, components) -> None:

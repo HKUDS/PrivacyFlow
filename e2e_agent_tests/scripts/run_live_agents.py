@@ -12,6 +12,7 @@ import subprocess
 import sys
 import time
 from collections import Counter
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
@@ -20,6 +21,7 @@ from urllib.parse import urlparse
 from e2e_agent_tests.scripts.check_leaks import scan_paths
 from e2e_agent_tests.scripts.common import CANARY_STRINGS, HarnessPaths, file_snapshot, read_jsonl, reset_path, sha256_file
 from e2e_agent_tests.scripts.setup_test_repo import setup_test_repo
+from gateway.cli.launcher import LauncherConfigError, prepare_launcher_config
 from gateway.placeholder_parser import APG_PLACEHOLDER_FORMAT_EXAMPLE
 from gateway.upstream_protocol import OPENAI_CHAT_COMPLETIONS
 
@@ -152,6 +154,18 @@ def detect_live_prerequisites(agents: list[str]) -> list[str]:
         if shutil.which(agent) is None:
             missing.append(agent)
     return missing
+
+
+def _apply_live_launcher_config(path: Path) -> None:
+    config = prepare_launcher_config(path, environ={})
+    api_key = str(config.get("_resolved_upstream_api_key", "")).strip()
+    base_url = str(config.get("_resolved_upstream_base_url", "")).strip()
+    protocol = str(config.get("_resolved_upstream_protocol", "")).strip()
+    if not api_key or not base_url or not protocol:
+        raise LauncherConfigError("The active launcher upstream profile is incomplete.")
+    os.environ["DEEPSEEK_API_KEY"] = api_key
+    os.environ["APG_UPSTREAM_BASE_URL"] = base_url
+    os.environ["APG_UPSTREAM_PROTOCOL"] = protocol
 
 
 def _base_child_environment() -> dict[str, str]:
@@ -503,6 +517,8 @@ def _audit_operation_evidence(database_path: Path) -> dict[str, int]:
         "replacement_count": 0,
         "materialization_count": 0,
         "materialization_failed_count": 0,
+        "local_user_materialization_count": 0,
+        "local_tool_materialization_count": 0,
         "replacement_unique": 0,
         "materialization_unique": 0,
         "paired_representation_unique": 0,
@@ -515,11 +531,11 @@ def _audit_operation_evidence(database_path: Path) -> dict[str, int]:
             connection.row_factory = sqlite3.Row
             rows = connection.execute(
                 """
-                SELECT direction, handle_id, kind, representation_type,
+                SELECT direction, sink, handle_id, kind, representation_type,
                        placeholder_session_id, issued_at, suffix, alias,
                        SUM(occurrence_count) AS occurrence_count
                 FROM audit_operations
-                GROUP BY direction, handle_id, kind, representation_type,
+                GROUP BY direction, sink, handle_id, kind, representation_type,
                          placeholder_session_id, issued_at, suffix, alias
                 """
             ).fetchall()
@@ -537,6 +553,8 @@ def _audit_operation_evidence(database_path: Path) -> dict[str, int]:
         count = int(row["occurrence_count"] or 0)
         if direction in {"replacement", "materialization", "materialization_failed"}:
             evidence[f"{direction}_count"] += count
+        if direction == "materialization" and str(row["sink"]) in {"local_user", "local_tool"}:
+            evidence[f"{row['sink']}_materialization_count"] += count
         representation = (
             row["handle_id"],
             row["kind"],
@@ -828,10 +846,14 @@ def run_live_case(agent: str, scenario_name: str, base: Path, timeout: float) ->
     successful_validators = _successful_validator_outputs(agent, stdout)
 
     leak_hits = scan_paths([paths.upstream_log, paths.audit_log, paths.external_sink_log, paths.memory_log, server_log])
-    final_leaks = [value for value in CANARY_STRINGS if value in final_output]
+    final_materialized_values = [value for value in CANARY_STRINGS if value in final_output]
     upstream_events = read_jsonl(paths.upstream_log)
     audit_events = read_jsonl(paths.audit_log)
     audit_operation_evidence = _audit_operation_evidence(paths.artifacts / "apg_proxy_state.sqlite3")
+    final_values_authorized = (
+        not final_materialized_values
+        or audit_operation_evidence["local_user_materialization_count"] > 0
+    )
     stream_events = [event for event in audit_events if event.get("phase") == "response_stream_complete"]
     contracts_ok = bool(upstream_events) and all(_payload_has_contract(event) for event in upstream_events)
     streams_ok = _streams_are_safe(stream_events)
@@ -851,7 +873,7 @@ def run_live_case(agent: str, scenario_name: str, base: Path, timeout: float) ->
             completed is not None and completed.returncode == 0,
             run_error is None,
             not leak_hits,
-            not final_leaks,
+            final_values_authorized,
             not _contains_non_example_apg_marker(final_output),
             contracts_ok,
             streams_ok,
@@ -869,7 +891,8 @@ def run_live_case(agent: str, scenario_name: str, base: Path, timeout: float) ->
         "stream_count": len(stream_events),
         "client_disconnect_count": sum(event.get("termination") == "client_disconnected" for event in stream_events),
         "leak_hit_files": sorted(str(path) for path in leak_hits),
-        "final_leak_count": len(final_leaks),
+        "final_materialized_value_count": len(final_materialized_values),
+        "final_values_authorized": final_values_authorized,
         "final_has_apg_handle": _contains_non_example_apg_marker(final_output),
         "trajectory_contains_canary": any(value in trajectory for value in CANARY_STRINGS),
         "tool_summary": tool_summary,
@@ -881,14 +904,102 @@ def run_live_case(agent: str, scenario_name: str, base: Path, timeout: float) ->
     }
 
 
+def _positive_int(value: str) -> int:
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError) as exc:
+        raise argparse.ArgumentTypeError("must be a positive integer") from exc
+    if parsed < 1:
+        raise argparse.ArgumentTypeError("must be a positive integer")
+    return parsed
+
+
+def _failed_live_case(agent: str, scenario: str, exc: Exception) -> dict[str, Any]:
+    return {
+        "agent": agent,
+        "scenario": scenario,
+        "passed": False,
+        "returncode": None,
+        "run_error": f"runner error: {type(exc).__name__}: {exc}",
+        "contracts_ok": False,
+        "streams_ok": False,
+        "stream_count": 0,
+        "client_disconnect_count": 0,
+        "leak_hit_files": [],
+        "final_materialized_value_count": 0,
+        "final_values_authorized": False,
+        "final_has_apg_handle": False,
+        "trajectory_contains_canary": False,
+        "tool_summary": {},
+        "tool_trace": [],
+        "changed_files": [],
+        "scenario_failures": ["live case runner raised an unexpected exception"],
+        "scenario_details": {},
+        "artifacts": "",
+    }
+
+
+def _run_live_matrix(
+    agents: list[str],
+    scenarios: list[str],
+    base: Path,
+    timeout: float,
+    concurrency: int,
+) -> list[dict[str, Any]]:
+    jobs = [(agent, scenario) for agent in agents for scenario in scenarios]
+    results: list[dict[str, Any] | None] = [None] * len(jobs)
+    worker_count = min(concurrency, len(jobs))
+    with ThreadPoolExecutor(max_workers=worker_count, thread_name_prefix="apg-live") as pool:
+        futures = {
+            pool.submit(run_live_case, agent, scenario, base, timeout): (index, agent, scenario)
+            for index, (agent, scenario) in enumerate(jobs)
+        }
+        completed_count = 0
+        for future in as_completed(futures):
+            index, agent, scenario = futures[future]
+            try:
+                result = future.result()
+            except Exception as exc:
+                result = _failed_live_case(agent, scenario, exc)
+            results[index] = result
+            completed_count += 1
+            state = "PASS" if result.get("passed") else "FAIL"
+            print(
+                f"[{completed_count}/{len(jobs)}] {agent}/{scenario}: {state}",
+                file=sys.stderr,
+                flush=True,
+            )
+    return [result for result in results if result is not None]
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Run opt-in APG validation with real coding agents and a real provider.")
     parser.add_argument("--workdir", default="/private/tmp/apg-live-agents")
+    parser.add_argument(
+        "--launcher-config",
+        type=Path,
+        help="Load the active upstream URL, protocol, and API key from an APG launcher configuration.",
+    )
     parser.add_argument("--agents", nargs="+", choices=["claude", "opencode"], default=["claude", "opencode"])
     parser.add_argument("--scenarios", nargs="+", choices=sorted(LIVE_SCENARIOS), default=list(LIVE_SCENARIOS))
     parser.add_argument("--timeout", type=float, default=300.0)
+    parser.add_argument(
+        "--concurrency",
+        type=_positive_int,
+        default=os.getenv("APG_LIVE_CONCURRENCY", "4"),
+        help="Maximum live cases to run concurrently (default: 4; env: APG_LIVE_CONCURRENCY).",
+    )
     parser.add_argument("--require", action="store_true", help="Fail instead of skip when credentials or agent CLIs are unavailable.")
     args = parser.parse_args()
+    if len(set(args.agents)) != len(args.agents):
+        parser.error("--agents must not contain duplicates")
+    if len(set(args.scenarios)) != len(args.scenarios):
+        parser.error("--scenarios must not contain duplicates")
+    if args.launcher_config is not None:
+        try:
+            _apply_live_launcher_config(args.launcher_config)
+        except LauncherConfigError as exc:
+            parser.error(str(exc))
     missing = detect_live_prerequisites(args.agents)
     if missing:
         result = {"skipped": True, "missing": missing}
@@ -897,13 +1008,20 @@ def main() -> None:
 
     base = Path(args.workdir).resolve()
     reset_path(base)
-    results = [run_live_case(agent, scenario, base, args.timeout) for agent in args.agents for scenario in args.scenarios]
+    results = _run_live_matrix(
+        args.agents,
+        args.scenarios,
+        base,
+        args.timeout,
+        args.concurrency,
+    )
     provider_key = os.environ["DEEPSEEK_API_KEY"]
     provider_key_hit_files = sorted(scan_paths([base], [provider_key]))
     summary = {
         "passed": all(result["passed"] for result in results) and not provider_key_hit_files,
         "scenario_count": len(args.scenarios),
         "execution_count": len(results),
+        "concurrency": min(args.concurrency, len(results)),
         "provider_key_file_hits": provider_key_hit_files,
         "results": results,
     }

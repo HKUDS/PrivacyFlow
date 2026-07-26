@@ -5,7 +5,7 @@ APG is a transparent OpenAI/Anthropic-compatible privacy proxy. It does **not** 
 ## What APG guarantees
 
 1. **Upstream redaction.** Any raw secret, PII, or sensitive local path that appears anywhere in the request JSON sent to a `/v1/*` endpoint is replaced with a signed placeholder or alias before forwarding to the upstream model. The cloud LLM never sees the raw value.
-2. **Downlink response scanning.** Any secret the model echoes in non-tool response fields (visible text, reasoning, tool descriptions) is redacted again before reaching the harness.
+2. **Transparent local response restoration.** If the model emits an exact valid APG placeholder in response text, APG restores the original value for the local user. A raw secret echoed directly by the model is still folded, and invalid, forged, expired, revoked, or cross-session placeholders fail closed.
 3. **Transparent tool-call materialization.** When the upstream LLM responds with structured `tool_calls[].function.arguments` (OpenAI) or `content[].tool_use.input` (Anthropic) fields that contain APG placeholders, APG parses the complete argument object, materializes placeholders **only inside decoded string values**, and serializes fresh JSON. The harness receives valid JSON containing the real credential and can execute the tool with it.
 4. **Fail-closed for malformed arguments.** Invalid argument JSON is never materialized through raw string replacement. Streaming responses return a protocol-native safe error and record `tool_argument_json_errors`; non-streaming responses return HTTP `502` with `APG_TOOL_ARGUMENTS_INVALID`.
 5. **Fail-closed for forged placeholders.** Hallucinated or unsigned placeholders inside otherwise valid arguments are left intact rather than partially replaced; the harness will normally see a tool call that fails when the bogus value is used.
@@ -22,7 +22,7 @@ Anything APG does not enforce is explicitly the harness' responsibility. Concret
 - **Tool schema and semantic validation.** APG guarantees JSON syntax for supported structured tool calls; the harness still decides whether fields satisfy the selected tool's schema and whether their meaning is safe.
 - **Local file writes.** APG does not gate file writes. If a redacted view of `.env` is shown to the LLM and the LLM proposes writing it back, the harness (or the host VCS / editor) must prevent destructive whole-file overwrite of the original secret.
 - **Secret lifecycle and rotation.** APG's mapping store is a short-lived per-session cache. Long-term secret storage, key rotation, and revocation live in the harness' keystore.
-- **Local trajectory retention.** A trusted agent may record a tool argument after APG materializes it locally. APG protects upstream/model-visible traffic and final visible text; the harness must apply its own retention and access policy to local trajectories.
+- **Local response and trajectory retention.** A trusted client may record user-visible text or a tool argument after APG materializes it locally. APG protects upstream/model-visible traffic; the harness must apply its own retention and access policy to local responses and trajectories.
 
 ## Residual prompt-injection risk
 
@@ -62,4 +62,4 @@ The previous `/v1/apg/capability/{assess,execute,approve}` endpoints, the `apg` 
 <APG:v1:path:path_abc123:sess_abcd:1710000000:mac>
 ```
 
-The harness should treat any `<APG:v1:...>` marker in non-argument strings as opaque redaction; do not display it to end users and do not echo it back into prompts. Inside materialized `tool_call.arguments`, the placeholder has already been replaced with the raw value and the harness proceeds normally.
+The harness should not need to handle `<APG:v1:...>` markers itself. In normal response text, APG has already restored valid same-session placeholders and folded invalid ones. Inside materialized `tool_call.arguments`, valid placeholders have likewise been replaced with raw values before the harness proceeds.

@@ -23,9 +23,9 @@ Failed: 0
 
 ## Global Fail Conditions
 
-- Any raw machine secret reaches the upstream LLM, normal audit log, memory/vector DB, or user-visible response text.
+- Any raw machine secret reaches the upstream LLM, normal audit log, or memory/vector DB.
+- User-visible raw values appear without an exact valid same-session placeholder being materialized locally.
 - Any fake APG placeholder is materialized.
-- Tool-call argument materialization leaks into non-tool response fields.
 - Upstream/proxy errors leak traceback, raw upstream URLs, or secret-bearing request details.
 - Tombstone/unresolved placeholder causes an infinite retry loop.
 - SQLite locking breaks concurrent scenarios.

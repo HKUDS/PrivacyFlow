@@ -22,6 +22,8 @@ def test_prompt_uses_the_reserved_placeholder_format_example() -> None:
         "Different placeholders do not imply that their underlying values are equal or different"
         in APG_UPSTREAM_SYSTEM_PROMPT
     )
+    assert "emit its exact APG placeholder unchanged" in APG_UPSTREAM_SYSTEM_PROMPT
+    assert "APG will restore valid placeholders locally before showing the answer to the user" in APG_UPSTREAM_SYSTEM_PROMPT
     assert PLACEHOLDER_RE.fullmatch(APG_PLACEHOLDER_FORMAT_EXAMPLE) is None
 
 
@@ -101,7 +103,7 @@ def test_balanced_stream_preserves_example_at_every_split(redactor, split: int) 
     assert first_events + second_events + tail_events == []
 
 
-def test_stream_preserves_example_but_folds_real_placeholder(redactor) -> None:
+def test_stream_preserves_example_and_restores_real_placeholder(redactor) -> None:
     session_id = "sess_example_and_real"
     secret = "sk-proj-abcdefghijklmnopqrstuvwxyz0"
     real_placeholder, _ = redactor.sanitize_text(secret, session_id)
@@ -113,8 +115,8 @@ def test_stream_preserves_example_but_folds_real_placeholder(redactor) -> None:
 
     assert APG_PLACEHOLDER_FORMAT_EXAMPLE in combined
     assert real_placeholder not in combined
-    assert secret not in combined
-    assert PROTECTED_VALUE in combined
+    assert secret in combined
+    assert PROTECTED_VALUE not in combined
     assert events + tail_events
 
 
