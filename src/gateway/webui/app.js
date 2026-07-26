@@ -41,7 +41,7 @@ const state = {
 const $ = (selector, root = document) => root.querySelector(selector);
 const $$ = (selector, root = document) => [...root.querySelectorAll(selector)];
 const escapeHtml = (value) => String(value ?? "").replace(/[&<>'"]/g, (char) => ({"&":"&amp;","<":"&lt;",">":"&gt;","'":"&#39;",'"':"&quot;"}[char]));
-const DYNAMIC_ICONS = new Set(["arrow-right", "ban", "check-circle-2", "chevron-down", "chevron-up", "copy", "eye", "eye-off", "pencil", "plus", "power", "search", "trash-2"]);
+const DYNAMIC_ICONS = new Set(["arrow-right", "ban", "brain-circuit", "check-circle-2", "chevron-down", "chevron-up", "copy", "eye", "eye-off", "folder-tree", "gauge", "pencil", "plus", "power", "regex", "search", "server-cog", "trash-2"]);
 
 document.addEventListener("DOMContentLoaded", init);
 
@@ -890,12 +890,13 @@ function renderDetectorModules() {
   }
   target.innerHTML = modules.map((module, index) => {
     const type = moduleTypeLabel(module.type);
+    const typeIcon = moduleTypeIcon(module.type);
     const rules = module.type === "regex" ? module.config.rules.length : null;
     const unavailable = module.type === "local_model" && module.enabled && module.runtime_available === false;
     const status = !module.enabled ? "disabled" : unavailable ? "unavailable" : module.editable === false ? "managed" : "ready";
     const statusClass = status === "ready" ? "green" : status === "unavailable" ? "red" : "neutral";
     const controls = readonly || module.editable === false ? "" : `<div class="module-actions"><button type="button" title="上移模块" aria-label="上移 ${escapeHtml(module.name)}" data-module-up="${index}" ${index === 0 ? "disabled" : ""}>${iconMarkup("chevron-up")}</button><button type="button" title="下移模块" aria-label="下移 ${escapeHtml(module.name)}" data-module-down="${index}" ${index === modules.length - 1 ? "disabled" : ""}>${iconMarkup("chevron-down")}</button><button type="button" title="编辑模块" aria-label="编辑 ${escapeHtml(module.name)}" data-module-edit="${index}">${iconMarkup("pencil")}</button><button type="button" title="复制模块" aria-label="复制 ${escapeHtml(module.name)}" data-module-copy="${index}">${iconMarkup("copy")}</button><button type="button" class="danger" title="删除模块" aria-label="删除 ${escapeHtml(module.name)}" data-module-delete="${index}">${iconMarkup("trash-2")}</button></div>`;
-    return `<div class="module-row"><span class="module-order">${index + 1}</span><div class="module-name"><span class="module-symbol">${escapeHtml(type.slice(0, 2))}</span><div><strong>${escapeHtml(module.name)}</strong><span>${escapeHtml(type)} · ${escapeHtml(module.id)}</span></div></div><span class="badge ${statusClass}">${status}</span><span class="module-meta">${rules === null ? escapeHtml(module.failure_mode) : `${rules} 条规则`}</span>${controls}<label class="toggle"><input type="checkbox" data-module-toggle="${index}" ${module.enabled ? "checked" : ""} ${readonly || module.editable === false ? "disabled" : ""} aria-label="启用 ${escapeHtml(module.name)}"><span></span></label></div>`;
+    return `<div class="module-row"><span class="module-order">${index + 1}</span><div class="module-name"><span class="module-symbol module-symbol-${escapeHtml(module.type)}" aria-hidden="true" title="${escapeHtml(type)}">${iconMarkup(typeIcon)}</span><div><strong>${escapeHtml(module.name)}</strong><span>${escapeHtml(type)} · ${escapeHtml(module.id)}</span></div></div><span class="badge ${statusClass}">${status}</span><span class="module-meta">${rules === null ? escapeHtml(module.failure_mode) : `${rules} 条规则`}</span>${controls}<label class="toggle"><input type="checkbox" data-module-toggle="${index}" ${module.enabled ? "checked" : ""} ${readonly || module.editable === false ? "disabled" : ""} aria-label="启用 ${escapeHtml(module.name)}"><span></span></label></div>`;
   }).join("");
   renderIcons(target);
   $$('[data-module-toggle]', target).forEach((input) => input.addEventListener("change", () => updateModuleEnabled(Number(input.dataset.moduleToggle), input.checked)));
@@ -1155,6 +1156,10 @@ function renderDetectionDiagnostics(diagnostics) {
 
 function moduleTypeLabel(type) {
   return ({regex: "正则检测", entropy: "熵值检测", path: "路径检测", local_model: "本地小模型", deployment: "部署模块"})[type] || type;
+}
+
+function moduleTypeIcon(type) {
+  return ({regex: "regex", entropy: "gauge", path: "folder-tree", local_model: "brain-circuit", deployment: "server-cog"})[type] || "search";
 }
 
 function selectOptions(values, selected) {

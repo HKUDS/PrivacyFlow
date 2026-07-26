@@ -144,6 +144,19 @@ def test_webui_assets_and_admin_api_require_no_authentication(tmp_path) -> None:
         assert 'data-lucide="scroll-text"' in page.text
         assert 'data-lucide="shield-check"' in page.text
         assert 'data-lucide="sliders-horizontal"' in page.text
+        assert '<span class="brand-mark" aria-hidden="true"><i data-lucide="shield-check"></i></span>' in page.text
+        assert '<span class="brand-mark" aria-hidden="true">A</span>' not in page.text
+        detector_icons = {
+            "regex": "regex",
+            "entropy": "gauge",
+            "path": "folder-tree",
+            "local_model": "brain-circuit",
+            "deployment": "server-cog",
+        }
+        for detector_type, detector_icon in detector_icons.items():
+            assert f'{detector_type}: "{detector_icon}"' in app_js.text
+        assert "moduleTypeIcon" in app_js.text
+        assert "type.slice(0, 2)" not in app_js.text
         icon_only_buttons = [
             button
             for button in re.findall(r'<button class="[^"]+"[^>]*>', page.text)

@@ -34,7 +34,8 @@ button:focus-visible { outline: 2px solid var(--blue); outline-offset: 2px; }
 .app-shell { min-height: 100vh; display: grid; grid-template-columns: 232px minmax(0, 1fr); }
 .sidebar { position: sticky; top: 0; height: 100vh; padding: 26px 18px 20px; background: #16211c; color: #f7faf8; display: flex; flex-direction: column; }
 .brand { display: flex; align-items: center; gap: 12px; padding: 0 10px 28px; }
-.brand-mark { width: 34px; height: 34px; flex: 0 0 34px; display: grid; place-items: center; border: 1px solid #4d7863; border-radius: 6px; background: #20362c; color: #b9e6cd; font-weight: 800; }
+.brand-mark { width: 34px; height: 34px; flex: 0 0 34px; display: grid; place-items: center; border: 1px solid #4d7863; border-radius: 6px; background: #20362c; color: #b9e6cd; }
+.brand-mark .lucide { width: 20px; height: 20px; stroke-width: 1.8; }
 .brand strong, .brand span { display: block; }
 .brand strong { font-size: 15px; }
 .brand div > span { margin-top: 3px; color: #92a69c; font-size: 11px; text-transform: uppercase; }
@@ -287,6 +288,11 @@ input:focus, select:focus, textarea:focus { border-color: var(--green); box-shad
 .module-order { width: 24px; height: 24px; border: 1px solid var(--line-strong); border-radius: 50%; display: grid; place-items: center; color: var(--muted); font-size: 9px; font-weight: 800; }
 .module-name { display: flex; align-items: center; gap: 12px; min-width: 0; }
 .module-symbol { width: 34px; height: 34px; flex: 0 0 34px; border: 1px solid var(--line-strong); border-radius: 5px; display: grid; place-items: center; color: var(--blue); background: var(--blue-soft); font-size: 10px; font-weight: 800; text-transform: uppercase; }
+.module-symbol .lucide { width: 18px; height: 18px; stroke-width: 1.9; }
+.module-symbol-path { color: var(--green); background: var(--green-soft); }
+.module-symbol-entropy { color: var(--amber); background: var(--amber-soft); }
+.module-symbol-local_model { color: var(--coral); background: var(--coral-soft); }
+.module-symbol-deployment { color: var(--muted); background: var(--surface-soft); }
 .module-name strong, .module-name span { display: block; }
 .module-name strong { font-size: 12px; }
 .module-name span { margin-top: 4px; color: var(--muted); font-size: 10px; white-space: normal; }
