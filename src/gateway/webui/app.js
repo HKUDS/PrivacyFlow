@@ -12,6 +12,14 @@ const UPSTREAM_PROTOCOL_LABELS = {
   openai_responses: "OpenAI Responses",
   anthropic_messages: "Anthropic Messages",
 };
+const DETECTOR_TAG_LABELS = {
+  credentials: {zh: "凭据", en: "Credentials"},
+  secrets: {zh: "密钥", en: "Secrets"},
+  pii: {zh: "个人信息", en: "PII"},
+  identity: {zh: "身份信息", en: "Identity"},
+  paths: {zh: "路径", en: "Paths"},
+  local: {zh: "本地环境", en: "Local environment"},
+};
 
 const state = {
   view: location.hash.replace("#", "") || "overview",
@@ -838,8 +846,8 @@ async function loadDetectors() {
 
 function renderConfigurationOptions() {
   const select = $("#configuration-select");
-  const options = (items) => items.map((item) => `<option value="${escapeHtml(item.id)}">${escapeHtml(item.name)}${item.is_active ? " · 当前" : ""}</option>`).join("");
-  select.innerHTML = `<optgroup label="内置与部署模板">${options(state.detectorCatalog.templates)}</optgroup><optgroup label="用户配置">${options(state.detectorCatalog.configurations)}</optgroup>`;
+  const options = (items) => items.map((item) => `<option value="${escapeHtml(item.id)}">${escapeHtml(uiText(item.name))}${item.is_active ? ` · ${escapeHtml(uiText("当前启用"))}` : ""}</option>`).join("");
+  select.innerHTML = `<optgroup label="${escapeHtml(uiText("内置与部署模板"))}">${options(state.detectorCatalog.templates)}</optgroup><optgroup label="${escapeHtml(uiText("用户配置"))}">${options(state.detectorCatalog.configurations)}</optgroup>`;
   if (state.detectorConfiguration) select.value = state.detectorConfiguration.id;
 }
 
@@ -864,12 +872,12 @@ function renderDetectorConfiguration() {
   const configuration = state.detectorDraft;
   if (!configuration) return;
   const readonly = configuration.readonly;
-  $("#configuration-name").value = configuration.name;
-  $("#configuration-description").value = configuration.description || "";
+  $("#configuration-name").value = uiText(configuration.name);
+  $("#configuration-description").value = uiText(configuration.description || "");
   $("#configuration-timeout").value = configuration.flow_timeout_ms ?? "";
   $("#configuration-core-guard").checked = configuration.core_guard_enabled;
   for (const id of ["configuration-name", "configuration-description", "configuration-timeout", "configuration-core-guard"]) $("#" + id).disabled = readonly;
-  $("#configuration-tags").innerHTML = (configuration.content_tags || []).map((tag) => `<span class="badge neutral">${escapeHtml(tag)}</span>`).join("");
+  $("#configuration-tags").innerHTML = (configuration.content_tags || []).map((tag) => `<span class="badge neutral">${escapeHtml(detectorTagLabel(tag))}</span>`).join("");
   $("#configuration-status").innerHTML = `${configuration.is_active ? '<span class="badge green">当前启用</span>' : ""}${configuration.readonly ? '<span class="badge neutral">只读模板</span>' : `<span class="muted">Revision ${configuration.revision}</span>`}`;
   $("#core-guard-warning").classList.toggle("is-hidden", configuration.core_guard_enabled);
   $("#activate-configuration").disabled = configuration.is_active || detectorConfigurationDirty();
@@ -910,11 +918,11 @@ function renderDetectorModules() {
   $$('[data-module-delete]', target).forEach((button) => button.addEventListener("click", () => removeModule(Number(button.dataset.moduleDelete))));
 }
 
-function updateConfigurationFields() {
+function updateConfigurationFields(event) {
   if (!state.detectorDraft || state.detectorDraft.readonly) return;
-  state.detectorDraft.name = $("#configuration-name").value;
-  state.detectorDraft.description = $("#configuration-description").value;
-  state.detectorDraft.flow_timeout_ms = $("#configuration-timeout").value ? Number($("#configuration-timeout").value) : null;
+  if (event.target.id === "configuration-name") state.detectorDraft.name = event.target.value;
+  else if (event.target.id === "configuration-description") state.detectorDraft.description = event.target.value;
+  else if (event.target.id === "configuration-timeout") state.detectorDraft.flow_timeout_ms = event.target.value ? Number(event.target.value) : null;
   renderDetectorSaveState();
 }
 
@@ -922,7 +930,7 @@ function updateCoreGuard(event) {
   if (state.detectorDraft.readonly) return;
   if (!event.target.checked) {
     event.target.checked = true;
-    return confirmAction("关闭 APG 核心保护", "这会关闭 APG 标记、已知会话 Secret 和流式边界折叠。占位符签名与 session 校验仍保持开启。", () => {
+    return confirmAction("关闭 APG 内置安全防线", "这会关闭 APG 标记、已知会话 Secret 和流式边界折叠。占位符签名与 session 校验仍保持开启。", () => {
       state.detectorDraft.core_guard_enabled = false;
       renderDetectorConfiguration();
     });
@@ -991,9 +999,9 @@ function openConfigurationCreator() {
   $("#configuration-form").reset();
   $("#configuration-error").textContent = "";
   const all = [...state.detectorCatalog.templates, ...state.detectorCatalog.configurations];
-  $("#configuration-source").innerHTML = `<option value="">空白配置</option>${all.map((item) => `<option value="${escapeHtml(item.id)}">${escapeHtml(item.name)}</option>`).join("")}`;
+  $("#configuration-source").innerHTML = `<option value="">${escapeHtml(uiText("空白配置"))}</option>${all.map((item) => `<option value="${escapeHtml(item.id)}">${escapeHtml(uiText(item.name))}</option>`).join("")}`;
   $("#configuration-source").value = state.detectorConfiguration?.id || "builtin.comprehensive";
-  $("#configuration-form [name=name]").value = "新检测配置";
+  $("#configuration-form [name=name]").value = uiText("新检测配置");
   $("#configuration-modal").showModal();
 }
 
@@ -1154,7 +1162,7 @@ function applyModuleDraft(event) {
 }
 
 function renderDetectionDiagnostics(diagnostics) {
-  $("#detection-diagnostics").innerHTML = diagnostics.length ? `<div class="diagnostic-heading"><p class="section-kicker">EXECUTION TRACE</p><span>${diagnostics.length} 个步骤</span></div>${diagnostics.map((item, index) => `<div class="diagnostic-row"><span class="diagnostic-order">${index + 1}</span><strong>${escapeHtml(item.id === "apg_core" ? "APG 核心保护" : item.id)}</strong><span>${escapeHtml(item.type)}</span><span>${item.findings} 命中</span><span>${Number(item.elapsed_ms).toFixed(2)} ms</span><b class="badge ${item.status === "ok" ? "green" : ["disabled", "unavailable"].includes(item.status) ? "neutral" : "red"}">${escapeHtml(item.status)}</b></div>`).join("")}` : "";
+  $("#detection-diagnostics").innerHTML = diagnostics.length ? `<div class="diagnostic-heading"><p class="section-kicker">EXECUTION TRACE</p><span>${diagnostics.length} 个步骤</span></div>${diagnostics.map((item, index) => `<div class="diagnostic-row"><span class="diagnostic-order">${index + 1}</span><strong>${escapeHtml(item.id === "apg_core" ? uiText("APG 内置安全防线") : item.id)}</strong><span>${escapeHtml(item.type)}</span><span>${item.findings} 命中</span><span>${Number(item.elapsed_ms).toFixed(2)} ms</span><b class="badge ${item.status === "ok" ? "green" : ["disabled", "unavailable"].includes(item.status) ? "neutral" : "red"}">${escapeHtml(item.status)}</b></div>`).join("")}` : "";
 }
 
 function moduleTypeLabel(type) {
@@ -1319,6 +1327,11 @@ function valueStateLabel(value) {
 }
 
 function stateLabel(value) { return ({active: "活跃", expired: "已过期", revoked: "已撤销"})[value] || value; }
+function uiText(value) { return window.APG_I18N?.translate(String(value ?? "")) ?? String(value ?? ""); }
+function detectorTagLabel(value) {
+  const labels = DETECTOR_TAG_LABELS[value];
+  return labels?.[window.APG_I18N?.locale === "en" ? "en" : "zh"] || value;
+}
 function displayLocale() { return window.APG_I18N?.locale === "en" ? "en-US" : "zh-CN"; }
 function formatNumber(value) { return new Intl.NumberFormat(displayLocale()).format(Number(value || 0)); }
 function formatTime(timestamp) { return timestamp ? new Intl.DateTimeFormat(displayLocale(), {hour: "2-digit", minute: "2-digit"}).format(new Date(timestamp * 1000)) : "-"; }

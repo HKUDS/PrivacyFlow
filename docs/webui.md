@@ -70,7 +70,7 @@ The dry run tests the selected saved configuration without activating it. The br
 
 Changes are persisted to version 2 of `detector-control.json` beside `state.sqlite3`; the file and migration backup use mode `0600`. Saves require the current revision, with stale updates returning `409`. Saving an active configuration validates and builds a replacement before an atomic persistence and runtime swap. A failed build keeps the previous pipeline active. Version 1 state is migrated once, preserving the selected preset, module switches, and custom rules; YAML presets are exposed as read-only deployment templates.
 
-The APG core guard is enabled by default. Disabling it requires explicit confirmation and disables APG-marker, known-session-secret, and streaming-boundary protection in detection. Placeholder signature, session, expiry, policy, and sink checks in local materialization cannot be disabled.
+The WebUI calls the APG core guard the **APG built-in safety guard**. It is a fixed first detection layer independent of the selected preset and is enabled by default. Disabling it requires explicit confirmation and disables APG-marker, known-session-secret, and streaming-boundary protection in detection. Placeholder signature, session, expiry, policy, and sink checks in local materialization cannot be disabled.
 
 ## Administration API
 

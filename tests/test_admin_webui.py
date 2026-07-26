@@ -85,6 +85,8 @@ def test_webui_assets_and_admin_api_require_no_authentication(tmp_path) -> None:
         assert "Privacy operations overview" in i18n_js.text
         assert "Detectors" in i18n_js.text
         assert "apg:localechange" in i18n_js.text
+        assert "APG built-in safety guard" in i18n_js.text
+        assert "Independent of presets" in i18n_js.text
         assert "ANTHROPIC_BASE_URL" in app_js.text
         assert "export ANTHROPIC_MODEL=deepseek-v4-pro[1m]" in app_js.text
         assert "export ANTHROPIC_DEFAULT_SONNET_MODEL=deepseek-v4-pro[1m]" in app_js.text
@@ -158,12 +160,19 @@ def test_webui_assets_and_admin_api_require_no_authentication(tmp_path) -> None:
         for detector_type, detector_icon in detector_icons.items():
             assert f'{detector_type}: "{detector_icon}"' in app_js.text
         assert "moduleTypeIcon" in app_js.text
+        assert "DETECTOR_TAG_LABELS" in app_js.text
+        assert 'uiText(configuration.name)' in app_js.text
+        assert 'detectorTagLabel(tag)' in app_js.text
+        assert 'function updateConfigurationFields(event)' in app_js.text
         assert 'class="lucide detector-regex-icon"' in app_js.text
         assert '<circle cx="9" cy="13" r="1.15"' in app_js.text
         assert "type.slice(0, 2)" not in app_js.text
         assert ".brand-mark .lucide { display: block; width: 28px; height: 28px;" in styles.text
         assert ".module-symbol .lucide { display: block; width: 28px; height: 28px;" in styles.text
         assert styles.text.count("transform: translate(1px, 1px);") == 2
+        assert "APG 内置安全防线" in page.text
+        assert "独立于预设" in page.text
+        assert ">APG 核心保护<" not in page.text
         icon_only_buttons = [
             button
             for button in re.findall(r'<button class="[^"]+"[^>]*>', page.text)
