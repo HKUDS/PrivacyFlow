@@ -149,7 +149,7 @@ def test_webui_assets_and_admin_api_require_no_authentication(tmp_path) -> None:
         assert '<span class="brand-mark" aria-hidden="true"><i data-lucide="shield-check"></i></span>' in page.text
         assert '<span class="brand-mark" aria-hidden="true">A</span>' not in page.text
         detector_icons = {
-            "regex": "regex",
+            "regex": "regex-reference",
             "entropy": "gauge",
             "path": "folder-tree",
             "local_model": "brain-circuit",
@@ -158,6 +158,8 @@ def test_webui_assets_and_admin_api_require_no_authentication(tmp_path) -> None:
         for detector_type, detector_icon in detector_icons.items():
             assert f'{detector_type}: "{detector_icon}"' in app_js.text
         assert "moduleTypeIcon" in app_js.text
+        assert 'class="lucide detector-regex-icon"' in app_js.text
+        assert '<circle cx="9" cy="13" r="1.15"' in app_js.text
         assert "type.slice(0, 2)" not in app_js.text
         assert ".brand-mark .lucide { display: block; width: 28px; height: 28px;" in styles.text
         assert ".module-symbol .lucide { display: block; width: 28px; height: 28px;" in styles.text

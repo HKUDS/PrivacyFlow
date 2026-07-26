@@ -289,6 +289,7 @@ input:focus, select:focus, textarea:focus { border-color: var(--green); box-shad
 .module-name { display: flex; align-items: center; gap: 12px; min-width: 0; }
 .module-symbol { width: 34px; height: 34px; flex: 0 0 34px; border: 1px solid var(--line-strong); border-radius: 5px; display: grid; place-items: center; color: var(--blue); background: var(--blue-soft); font-size: 10px; font-weight: 800; text-transform: uppercase; }
 .module-symbol .lucide { display: block; width: 28px; height: 28px; stroke-width: 1.9; transform: translate(1px, 1px); }
+.module-symbol .detector-regex-icon { stroke-width: 1.7; }
 .module-symbol-path { color: var(--green); background: var(--green-soft); }
 .module-symbol-entropy { color: var(--amber); background: var(--amber-soft); }
 .module-symbol-local_model { color: var(--coral); background: var(--coral-soft); }

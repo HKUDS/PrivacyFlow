@@ -41,7 +41,7 @@ const state = {
 const $ = (selector, root = document) => root.querySelector(selector);
 const $$ = (selector, root = document) => [...root.querySelectorAll(selector)];
 const escapeHtml = (value) => String(value ?? "").replace(/[&<>'"]/g, (char) => ({"&":"&amp;","<":"&lt;",">":"&gt;","'":"&#39;",'"':"&quot;"}[char]));
-const DYNAMIC_ICONS = new Set(["arrow-right", "ban", "brain-circuit", "check-circle-2", "chevron-down", "chevron-up", "copy", "eye", "eye-off", "folder-tree", "gauge", "pencil", "plus", "power", "regex", "search", "server-cog", "trash-2"]);
+const DYNAMIC_ICONS = new Set(["arrow-right", "ban", "brain-circuit", "check-circle-2", "chevron-down", "chevron-up", "copy", "eye", "eye-off", "folder-tree", "gauge", "pencil", "plus", "power", "regex-reference", "search", "server-cog", "trash-2"]);
 
 document.addEventListener("DOMContentLoaded", init);
 
@@ -62,6 +62,9 @@ function init() {
 
 function iconMarkup(name) {
   if (!DYNAMIC_ICONS.has(name)) throw new Error(`Unsupported dynamic icon: ${name}`);
+  if (name === "regex-reference") {
+    return `<svg class="lucide detector-regex-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M7 3C4.4 5.2 3 8.3 3 12s1.4 6.8 4 9"></path><path d="M17 3c2.6 2.2 4 5.3 4 9s-1.4 6.8-4 9"></path><circle cx="9" cy="13" r="1.15" fill="currentColor" stroke="none"></circle><path d="M14 7v6M11.4 8.5l5.2 3M16.6 8.5l-5.2 3"></path></svg>`;
+  }
   return `<i data-lucide="${name}"></i>`;
 }
 
@@ -1159,7 +1162,7 @@ function moduleTypeLabel(type) {
 }
 
 function moduleTypeIcon(type) {
-  return ({regex: "regex", entropy: "gauge", path: "folder-tree", local_model: "brain-circuit", deployment: "server-cog"})[type] || "search";
+  return ({regex: "regex-reference", entropy: "gauge", path: "folder-tree", local_model: "brain-circuit", deployment: "server-cog"})[type] || "search";
 }
 
 function selectOptions(values, selected) {
