@@ -20,16 +20,16 @@
 
       <nav class="primary-nav" aria-label="主导航">
         <button class="nav-item is-active" type="button" data-view="overview">
-          <span class="nav-index" aria-hidden="true">01</span><span>概览</span>
+          <i class="nav-icon" data-lucide="layout-dashboard"></i><span>概览</span>
         </button>
         <button class="nav-item" type="button" data-view="audit">
-          <span class="nav-index" aria-hidden="true">02</span><span>审计记录</span>
+          <i class="nav-icon" data-lucide="scroll-text"></i><span>审计记录</span>
         </button>
         <button class="nav-item" type="button" data-view="protected">
-          <span class="nav-index" aria-hidden="true">03</span><span>受保护值</span>
+          <i class="nav-icon" data-lucide="shield-check"></i><span>受保护值</span>
         </button>
         <button class="nav-item" type="button" data-view="detectors">
-          <span class="nav-index" aria-hidden="true">04</span><span>检测器配置</span>
+          <i class="nav-icon" data-lucide="sliders-horizontal"></i><span>检测器配置</span>
         </button>
       </nav>
 
@@ -38,7 +38,6 @@
           <span class="status-dot" id="connection-dot"></span>
           <span id="connection-label">等待连接</span>
         </div>
-        <button class="quiet-button" type="button" id="logout-button">退出管理面板</button>
       </div>
     </aside>
 
@@ -54,7 +53,7 @@
             <button type="button" data-locale="zh" aria-pressed="false">中文</button>
             <button type="button" data-locale="en" aria-pressed="false">EN</button>
           </div>
-          <button class="icon-button" type="button" id="refresh-button" title="刷新当前页面" aria-label="刷新当前页面">↻</button>
+          <button class="icon-button" type="button" id="refresh-button" title="刷新当前页面" aria-label="刷新当前页面"><i data-lucide="refresh-cw"></i></button>
         </div>
       </header>
 
@@ -68,17 +67,27 @@
               </div>
               <span class="configuration-status" id="upstream-status">未配置</span>
               <p id="upstream-description">输入模型服务商的 Base URL 和 API Key 后即可开始使用 Agent。配置只保存在本机。</p>
+              <div class="upstream-profile-toolbar">
+                <label><span>已保存配置</span><select id="upstream-profile-select"></select></label>
+                <div class="upstream-profile-actions">
+                  <button class="secondary-button icon-action-button" id="activate-upstream-profile" type="button" aria-label="启用所选配置" title="启用所选配置"><i data-lucide="power"></i></button>
+                  <button class="secondary-button icon-action-button" id="new-upstream-profile" type="button" aria-label="新增上游配置" title="新增上游配置"><i data-lucide="plus"></i></button>
+                  <button class="danger-button icon-action-button" id="delete-upstream-profile" type="button" aria-label="删除上游配置" title="删除上游配置"><i data-lucide="trash-2"></i></button>
+                </div>
+              </div>
               <p class="upstream-target">当前 Base URL <strong class="mono" id="upstream-base-url"></strong></p>
-              <p class="upstream-protocol">上游协议 <strong>OpenAI-compatible</strong></p>
-              <button class="secondary-button is-hidden" id="edit-upstream-key" type="button">更换上游配置</button>
+              <p class="upstream-protocol">上游 API 格式 <strong id="upstream-protocol-value"></strong></p>
+              <button class="secondary-button icon-action-button is-hidden" id="edit-upstream-key" type="button" aria-label="编辑上游配置" title="编辑上游配置"><i data-lucide="pencil"></i></button>
             </div>
             <form class="upstream-key-form" id="upstream-key-form">
+              <label><span>配置名称</span><input id="upstream-profile-name" type="text" autocomplete="off" maxlength="80" placeholder="例如：Anthropic 生产环境" required></label>
+              <label><span>上游 API 格式</span><select id="upstream-protocol" required><option value="">请选择格式</option><option value="openai_chat_completions">OpenAI Chat Completions</option><option value="openai_responses">OpenAI Responses</option><option value="anthropic_messages">Anthropic Messages</option></select></label>
               <label><span>上游 Base URL</span><input class="mono" id="upstream-base-url-input" type="url" autocomplete="url" spellcheck="false" placeholder="https://api.example.com/v1" required maxlength="2048"></label>
-              <label><span>上游 API Key</span><input class="mono" id="upstream-api-key" type="password" autocomplete="new-password" spellcheck="false" required maxlength="4096"></label>
+              <label><span>上游 API Key</span><input class="mono" id="upstream-api-key" type="password" autocomplete="new-password" spellcheck="false" maxlength="4096" placeholder="编辑时留空可保留现有密钥"></label>
               <p class="form-error" id="upstream-key-error" role="alert"></p>
               <div class="upstream-form-actions">
                 <button class="secondary-button is-hidden" id="cancel-upstream-key" type="button">取消</button>
-                <button class="primary-button" id="save-upstream-key" type="submit">保存并启用</button>
+                <button class="primary-button labeled-icon-button" id="save-upstream-key" type="submit"><i data-lucide="save"></i><span>保存并启用</span></button>
               </div>
             </form>
           </section>
@@ -86,17 +95,14 @@
           <section class="agent-access" aria-labelledby="agent-access-title">
             <div class="agent-access-heading">
               <div><p class="section-kicker">AGENT CONNECTION</p><h2 id="agent-access-title">Agent 接入</h2></div>
-              <div class="protocol-switch" role="group" aria-label="API 协议">
-                <button class="is-active" type="button" data-connection-protocol="openai" aria-pressed="true">OpenAI</button>
-                <button type="button" data-connection-protocol="anthropic" aria-pressed="false">Anthropic</button>
-              </div>
             </div>
             <div class="agent-access-fields">
-              <label class="connection-field"><span>Base URL</span><span class="copy-control"><input class="mono" id="agent-base-url" readonly autocomplete="off" spellcheck="false"><button type="button" data-copy-connection="base-url" aria-label="复制 Base URL">复制</button></span></label>
-              <label class="connection-field"><span>API Key</span><span class="copy-control"><input class="mono" id="agent-api-key" type="password" readonly autocomplete="off" spellcheck="false"><span class="copy-control-actions"><button class="key-visibility-button" type="button" id="toggle-agent-key" aria-label="显示 API Key" aria-pressed="false" title="显示 API Key"></button><button type="button" data-copy-connection="api-key" aria-label="复制 API Key">复制</button></span></span></label>
+              <label class="connection-field"><span>OpenAI Base URL</span><span class="copy-control"><input class="mono" id="agent-openai-base-url" readonly autocomplete="off" spellcheck="false"><button type="button" data-copy-connection="openai-base-url" aria-label="复制 OpenAI Base URL" title="复制 OpenAI Base URL"><i data-lucide="copy"></i></button></span></label>
+              <label class="connection-field"><span>Anthropic Base URL</span><span class="copy-control"><input class="mono" id="agent-anthropic-base-url" readonly autocomplete="off" spellcheck="false"><button type="button" data-copy-connection="anthropic-base-url" aria-label="复制 Anthropic Base URL" title="复制 Anthropic Base URL"><i data-lucide="copy"></i></button></span></label>
+              <label class="connection-field"><span>API Key</span><span class="copy-control"><input class="mono" id="agent-api-key" type="password" readonly autocomplete="off" spellcheck="false"><span class="copy-control-actions"><button class="key-visibility-button" type="button" id="toggle-agent-key" aria-label="显示 API Key" aria-pressed="false" title="显示 API Key"></button><button type="button" data-copy-connection="api-key" aria-label="复制 API Key" title="复制 API Key"><i data-lucide="copy"></i></button></span></span></label>
               <div class="claude-command-row">
                 <span><strong>Claude Code</strong><small>Anthropic</small></span>
-                <button type="button" id="copy-claude-command" disabled>复制接入命令</button>
+                <button class="icon-action-button" type="button" id="copy-claude-command" aria-label="复制接入命令" title="复制接入命令" disabled><i data-lucide="terminal"></i></button>
               </div>
             </div>
           </section>
@@ -126,7 +132,7 @@
           <section class="table-section">
             <div class="section-heading">
               <div><p class="section-kicker">RECENT ACTIVITY</p><h2>最近拦截</h2></div>
-              <button class="text-button" type="button" data-view="audit">查看全部</button>
+              <button class="text-button icon-action-button" type="button" data-view="audit" aria-label="查看全部审计记录" title="查看全部审计记录"><i data-lucide="arrow-right"></i></button>
             </div>
             <div class="table-wrap">
               <table>
@@ -170,7 +176,7 @@
               <label class="retention-toggle-field"><span>空闲后自动清除</span><span class="retention-toggle-row"><strong id="retention-enabled-label">关闭</strong><span class="toggle"><input id="mapping-retention-enabled" type="checkbox" aria-label="启用映射自动清除"><span></span></span></span></label>
               <label><span>时长</span><input id="mapping-retention-duration" type="number" min="1" max="525600" step="1" inputmode="numeric"></label>
               <label><span>单位</span><select id="mapping-retention-unit"><option value="60">分钟</option><option value="3600">小时</option><option value="86400">天</option></select></label>
-              <button class="primary-button" type="button" id="save-mapping-retention">保存设置</button>
+              <button class="primary-button labeled-icon-button" type="button" id="save-mapping-retention"><i data-lucide="save"></i><span>保存设置</span></button>
             </div>
           </section>
           <div class="protected-summary" id="protected-summary"></div>
@@ -179,7 +185,7 @@
             <div class="toolbar-actions">
               <label class="compact-select"><span class="sr-only">类型</span><select id="protected-kind"><option value="">全部类型</option><option value="secret">Secret</option><option value="pii">PII</option><option value="path">Path</option></select></label>
               <button class="visibility-button" id="protected-show-raw" type="button" aria-label="显示受保护值原文" aria-pressed="false" title="显示受保护值原文"></button>
-              <button class="secondary-button" type="button" id="purge-expired">清理过期记录</button>
+              <button class="secondary-button icon-action-button" type="button" id="purge-expired" aria-label="清理过期记录" title="清理过期记录"><i data-lucide="eraser"></i></button>
             </div>
           </div>
           <div class="table-wrap">
@@ -198,9 +204,9 @@
           <section class="configuration-toolbar">
             <label class="configuration-picker"><span>检测器配置</span><select id="configuration-select"></select></label>
             <div class="configuration-actions">
-              <button class="secondary-button" type="button" id="new-configuration">＋ 新建</button>
-              <button class="secondary-button" type="button" id="duplicate-configuration">复制</button>
-              <button class="primary-button" type="button" id="activate-configuration">启用配置</button>
+              <button class="secondary-button icon-action-button" type="button" id="new-configuration" aria-label="新建检测器配置" title="新建检测器配置"><i data-lucide="plus"></i></button>
+              <button class="secondary-button icon-action-button" type="button" id="duplicate-configuration" aria-label="复制检测器配置" title="复制检测器配置"><i data-lucide="copy"></i></button>
+              <button class="primary-button icon-action-button" type="button" id="activate-configuration" aria-label="启用检测器配置" title="启用检测器配置"><i data-lucide="power"></i></button>
             </div>
           </section>
 
@@ -217,8 +223,8 @@
               <label><span>总流程超时（ms）</span><input id="configuration-timeout" type="number" min="10" max="120000"></label>
               <label class="guard-setting"><span>APG 核心保护</span><span class="toggle"><input id="configuration-core-guard" type="checkbox"><span></span></span></label>
               <div class="configuration-save-actions">
-                <button class="secondary-button danger-text" type="button" id="delete-configuration">删除</button>
-                <button class="primary-button" type="button" id="save-configuration">保存配置</button>
+                <button class="secondary-button danger-text icon-action-button" type="button" id="delete-configuration" aria-label="删除检测器配置" title="删除检测器配置"><i data-lucide="trash-2"></i></button>
+                <button class="primary-button labeled-icon-button" type="button" id="save-configuration"><i data-lucide="save"></i><span>保存配置</span></button>
               </div>
             </div>
             <div class="danger-note is-hidden" id="core-guard-warning">核心保护已关闭：APG 标记、已知会话 Secret 和流式边界折叠将不再提供完整保护。</div>
@@ -227,7 +233,7 @@
           <section class="detector-section module-pipeline-section">
             <div class="section-heading">
               <div><p class="section-kicker">ORDERED PIPELINE</p><h2>检测模块</h2></div>
-              <button class="primary-button" type="button" id="add-module">＋ 新增模块</button>
+              <button class="primary-button icon-action-button" type="button" id="add-module" aria-label="新增检测模块" title="新增检测模块"><i data-lucide="plus"></i></button>
             </div>
             <div class="module-list" id="detector-modules"></div>
           </section>
@@ -235,7 +241,7 @@
           <section class="detector-lab">
             <div class="section-heading">
               <div><p class="section-kicker">LOCAL DRY RUN</p><h2>检测器试跑</h2></div>
-              <button class="primary-button" type="button" id="run-detection">运行检测</button>
+              <button class="primary-button icon-action-button" type="button" id="run-detection" aria-label="运行检测" title="运行检测"><i data-lucide="play"></i></button>
             </div>
             <div class="lab-grid">
               <label class="lab-input"><span>测试文本</span><textarea id="detection-input" rows="7" placeholder="输入一段本地测试文本"></textarea></label>
@@ -248,43 +254,26 @@
     </section>
   </div>
 
-  <div class="login-overlay" id="login-overlay">
-    <form class="login-panel" id="login-form">
-      <div class="login-heading-row">
-        <div class="login-brand"><span class="brand-mark" aria-hidden="true">A</span><strong>APG Control</strong></div>
-        <div class="language-switch" role="group" aria-label="界面语言">
-          <button type="button" data-locale="zh" aria-pressed="false">中文</button>
-          <button type="button" data-locale="en" aria-pressed="false">EN</button>
-        </div>
-      </div>
-      <h1>连接本地隐私网关</h1>
-      <label><span>管理员 API Key</span><input id="admin-key" type="password" autocomplete="current-password" required></label>
-      <p class="form-error" id="login-error" role="alert"></p>
-      <button class="primary-button full-width" type="submit">连接</button>
-      <p class="login-footnote">密钥仅保存在当前浏览器会话中。</p>
-    </form>
-  </div>
-
   <dialog class="modal" id="detail-modal">
-    <div class="modal-header"><div><p class="section-kicker" id="modal-kicker">DETAIL</p><h2 id="modal-title">详情</h2></div><button class="icon-button" type="button" data-close-modal aria-label="关闭弹窗">×</button></div>
+    <div class="modal-header"><div><p class="section-kicker" id="modal-kicker">DETAIL</p><h2 id="modal-title">详情</h2></div><button class="icon-button" type="button" data-close-modal aria-label="关闭弹窗" title="关闭弹窗"><i data-lucide="x"></i></button></div>
     <div class="modal-body" id="modal-body"></div>
   </dialog>
 
   <dialog class="modal configuration-modal" id="configuration-modal">
     <form id="configuration-form">
-      <div class="modal-header"><div><p class="section-kicker">DETECTOR CONFIGURATION</p><h2>新建检测器配置</h2></div><button class="icon-button" type="button" data-close-modal aria-label="关闭弹窗">×</button></div>
+      <div class="modal-header"><div><p class="section-kicker">DETECTOR CONFIGURATION</p><h2>新建检测器配置</h2></div><button class="icon-button" type="button" data-close-modal aria-label="关闭弹窗" title="关闭弹窗"><i data-lucide="x"></i></button></div>
       <div class="modal-body form-grid">
         <label class="full-row"><span>配置名称</span><input name="name" maxlength="80" required></label>
         <label class="full-row"><span>基于</span><select name="source_id" id="configuration-source"></select></label>
         <p class="form-error full-row" id="configuration-error" role="alert"></p>
       </div>
-      <div class="modal-actions"><button class="secondary-button" type="button" data-close-modal>取消</button><button class="primary-button" type="submit">创建配置</button></div>
+      <div class="modal-actions"><button class="secondary-button" type="button" data-close-modal>取消</button><button class="primary-button labeled-icon-button" type="submit"><i data-lucide="plus"></i><span>创建配置</span></button></div>
     </form>
   </dialog>
 
   <dialog class="modal module-modal" id="module-modal">
     <form id="module-form">
-      <div class="modal-header"><div><p class="section-kicker">PIPELINE MODULE</p><h2 id="module-modal-title">编辑检测模块</h2></div><button class="icon-button" type="button" data-close-modal aria-label="关闭弹窗">×</button></div>
+      <div class="modal-header"><div><p class="section-kicker">PIPELINE MODULE</p><h2 id="module-modal-title">编辑检测模块</h2></div><button class="icon-button" type="button" data-close-modal aria-label="关闭弹窗" title="关闭弹窗"><i data-lucide="x"></i></button></div>
       <div class="modal-body">
         <div class="form-grid module-common-fields">
           <label><span>模块名称</span><input name="name" maxlength="80" required></label>
@@ -300,18 +289,19 @@
         </details>
         <p class="form-error" id="module-error" role="alert"></p>
       </div>
-      <div class="modal-actions"><button class="secondary-button" type="button" data-close-modal>取消</button><button class="primary-button" type="submit">应用到草稿</button></div>
+      <div class="modal-actions"><button class="secondary-button" type="button" data-close-modal>取消</button><button class="primary-button labeled-icon-button" type="submit"><i data-lucide="check"></i><span>应用到草稿</span></button></div>
     </form>
   </dialog>
 
   <dialog class="modal confirm-modal" id="confirm-modal">
-    <div class="modal-header"><div><p class="section-kicker">CONFIRM ACTION</p><h2 id="confirm-title">确认操作</h2></div><button class="icon-button" type="button" data-close-modal aria-label="关闭弹窗">×</button></div>
+    <div class="modal-header"><div><p class="section-kicker">CONFIRM ACTION</p><h2 id="confirm-title">确认操作</h2></div><button class="icon-button" type="button" data-close-modal aria-label="关闭弹窗" title="关闭弹窗"><i data-lucide="x"></i></button></div>
     <div class="modal-body"><p id="confirm-message"></p></div>
     <div class="modal-actions"><button class="secondary-button" type="button" data-close-modal>取消</button><button class="danger-button" type="button" id="confirm-action">确认</button></div>
   </dialog>
 
   <div class="toast" id="toast" role="status" aria-live="polite"></div>
   <script src="/ui/assets/i18n.js" defer></script>
+  <script src="/ui/assets/lucide.min.js" defer></script>
   <script src="/ui/assets/app.js" defer></script>
 </body>
 </html>

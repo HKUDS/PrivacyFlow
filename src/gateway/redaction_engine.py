@@ -1217,6 +1217,216 @@ class RedactionEngine:
             if on_complete is not None:
                 on_complete(summary.to_dict())
 
+    async def scan_anthropic_stream(
+        self,
+        chunks: AsyncIterator[bytes],
+        session_id: str,
+        *,
+        on_complete: Callable[[dict[str, Any]], None] | None = None,
+    ) -> AsyncIterator[bytes]:
+        """Scan a native Anthropic Messages SSE stream without protocol conversion."""
+        summary = StreamAuditSummary()
+        text_scanners: dict[int, BalancedStreamScanner] = {}
+        tool_buffers: dict[int, dict[str, str | bool]] = {}
+        normal_end = False
+
+        def event_bytes(payload: dict[str, Any]) -> bytes:
+            event_type = str(payload.get("type") or "message")
+            return (
+                f"event: {event_type}\n"
+                f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
+            ).encode("utf-8")
+
+        def flush_text(index: int) -> list[bytes]:
+            scanner = text_scanners.pop(index, None)
+            if scanner is None:
+                return []
+            safe, events = scanner.flush()
+            summary.record(events)
+            if not safe:
+                return []
+            return [
+                event_bytes(
+                    {
+                        "type": "content_block_delta",
+                        "index": index,
+                        "delta": {"type": "text_delta", "text": safe},
+                    }
+                )
+            ]
+
+        def flush_tool(index: int) -> list[bytes]:
+            tool = tool_buffers.get(index)
+            if tool is None or bool(tool.get("flushed")):
+                return []
+            tool["flushed"] = True
+            if not bool(tool.get("saw_delta")):
+                return []
+            arguments, events = self.materialize_local_tool_arguments_json_with_events(
+                str(tool.get("arguments") or ""),
+                session_id,
+                tool_name=str(tool.get("name") or ""),
+            )
+            summary.record(events)
+            return [
+                event_bytes(
+                    {
+                        "type": "content_block_delta",
+                        "index": index,
+                        "delta": {
+                            "type": "input_json_delta",
+                            "partial_json": arguments,
+                        },
+                    }
+                )
+            ]
+
+        try:
+            async for data in iter_sse_data(chunks):
+                if not data:
+                    continue
+                if data == "[DONE]":
+                    raise StreamProtocolError("unexpected_anthropic_done")
+                try:
+                    payload = json.loads(data)
+                except (ValueError, TypeError) as exc:
+                    raise StreamProtocolError("invalid_sse_json") from exc
+                if not isinstance(payload, dict):
+                    raise StreamProtocolError("invalid_sse_payload")
+
+                event_type = payload.get("type")
+                if event_type == "content_block_start":
+                    try:
+                        index = int(payload.get("index", 0))
+                    except (TypeError, ValueError) as exc:
+                        raise StreamProtocolError("invalid_content_block_index") from exc
+                    block = payload.get("content_block")
+                    if not isinstance(block, dict):
+                        raise StreamProtocolError("invalid_content_block")
+                    block_type = block.get("type")
+                    if block_type == "text":
+                        scanner = BalancedStreamScanner(self, session_id)
+                        text_scanners[index] = scanner
+                        initial = block.get("text", "")
+                        if not isinstance(initial, str):
+                            raise StreamProtocolError("invalid_text_block")
+                        safe, events = scanner.feed(initial)
+                        summary.record(events)
+                        emitted = copy.deepcopy(payload)
+                        emitted["content_block"]["text"] = safe
+                        yield event_bytes(emitted)
+                        continue
+                    if block_type == "tool_use":
+                        name = block.get("name", "")
+                        if not isinstance(name, str):
+                            raise StreamProtocolError("invalid_tool_name")
+                        initial_input = block.get("input", {})
+                        if not isinstance(initial_input, dict):
+                            raise ToolArgumentsJSONError("invalid_tool_arguments_type")
+                        materialized, events = self.materialize_local_json_with_events(
+                            initial_input,
+                            session_id,
+                            tool_name=name,
+                        )
+                        summary.record(events)
+                        emitted = copy.deepcopy(payload)
+                        emitted["content_block"]["input"] = materialized
+                        tool_buffers[index] = {
+                            "name": name,
+                            "arguments": "",
+                            "flushed": False,
+                            "saw_delta": False,
+                        }
+                        yield event_bytes(emitted)
+                        continue
+
+                if event_type == "content_block_delta":
+                    try:
+                        index = int(payload.get("index", 0))
+                    except (TypeError, ValueError) as exc:
+                        raise StreamProtocolError("invalid_content_block_index") from exc
+                    delta = payload.get("delta")
+                    if not isinstance(delta, dict):
+                        raise StreamProtocolError("invalid_content_block_delta")
+                    delta_type = delta.get("type")
+                    if delta_type == "text_delta":
+                        text = delta.get("text")
+                        if not isinstance(text, str):
+                            raise StreamProtocolError("invalid_text_delta")
+                        scanner = text_scanners.setdefault(index, BalancedStreamScanner(self, session_id))
+                        safe, events = scanner.feed(text)
+                        summary.record(events)
+                        if safe:
+                            emitted = copy.deepcopy(payload)
+                            emitted["delta"]["text"] = safe
+                            yield event_bytes(emitted)
+                        continue
+                    if delta_type == "input_json_delta":
+                        partial = delta.get("partial_json")
+                        if not isinstance(partial, str):
+                            raise ToolArgumentsJSONError("invalid_tool_arguments_type")
+                        tool = tool_buffers.setdefault(
+                            index,
+                            {
+                                "name": "",
+                                "arguments": "",
+                                "flushed": False,
+                                "saw_delta": False,
+                            },
+                        )
+                        tool["arguments"] = str(tool.get("arguments") or "") + partial
+                        tool["saw_delta"] = True
+                        continue
+
+                if event_type == "content_block_stop":
+                    try:
+                        index = int(payload.get("index", 0))
+                    except (TypeError, ValueError) as exc:
+                        raise StreamProtocolError("invalid_content_block_index") from exc
+                    for item in flush_text(index):
+                        yield item
+                    for item in flush_tool(index):
+                        yield item
+                    yield event_bytes(payload)
+                    continue
+
+                if event_type == "message_stop":
+                    for index in sorted(text_scanners):
+                        for item in flush_text(index):
+                            yield item
+                    for index in sorted(tool_buffers):
+                        for item in flush_tool(index):
+                            yield item
+                    normal_end = True
+
+                safe_payload, events = self.scan_local_json(payload, session_id)
+                summary.record(events)
+                yield event_bytes(safe_payload)
+            if not normal_end:
+                raise StreamProtocolError("incomplete_anthropic_stream")
+        except StreamProtocolError as exc:
+            summary.record_protocol_error(exc)
+            summary.termination = "protocol_error"
+            tool_error = isinstance(exc, ToolArgumentsJSONError)
+            yield event_bytes(
+                {
+                    "type": "error",
+                    "error": {
+                        "type": "api_error",
+                        "message": (
+                            "The upstream tool-call arguments were not valid JSON."
+                            if tool_error
+                            else "The upstream stream could not be safely parsed."
+                        ),
+                    },
+                }
+            )
+        finally:
+            if not normal_end and summary.termination == "completed":
+                summary.termination = "client_disconnected"
+            if on_complete is not None:
+                on_complete(summary.to_dict())
+
     async def scan_responses_stream(
         self,
         chunks: AsyncIterator[bytes],

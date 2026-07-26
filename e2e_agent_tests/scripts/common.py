@@ -22,10 +22,18 @@ CANARY_STRINGS = [
     "+852 9123 4567",
     "4242 4242 4242 4242",
     "svc_apgtest_live_agent_2026_abcdefghijklmnopqrstuvwxyz",
+    "svc_apgtest_edge_",
     "/Users/apgtest/private/.config/service.json",
 ]
 
-MACHINE_SECRET_CANARIES = ["sk-apgtest", "ghp_apgtest", "apgtest-db-pass", "eyJhbGci", "svc_apgtest_live_agent_2026_abcdefghijklmnopqrstuvwxyz"]
+MACHINE_SECRET_CANARIES = [
+    "sk-apgtest",
+    "ghp_apgtest",
+    "apgtest-db-pass",
+    "eyJhbGci",
+    "svc_apgtest_live_agent_2026_abcdefghijklmnopqrstuvwxyz",
+    "svc_apgtest_edge_",
+]
 
 
 @dataclass

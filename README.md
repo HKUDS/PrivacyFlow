@@ -21,6 +21,7 @@ APG uses signed placeholders, scoped mappings, session identity, configurable lo
 - `POST /v1/messages` (Anthropic/Claude Code compatibility)
 - `GET /v1/models`
 - `POST /v1/responses` non-streaming and statefully scanned streaming support
+- Explicit OpenAI Chat Completions, OpenAI Responses, or Anthropic Messages upstream selection
 - Bilingual local management WebUI at `/ui/` with Chinese/English switching, audit, protected-value, and detector views
 - Recursive scanning of any JSON string field
 - Rule-based detectors for common API keys, JWTs, private keys, database URLs, bearer tokens, env secrets, emails, phones, credit cards, and high-confidence local paths
@@ -41,7 +42,7 @@ APG uses signed placeholders, scoped mappings, session identity, configurable lo
 - [src/gateway/redaction_engine.py](/Users/howard/Documents/code/Agent-Privacy-Gateway/src/gateway/redaction_engine.py), [src/gateway/response_scanner.py](/Users/howard/Documents/code/Agent-Privacy-Gateway/src/gateway/response_scanner.py): upstream redaction and downstream response scanning.
 - [src/gateway/mapping_store.py](/Users/howard/Documents/code/Agent-Privacy-Gateway/src/gateway/mapping_store.py), [src/gateway/materialization_engine.py](/Users/howard/Documents/code/Agent-Privacy-Gateway/src/gateway/materialization_engine.py), [src/gateway/placeholder_parser.py](/Users/howard/Documents/code/Agent-Privacy-Gateway/src/gateway/placeholder_parser.py): signed placeholder lifecycle and tool-call argument materialization.
 - [src/gateway/policy_engine.py](/Users/howard/Documents/code/Agent-Privacy-Gateway/src/gateway/policy_engine.py), [src/gateway/audit_logger.py](/Users/howard/Documents/code/Agent-Privacy-Gateway/src/gateway/audit_logger.py), [src/gateway/config.py](/Users/howard/Documents/code/Agent-Privacy-Gateway/src/gateway/config.py): local policy, safe audit logging, and configuration.
-- [src/gateway/admin_service.py](/Users/howard/Documents/code/Agent-Privacy-Gateway/src/gateway/admin_service.py), [src/gateway/detector_control.py](/Users/howard/Documents/code/Agent-Privacy-Gateway/src/gateway/detector_control.py), [src/gateway/webui/](/Users/howard/Documents/code/Agent-Privacy-Gateway/src/gateway/webui): authenticated local management API, persistent detector controls, and zero-build WebUI.
+- [src/gateway/admin_service.py](/Users/howard/Documents/code/Agent-Privacy-Gateway/src/gateway/admin_service.py), [src/gateway/detector_control.py](/Users/howard/Documents/code/Agent-Privacy-Gateway/src/gateway/detector_control.py), [src/gateway/webui/](/Users/howard/Documents/code/Agent-Privacy-Gateway/src/gateway/webui): loopback-only unauthenticated management API, persistent detector controls, and zero-build WebUI.
 - [docs/](/Users/howard/Documents/code/Agent-Privacy-Gateway/docs): design notes, threat model, harness integration contract, roadmap, and validation notes.
 - [e2e_agent_tests/](/Users/howard/Documents/code/Agent-Privacy-Gateway/e2e_agent_tests): deterministic and real-upstream realistic agent scenarios.
 - [tests/](/Users/howard/Documents/code/Agent-Privacy-Gateway/tests): unit and API-level regression tests.
@@ -62,9 +63,9 @@ For the normal local workflow, no environment setup is required. Start APG with:
 ./apg
 ```
 
-The first run starts immediately without asking for provider settings. Open the printed WebUI address, sign in with the printed local administrator key, and enter the upstream Base URL and API key in the first-run setup panel. APG validates and atomically stores both in the ignored `.apg/launcher.json` with mode `0600`, then applies them to the running gateway without a restart. The launcher also generates and reuses a persistent signing secret.
+The first run starts immediately without asking for provider settings. The launcher generates a random local Agent API key plus a persistent signing secret, then reuses them on later starts. Open the printed WebUI address directly and create one or more named upstream configurations; the management plane does not require a key. Each configuration stores its own API format, Base URL, and API key in the ignored `.apg/launcher.json` with mode `0600`; switching the active configuration applies immediately without restarting APG.
 
-The launcher and command-line output are English-only. The WebUI supports Chinese and English, can be switched before or after sign-in, and remembers only the selected locale in browser `localStorage`.
+The launcher and command-line output are English-only. The WebUI supports Chinese and English, can be switched at any time, and remembers only the selected locale in browser `localStorage`.
 
 The environment variables below override launcher values for advanced deployments and CI.
 
@@ -79,9 +80,10 @@ Optional settings:
 
 ```bash
 export APG_UPSTREAM_BASE_URL='https://api.openai.com'
+export APG_UPSTREAM_PROTOCOL='openai_chat_completions'
+# Alternatives: 'openai_responses' or 'anthropic_messages'
 export APG_LOCAL_API_KEYS='apg-local'
 # Recommended: use a separate key for the management WebUI.
-export APG_ADMIN_API_KEYS='apg-admin'
 export APG_ADMIN_ENABLED=true
 export APG_PORT=8765
 # Strict mode (default true) refuses to start with the default signing secret
@@ -109,21 +111,21 @@ base_url=http://localhost:8765/v1
 api_key=apg-local
 ```
 
-Open the local management panel at [http://127.0.0.1:8765/ui/](http://127.0.0.1:8765/ui/) and authenticate with `APG_ADMIN_API_KEYS`. If no administrator key is configured, APG falls back to `APG_LOCAL_API_KEYS`. The key is kept in browser `sessionStorage`, not persisted across browser sessions.
+Open the local management panel at [http://127.0.0.1:8765/ui/](http://127.0.0.1:8765/ui/). It opens directly without authentication. Agent-facing `/v1/*` endpoints still require the randomly generated local Agent API key.
 
 ## Management WebUI
 
 The WebUI is an operational control plane for the local gateway:
 
 - **Language:** switch between Chinese and English before or after authentication; static labels, dynamic tables, detector diagnostics, forms, and dialogs update without a page reload.
-- **Overview:** first-run upstream Base URL and API-key setup, one-click OpenAI/Anthropic Agent Base URL and local Agent API-key copy, plus a ready-to-paste Claude Code environment block using DeepSeek v4 Pro's `[1m]` context variant. The copied block does not launch Claude Code or select its settings sources.
+- **Overview:** multiple named upstream configurations with explicit API format, Base URL, and independent provider key; live activation and deletion; separate one-click OpenAI and Anthropic Agent Base URLs; randomly generated local Agent API-key copy; and a ready-to-paste Claude Code environment block using DeepSeek v4 Pro's `[1m]` context variant. The copied block does not launch Claude Code or select its settings sources.
 - **Audit:** inspect separate operation-level replacement and materialization lists, with the exact transformation shown in every row and filters for risk, endpoint, or request metadata.
 - **Protected values:** inspect type, scope, state, and retention; keep mappings indefinitely by default, optionally reveal active originals with a confirmed eye control, configure idle clearing, or revoke an active mapping.
 - **Detector configurations:** select a read-only content template or a user configuration, edit and reorder typed modules, atomically activate a validated revision, and dry-run any saved configuration locally.
 
-Management responses and `.apg/audit.jsonl` never return or record provider API keys, raw mapped values, complete APG placeholders, internal handles, fingerprints, or full session ids. The upstream-configuration endpoint deliberately accepts a Base URL and provider key, writes them only to the mode-`0600` launcher configuration, and returns status metadata without echoing the key. APG currently sends upstream traffic using the OpenAI-compatible protocol; Agent-facing OpenAI and Anthropic entrypoints do not imply that the provider protocol changes. A URL suffix can be a provider-specific hint, but APG does not infer or silently switch protocols from a Base URL. The administrator-only operation-list, request-detail, and protected-value APIs are the narrow raw-mapping exceptions: `include_raw=true` may temporarily read an original from a still-active mapping, while audit operation APIs also reconstruct the exact placeholder or path alias used. The WebUI keeps every eye control off by default, requires confirmation, never persists the choice, and clears rendered raw values when disabled, reloaded, logged out, expired, or revoked. Each raw read creates only a content-free administrator audit event. Raw mapping values remain in the mode-`0600` SQLite database until explicitly revoked unless the administrator enables idle-time automatic clearing. Protected-value actions use the same HMAC-derived `pv_...` id in replacement and materialization rows. WebUI detector changes are written to the version 2 of `detector-control.json` beside the SQLite database with mode `0600`. Saving an active configuration validates, compiles, persists, and atomically swaps the pipeline; a failed build leaves the previous pipeline running.
+Management responses and `.apg/audit.jsonl` never return or record provider API keys, raw mapped values, complete APG placeholders, internal handles, fingerprints, or full session ids. The upstream-configuration endpoint deliberately accepts an explicit API format, Base URL, and provider key, writes them only to the mode-`0600` launcher configuration, and returns status metadata without echoing the key. APG does not infer or silently switch formats from a URL. A selected Anthropic Messages upstream receives native `/v1/messages` request bodies and returns native Anthropic JSON/SSE; APG applies privacy scanning and local tool-argument materialization without converting that path through OpenAI Chat. Cross-format local entrypoints may still use an explicit adapter, while the OpenAI Responses Agent endpoint works only with an explicitly selected OpenAI Responses upstream. An incompatible local endpoint returns `APG_UPSTREAM_PROTOCOL_UNSUPPORTED` instead of being sent to the wrong provider route. Operation-list, request-detail, and protected-value APIs are the narrow raw-mapping exceptions: `include_raw=true` may temporarily read an original from a still-active mapping, while audit operation APIs also reconstruct the exact placeholder or path alias used. The WebUI keeps every eye control off by default, requires confirmation, never persists the choice, and clears rendered raw values when disabled, reloaded, expired, or revoked. Each raw read creates only a content-free management audit event. Raw mapping values remain in the mode-`0600` SQLite database until explicitly revoked unless idle-time automatic clearing is enabled. Protected-value actions use the same HMAC-derived `pv_...` id in replacement and materialization rows. WebUI detector changes are written to the version 2 of `detector-control.json` beside the SQLite database with mode `0600`. Saving an active configuration validates, compiles, persists, and atomically swaps the pipeline; a failed build leaves the previous pipeline running.
 
-The panel is enabled by default because APG binds to loopback by default. Set `APG_ADMIN_ENABLED=false` to remove the UI and all `/api/admin/*` routes. Do not expose the panel over an untrusted network without HTTPS and an independent administrator key. See [docs/webui.md](/Users/howard/Documents/code/Agent-Privacy-Gateway/docs/webui.md) for the API and security model.
+The panel is enabled by default because APG binds to loopback by default. Set `APG_ADMIN_ENABLED=false` to remove the UI and all `/api/admin/*` routes. The management plane has no application-layer authentication: never expose it to an untrusted network. See [docs/webui.md](/Users/howard/Documents/code/Agent-Privacy-Gateway/docs/webui.md) for the API and security model.
 
 Example scripts:
 
@@ -135,15 +137,18 @@ DeepSeek/OpenCode experiment notes:
 - [docs/deepseek_experiments.md](/Users/howard/Documents/code/Agent-Privacy-Gateway/docs/deepseek_experiments.md)
 - [docs/real_agent_validation.md](/Users/howard/Documents/code/Agent-Privacy-Gateway/docs/real_agent_validation.md)
 - [docs/live_validation_results.md](/Users/howard/Documents/code/Agent-Privacy-Gateway/docs/live_validation_results.md)
+- [docs/live_agent_scenarios.html](/Users/howard/Documents/code/Agent-Privacy-Gateway/docs/live_agent_scenarios.html)
 - [docs/e2e_test_plan.md](/Users/howard/Documents/code/Agent-Privacy-Gateway/docs/e2e_test_plan.md)
 
 Realistic E2E harness commands:
 
 ```bash
 .venv/bin/python -m e2e_agent_tests.scripts.run_all
-# Opt-in real coding-agent validation (12 scenarios x Claude Code/OpenCode):
+# Opt-in real coding-agent validation (15 scenarios x Claude Code/OpenCode):
 DEEPSEEK_API_KEY='<your key>' .venv/bin/python -m e2e_agent_tests.scripts.run_live_agents
 ```
+
+The real-agent prompts are intentionally phrased as ordinary user tasks. They do not prescribe Read/Edit/Bash usage or tell the Agent how to protect privacy. Each Agent keeps the same unpruned native-tool configuration across every scenario and chooses its own route; the two Agent products do not expose identical tool names. Claude Code's recorded init reports Bash/Edit/Read, while OpenCode's trajectories also use its own glob/write/task capabilities. Tool choices remain diagnostic, while pass/fail depends on task completion and leak-free upstream, audit, final-answer, and workspace evidence. The HTML evidence page shows the complete synthetic repository, exact task-relevant file contents, model-visible narration, complete tool inputs and outputs, step usage, and final run metadata. Model text is rendered as sanitized local Markdown, while tool input/output remains verbatim. Exact audited replacements, local materializations, and protected representations are highlighted in place from each run's SQLite operation records. Clicking a highlighted original switches it to the request-matched APG placeholder or path alias; clicking again restores the local transcript view. Synthetic sensitive values may appear in this local transcript by design; APG's guarantee is that they do not reach the remote model.
 
 ## Example Behavior
 

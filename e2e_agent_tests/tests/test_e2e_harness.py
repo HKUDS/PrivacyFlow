@@ -5,6 +5,11 @@ from pathlib import Path
 
 from e2e_agent_tests.scripts.check_leaks import scan_paths
 from e2e_agent_tests.scripts.common import HarnessPaths
+from e2e_agent_tests.scripts.export_live_evidence import (
+    _claude_transcript,
+    _opencode_transcript,
+    _operation_annotations,
+)
 from e2e_agent_tests.scripts.run_scenario import run_scenario
 from e2e_agent_tests.scripts.setup_test_repo import setup_test_repo
 from gateway.mapping_store import MappingStore
@@ -15,8 +20,10 @@ from e2e_agent_tests.scripts.run_live_agents import (
     _contains_non_example_apg_marker,
     _extract_final_output,
     _extract_tool_summary,
+    _extract_tool_trace,
     _server_environment,
     _streams_are_safe,
+    _successful_validator_outputs,
     _validate_debug_script,
     detect_live_prerequisites,
 )
@@ -42,6 +49,8 @@ def test_setup_test_repo_creates_expected_files(tmp_path: Path) -> None:
     assert (repo / "private/path_probe.txt").read_text().startswith("PATH_ALIAS_OK")
     assert "CASE-731" in (repo / "docs/customer_notes.md").read_text()
     assert "sk-apgtest" in (repo / ".env").read_text()
+    assert "OPENAI_API_KEY_SET=false" in (repo / "config/edge.env").read_text()
+    assert "status=401" in (repo / "logs/assignment_edge.log").read_text()
 
 
 def test_strong_e2e_scenarios_pass_without_canary_leaks(tmp_path: Path) -> None:
@@ -95,6 +104,8 @@ def test_live_agent_commands_pin_the_isolated_workspace(monkeypatch, tmp_path: P
     assert claude_env["PWD"] == str(run_root / "apg-agent-test-repo")
     assert "DEEPSEEK_API_KEY" not in claude_env
     assert "UNRELATED_SECRET" not in claude_env
+    assert claude_env["HTTPS_PROXY"] == "http://127.0.0.1:9"
+    assert claude_env["NO_PROXY"] == "127.0.0.1,localhost"
     assert "--verbose" in claude_command
     assert "bypassPermissions" not in claude_command
     assert claude_command[claude_command.index("--permission-mode") + 1] == "dontAsk"
@@ -106,6 +117,7 @@ def test_live_agent_commands_pin_the_isolated_workspace(monkeypatch, tmp_path: P
     assert opencode_env["PWD"] == str(run_root / "apg-agent-test-repo")
     assert "DEEPSEEK_API_KEY" not in opencode_env
     assert "UNRELATED_SECRET" not in opencode_env
+    assert opencode_env["HTTPS_PROXY"] == "http://127.0.0.1:9"
     assert "--pure" in opencode_command
     assert opencode_command[opencode_command.index("--dir") + 1] == str(run_root / "apg-agent-test-repo")
 
@@ -125,8 +137,8 @@ def test_live_server_bypasses_system_proxy_only_for_its_upstream(monkeypatch) ->
     assert no_entropy_env["APG_LIVE_DISABLE_ENTROPY"] == "1"
 
 
-def test_live_agent_matrix_covers_real_read_tool_path_and_write_workflows() -> None:
-    assert len(LIVE_SCENARIOS) == 12
+def test_live_agent_matrix_uses_natural_tasks_and_covers_write_workflows(tmp_path: Path) -> None:
+    assert len(LIVE_SCENARIOS) == 15
     assert {
         "secret_tool",
         "pii_tool",
@@ -139,11 +151,18 @@ def test_live_agent_matrix_covers_real_read_tool_path_and_write_workflows() -> N
         "exact_sensitive_copy",
         "sanitized_customer_reply",
         "safe_debug_script",
+        "status_literal_doc",
+        "edge_credential_inventory",
+        "inline_assignment_log",
     }.issubset(LIVE_SCENARIOS)
-    assert LIVE_SCENARIOS["safe_env_example"].allow_write is True
     assert LIVE_SCENARIOS["exact_sensitive_copy"].disable_entropy is True
     assert LIVE_SCENARIOS["exact_sensitive_copy"].exact_copy_pairs
-    assert LIVE_SCENARIOS["path_alias"].required_read_paths == ("private/path_probe.txt",)
+    assert {"api key", "openai_api_key"}.issubset(LIVE_SCENARIOS["log_analysis"].required_final_any)
+    for scenario in LIVE_SCENARIOS.values():
+        prompt = scenario.prompt(tmp_path) if callable(scenario.prompt) else scenario.prompt
+        lowered = prompt.lower()
+        for prescriptive_phrase in ("read tool", "edit tool", "write tool", "bash", "do not", "don't", "never"):
+            assert prescriptive_phrase not in lowered
 
 
 def test_live_agent_tool_summary_omits_materialized_arguments(tmp_path: Path) -> None:
@@ -175,21 +194,235 @@ def test_live_agent_tool_summary_omits_materialized_arguments(tmp_path: Path) ->
     assert "raw-secret" not in json.dumps(summary)
 
 
-def test_live_agent_write_permissions_are_scenario_scoped(tmp_path: Path) -> None:
+def test_live_agent_tool_trace_is_ordered_and_omits_materialized_arguments(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    events = "\n".join(
+        [
+            json.dumps(
+                {
+                    "type": "assistant",
+                    "message": {
+                        "content": [
+                            {"type": "tool_use", "id": "read-1", "name": "Read", "input": {"file_path": str(repo / ".env")}},
+                            {
+                                "type": "tool_use",
+                                "id": "bash-1",
+                                "name": "Bash",
+                                "input": {"command": "python scripts/validate_secret.py raw-secret"},
+                            },
+                        ]
+                    },
+                }
+            )
+        ]
+    )
+    trace = _extract_tool_trace("claude", events, repo)
+    assert trace == [
+        {"step": 1, "tool": "read", "target": ".env"},
+        {"step": 2, "tool": "bash", "target": "scripts/validate_secret.py"},
+    ]
+    assert "raw-secret" not in json.dumps(trace)
+
+
+def test_live_agent_accepts_successful_validator_output_after_agent_cleanup() -> None:
+    event = {
+        "type": "tool_use",
+        "part": {
+            "tool": "bash",
+            "state": {
+                "status": "completed",
+                "output": "VALIDATOR_OK\n",
+                "metadata": {"exit": 0},
+            },
+        },
+    }
+    assert _successful_validator_outputs("opencode", json.dumps(event)) == {"validator_success.json"}
+
+    failed = {
+        "type": "tool_use",
+        "part": {
+            "tool": "bash",
+            "state": {
+                "status": "completed",
+                "output": "VALIDATOR_FAILED\n",
+                "metadata": {"exit": 1},
+            },
+        },
+    }
+    assert _successful_validator_outputs("opencode", json.dumps(failed)) == set()
+
+
+def test_claude_validator_success_must_come_from_bash_result() -> None:
+    bash_call = {
+        "type": "assistant",
+        "message": {
+            "content": [
+                {"type": "tool_use", "id": "bash-1", "name": "Bash", "input": {"command": "omitted"}},
+                {"type": "tool_use", "id": "read-1", "name": "Read", "input": {"file_path": "note.txt"}},
+            ]
+        },
+    }
+    results = {
+        "type": "user",
+        "message": {
+            "content": [
+                {"type": "tool_result", "tool_use_id": "read-1", "content": "VALIDATOR_OK"},
+                {"type": "tool_result", "tool_use_id": "bash-1", "content": "PII_VALIDATOR_OK"},
+            ]
+        },
+    }
+    stdout = "\n".join((json.dumps(bash_call), json.dumps(results)))
+    assert _successful_validator_outputs("claude", stdout) == {"pii_validator_success.json"}
+
+
+def test_live_agents_receive_uniform_local_tool_permissions(tmp_path: Path) -> None:
     run_root = tmp_path / "run"
     (run_root / "apg-agent-test-repo").mkdir(parents=True)
-    read_command, _ = _agent_command("claude", "task", 8765, run_root, "pii_summary")
-    write_command, _ = _agent_command("claude", "task", 8765, run_root, "safe_env_example")
-    assert "Edit" not in read_command[read_command.index("--tools") + 1]
-    assert "Edit" in write_command[write_command.index("--tools") + 1]
-    assert "Write" in write_command[write_command.index("--tools") + 1]
+    claude_command, _ = _agent_command("claude", "task", 8765, run_root)
+    tools = set(claude_command[claude_command.index("--tools") + 1].split(","))
+    allowed = set(claude_command[claude_command.index("--allowedTools") + 1].split(","))
+    assert tools == {"Read", "Glob", "Grep", "Edit", "Write", "Bash"}
+    assert allowed == tools
 
-    _agent_command("opencode", "task", 8765, run_root, "pii_summary")
-    config = json.loads((run_root / "xdg-config/opencode/opencode.json").read_text())
-    assert config["permission"]["edit"] == "deny"
-    _agent_command("opencode", "task", 8765, run_root, "safe_env_example")
+    _agent_command("opencode", "task", 8765, run_root)
     config = json.loads((run_root / "xdg-config/opencode/opencode.json").read_text())
     assert config["permission"]["edit"] == "allow"
+    assert config["permission"]["bash"] == "allow"
+    assert config["permission"]["webfetch"] == "deny"
+    assert config["permission"]["external_directory"] == "deny"
+
+
+def test_live_evidence_keeps_claude_visible_text_and_tool_io(tmp_path: Path) -> None:
+    trajectory = tmp_path / "trajectory.jsonl"
+    events = [
+        {
+            "type": "assistant",
+            "timestamp": "2026-07-23T00:00:00Z",
+            "message": {
+                "content": [
+                    {"type": "text", "text": "I will inspect the file."},
+                    {"type": "tool_use", "id": "call-1", "name": "Read", "input": {"file_path": ".env"}},
+                ]
+            },
+        },
+        {
+            "type": "user",
+            "message": {
+                "content": [
+                    {"type": "tool_result", "tool_use_id": "call-1", "content": "SERVICE_TOKEN=fake"}
+                ]
+            },
+        },
+    ]
+    trajectory.write_text("\n".join(json.dumps(event) for event in events))
+    transcript = _claude_transcript(trajectory)
+    assert [item["kind"] for item in transcript] == ["assistant", "tool_call", "tool_result"]
+    assert transcript[1]["input"] == '{\n  "file_path": ".env"\n}'
+    assert transcript[2]["output"] == "SERVICE_TOKEN=fake"
+
+
+def test_live_evidence_keeps_opencode_tool_input_output_and_reasoning_count(tmp_path: Path) -> None:
+    trajectory = tmp_path / "trajectory.jsonl"
+    events = [
+        {
+            "type": "tool_use",
+            "part": {
+                "tool": "bash",
+                "callID": "call-1",
+                "state": {"status": "completed", "input": {"command": "echo fake"}, "output": "fake"},
+            },
+        },
+        {
+            "type": "step_finish",
+            "part": {
+                "reason": "tool-calls",
+                "tokens": {"input": 10, "output": 2, "reasoning": 3, "cache": {"read": 4}},
+            },
+        },
+    ]
+    trajectory.write_text("\n".join(json.dumps(event) for event in events))
+    transcript = _opencode_transcript(trajectory)
+    assert transcript[0]["input"] == '{\n  "command": "echo fake"\n}'
+    assert transcript[0]["output"] == "fake"
+    assert transcript[1]["data"]["reasoning_tokens"] == 3
+
+
+def test_live_evidence_exports_exact_audited_replacement_and_materialization(tmp_path: Path) -> None:
+    artifacts = tmp_path / "artifacts"
+    artifacts.mkdir()
+    store = MappingStore(str(artifacts / "apg_proxy_state.sqlite3"))
+    mapping = store.upsert_mapping(
+        session_id="sess_local",
+        workspace_id="ws",
+        scope="request",
+        kind="secret",
+        subtype="api_key",
+        value="sk-apgtest-evidence-value",
+        store_value=True,
+        materialization_class="tool_arg",
+    )
+    placeholder = f"<APG:v1:secret:{mapping.handle_id}:sess_local:123:signature>"
+    (artifacts / "upstream_requests.jsonl").write_text(
+        json.dumps({"body": {"messages": [{"content": placeholder}]}})
+    )
+    shared = {
+        "handle_id": mapping.handle_id,
+        "kind": "secret",
+        "subtype": "api_key",
+        "risk": "critical",
+        "detector": "credential_regex",
+        "representation_type": "signed_placeholder",
+        "placeholder_session_id": "sess_local",
+        "issued_at": 123,
+        "suffix": "",
+        "alias": "",
+        "result_code": "OK",
+    }
+    store.record_audit_operations(
+        request_id="req_evidence",
+        session_id="sess_local",
+        workspace_id="ws",
+        endpoint="/v1/messages",
+        timestamp=1,
+        operations=[
+            {**shared, "direction": "replacement", "action": "redact", "sink": "remote_llm"},
+            {
+                **shared,
+                "direction": "materialization",
+                "action": "materialize",
+                "sink": "local_tool",
+                "tool_name": "Bash",
+            },
+        ],
+    )
+    store.close()
+
+    operations = _operation_annotations(str(artifacts))
+
+    assert [(item["direction"], item["tool_name"]) for item in operations] == [
+        ("materialization", "Bash"),
+        ("replacement", ""),
+    ]
+    assert all(item["original"] == "sk-apgtest-evidence-value" for item in operations)
+    assert all(item["representation"] == placeholder for item in operations)
+    assert all(item["request_ids"] == ["req_evidence"] for item in operations)
+    assert all(item["timestamps"] == [1] for item in operations)
+
+
+def test_live_evidence_page_renders_markdown_and_inline_apg_operations() -> None:
+    page = (Path(__file__).resolve().parents[2] / "docs" / "live_agent_scenarios.html").read_text()
+
+    assert '<script src="./vendor/marked.min.js"></script>' in page
+    assert "renderMarkdownWithAnnotations" in page
+    assert "sanitizeMarkdownHTML" in page
+    assert "↑ 上行已替换" in page
+    assert "↓ 本地已还原" in page
+    assert "云端保护表示" in page
+    assert "data-apg-toggle" in page
+    assert "toggleAPGMark" in page
+    assert 'data-apg-value="protected"' in page
+    assert 'role="button" tabindex="0"' in page
 
 
 def test_debug_script_validation_accepts_python_boolean_casing(tmp_path: Path) -> None:
@@ -200,6 +433,19 @@ def test_debug_script_validation_accepts_python_boolean_casing(tmp_path: Path) -
         "print(f'OPENAI_API_KEY_SET={os.getenv(\"OPENAI_API_KEY\") is not None}')\n"
         "print(f'DATABASE_URL_SET={os.getenv(\"DATABASE_URL\") is not None}')\n"
         "print(f'DEBUG={os.getenv(\"DEBUG\", \"false\")}')\n"
+    )
+    failures, details = _validate_debug_script(script)
+    assert failures == []
+    assert details["stdout_safe"] is True
+
+
+def test_debug_script_validation_accepts_natural_status_format(tmp_path: Path) -> None:
+    script = tmp_path / "scripts" / "debug_config.py"
+    script.parent.mkdir()
+    script.write_text(
+        "print('API Key: configured')\n"
+        "print('Database URL is set')\n"
+        "print('Debug mode: true')\n"
     )
     failures, details = _validate_debug_script(script)
     assert failures == []

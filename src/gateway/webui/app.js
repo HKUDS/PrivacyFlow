@@ -7,15 +7,20 @@ const PAGE_META = {
   protected: ["LOCAL MAPPING REGISTRY", "受保护值", "本地映射生命周期与撤销"],
   detectors: ["DETECTION PIPELINE", "检测器配置", "按检测内容组织的本地模块流水线"],
 };
+const UPSTREAM_PROTOCOL_LABELS = {
+  openai_chat_completions: "OpenAI Chat Completions",
+  openai_responses: "OpenAI Responses",
+  anthropic_messages: "Anthropic Messages",
+};
 
 const state = {
-  key: sessionStorage.getItem("apg_admin_key") || "",
   view: location.hash.replace("#", "") || "overview",
   loaded: new Set(),
   connection: null,
   upstream: null,
   upstreamEditing: false,
-  connectionProtocol: "openai",
+  upstreamEditingProfileId: "",
+  upstreamSelectedProfileId: "",
   audit: null,
   auditDirection: "replacement",
   auditLoadVersion: 0,
@@ -36,22 +41,44 @@ const state = {
 const $ = (selector, root = document) => root.querySelector(selector);
 const $$ = (selector, root = document) => [...root.querySelectorAll(selector)];
 const escapeHtml = (value) => String(value ?? "").replace(/[&<>'"]/g, (char) => ({"&":"&amp;","<":"&lt;",">":"&gt;","'":"&#39;",'"':"&quot;"}[char]));
+const DYNAMIC_ICONS = new Set(["arrow-right", "ban", "check-circle-2", "chevron-down", "chevron-up", "copy", "eye", "eye-off", "pencil", "plus", "power", "search", "trash-2"]);
 
 document.addEventListener("DOMContentLoaded", init);
 
 function init() {
+  renderIcons();
   bindNavigation();
   bindActions();
   syncVisibilityButtons();
   showView(PAGE_META[state.view] ? state.view : "overview", false);
-  if (state.key) connect();
-  else showLogin();
+  connect();
   window.addEventListener("apg:localechange", () => {
     syncVisibilityButtons();
     showView(state.view, false);
     state.loaded.clear();
-    if (state.key) loadView(state.view, true);
+    loadView(state.view, true);
   });
+}
+
+function iconMarkup(name) {
+  if (!DYNAMIC_ICONS.has(name)) throw new Error(`Unsupported dynamic icon: ${name}`);
+  return `<i data-lucide="${name}"></i>`;
+}
+
+function renderIcons(root = document) {
+  if (!window.lucide?.createIcons || !window.lucide?.icons) throw new Error("Lucide icon runtime is unavailable");
+  window.lucide.createIcons({
+    icons: window.lucide.icons,
+    attrs: {"aria-hidden": "true", focusable: "false", "stroke-width": "2"},
+    root,
+  });
+}
+
+function setIconButton(button, name, label) {
+  button.innerHTML = iconMarkup(name);
+  button.setAttribute("aria-label", label);
+  button.title = label;
+  renderIcons(button);
 }
 
 function bindNavigation() {
@@ -67,26 +94,35 @@ function bindNavigation() {
 }
 
 function bindActions() {
-  $("#login-form").addEventListener("submit", async (event) => {
-    event.preventDefault();
-    state.key = $("#admin-key").value.trim();
-    $("#login-error").textContent = "";
-    await connect(true);
-  });
-  $("#logout-button").addEventListener("click", logout);
   $("#refresh-button").addEventListener("click", () => loadView(state.view, true));
-  $$('[data-connection-protocol]').forEach((button) => button.addEventListener("click", () => setConnectionProtocol(button.dataset.connectionProtocol)));
   $$('[data-copy-connection]').forEach((button) => button.addEventListener("click", () => copyConnectionValue(button.dataset.copyConnection)));
   $("#copy-claude-command").addEventListener("click", copyClaudeCodeCommand);
   $("#toggle-agent-key").addEventListener("click", toggleAgentKeyVisibility);
   $("#upstream-key-form").addEventListener("submit", saveUpstreamApiKey);
+  $("#upstream-profile-select").addEventListener("change", (event) => {
+    state.upstreamSelectedProfileId = event.target.value;
+    renderUpstreamConfiguration();
+  });
+  $("#activate-upstream-profile").addEventListener("click", activateSelectedUpstreamProfile);
+  $("#new-upstream-profile").addEventListener("click", () => {
+    state.upstreamEditing = true;
+    state.upstreamEditingProfileId = "";
+    renderUpstreamConfiguration();
+    $("#upstream-profile-name").focus();
+  });
+  $("#delete-upstream-profile").addEventListener("click", () => {
+    const profile = selectedUpstreamProfile();
+    if (profile) confirmAction("删除上游配置", `将删除“${profile.name}”。已保存的密钥也会从本机配置中移除。`, deleteSelectedUpstreamProfile);
+  });
   $("#edit-upstream-key").addEventListener("click", () => {
     state.upstreamEditing = true;
+    state.upstreamEditingProfileId = state.upstreamSelectedProfileId || state.upstream?.active_profile_id || "";
     renderUpstreamConfiguration();
     setTimeout(() => (state.upstream?.base_url ? $("#upstream-api-key") : $("#upstream-base-url-input")).focus(), 30);
   });
   $("#cancel-upstream-key").addEventListener("click", () => {
     state.upstreamEditing = false;
+    state.upstreamEditingProfileId = "";
     $("#upstream-api-key").value = "";
     $("#upstream-key-error").textContent = "";
     renderUpstreamConfiguration();
@@ -132,45 +168,16 @@ function bindActions() {
   });
 }
 
-async function connect(fromForm = false) {
-  if (!state.key) return showLogin();
+async function connect() {
   try {
     await loadOverview();
-    sessionStorage.setItem("apg_admin_key", state.key);
-    $("#login-overlay").classList.add("is-hidden");
     setConnected(true);
     $("#app-shell").setAttribute("aria-busy", "false");
     if (state.view !== "overview") await loadView(state.view);
   } catch (error) {
     setConnected(false);
-    if (fromForm || error.status === 401) $("#login-error").textContent = "无法验证管理员密钥。";
-    showLogin();
+    handleError(error);
   }
-}
-
-function showLogin() {
-  resetRawVisibility();
-  $("#login-overlay").classList.remove("is-hidden");
-  setTimeout(() => $("#admin-key").focus(), 30);
-}
-
-function logout() {
-  resetRawVisibility();
-  state.key = "";
-  state.connection = null;
-  state.upstream = null;
-  state.upstreamEditing = false;
-  state.loaded.clear();
-  sessionStorage.removeItem("apg_admin_key");
-  $("#admin-key").value = "";
-  $("#agent-api-key").value = "";
-  $("#agent-base-url").value = "";
-  $("#agent-api-key").type = "password";
-  setVisibilityButton($("#toggle-agent-key"), false, "显示 API Key", "隐藏 API Key");
-  $("#copy-claude-command").disabled = true;
-  $("#upstream-api-key").value = "";
-  showLogin();
-  setConnected(false);
 }
 
 function setConnected(connected) {
@@ -187,7 +194,7 @@ function showView(view, updateHash = true) {
   $("#page-eyebrow").textContent = eyebrow;
   $("#page-title").textContent = title;
   $("#page-subtitle").textContent = subtitle;
-  if (state.key) loadView(view);
+  if (state.connection) loadView(view);
 }
 
 async function loadView(view, force = false) {
@@ -201,7 +208,6 @@ async function loadView(view, force = false) {
 
 async function api(path, options = {}) {
   const headers = new Headers(options.headers || {});
-  headers.set("Authorization", "Bearer " + state.key);
   if (options.body) headers.set("Content-Type", "application/json");
   const response = await fetch(API + path, {...options, headers, cache: "no-store"});
   let body = null;
@@ -246,6 +252,14 @@ function renderUpstreamConfiguration() {
   if (!state.upstream) return;
   const configured = Boolean(state.upstream.configured);
   const editing = !configured || state.upstreamEditing;
+  const profiles = state.upstream.profiles || [];
+  if (!profiles.some((profile) => profile.id === state.upstreamSelectedProfileId)) {
+    state.upstreamSelectedProfileId = state.upstream.active_profile_id || profiles[0]?.id || "";
+  }
+  if (!configured && !state.upstreamEditingProfileId && state.upstream.active_profile_id) {
+    state.upstreamEditingProfileId = state.upstream.active_profile_id;
+  }
+  const selected = selectedUpstreamProfile();
   const setup = $("#upstream-setup");
   setup.classList.remove("is-hidden");
   setup.classList.toggle("needs-setup", !configured);
@@ -255,7 +269,18 @@ function renderUpstreamConfiguration() {
     ? "上游连接配置已生效。APG 不会通过管理接口回显已保存的密钥。"
     : "输入模型服务商的 Base URL 和 API Key 后即可开始使用 Agent。配置只保存在本机。";
   $("#upstream-base-url").textContent = state.upstream.base_url || "待填写";
-  $("#upstream-base-url-input").value = state.upstream.base_url || "";
+  $("#upstream-protocol-value").textContent = UPSTREAM_PROTOCOL_LABELS[state.upstream.protocol] || "待选择";
+  $("#upstream-profile-select").innerHTML = profiles.length
+    ? profiles.map((profile) => `<option value="${escapeHtml(profile.id)}"${profile.id === state.upstreamSelectedProfileId ? " selected" : ""}>${escapeHtml(profile.name)}${profile.active ? "（当前）" : ""}</option>`).join("")
+    : '<option value="">暂无配置</option>';
+  $("#activate-upstream-profile").disabled = !selected || selected.active;
+  $("#delete-upstream-profile").disabled = !selected;
+  const editingProfile = state.upstreamEditingProfileId
+    ? profiles.find((profile) => profile.id === state.upstreamEditingProfileId)
+    : null;
+  $("#upstream-profile-name").value = editing ? (editingProfile?.name || "") : "";
+  $("#upstream-protocol").value = editing ? (editingProfile?.protocol || "") : "";
+  $("#upstream-base-url-input").value = editing ? (editingProfile?.base_url || "") : "";
   $("#upstream-key-form").classList.toggle("is-hidden", !editing);
   $("#edit-upstream-key").classList.toggle("is-hidden", !configured || editing);
   $("#cancel-upstream-key").classList.toggle("is-hidden", !configured);
@@ -264,9 +289,21 @@ function renderUpstreamConfiguration() {
 async function saveUpstreamApiKey(event) {
   event.preventDefault();
   const baseUrlInput = $("#upstream-base-url-input");
+  const name = $("#upstream-profile-name").value.trim();
+  const protocol = $("#upstream-protocol").value;
   const input = $("#upstream-api-key");
   const baseUrl = baseUrlInput.value.trim().replace(/\/+$/, "");
   const apiKey = input.value.trim();
+  if (!name) {
+    $("#upstream-key-error").textContent = "请输入配置名称。";
+    $("#upstream-profile-name").focus();
+    return;
+  }
+  if (!Object.hasOwn(UPSTREAM_PROTOCOL_LABELS, protocol)) {
+    $("#upstream-key-error").textContent = "请选择上游 API 格式。";
+    $("#upstream-protocol").focus();
+    return;
+  }
   let parsedBaseUrl = null;
   try { parsedBaseUrl = new URL(baseUrl); } catch (_) {}
   if (!parsedBaseUrl || !["http:", "https:"].includes(parsedBaseUrl.protocol) || parsedBaseUrl.username || parsedBaseUrl.password || parsedBaseUrl.search || parsedBaseUrl.hash) {
@@ -274,7 +311,8 @@ async function saveUpstreamApiKey(event) {
     baseUrlInput.focus();
     return;
   }
-  if (!apiKey) {
+  const editingProfile = (state.upstream?.profiles || []).find((profile) => profile.id === state.upstreamEditingProfileId);
+  if (!apiKey && !editingProfile?.has_api_key) {
     $("#upstream-key-error").textContent = "请输入上游 API Key。";
     return;
   }
@@ -284,10 +322,12 @@ async function saveUpstreamApiKey(event) {
   try {
     state.upstream = await api("/upstream-configuration", {
       method: "PUT",
-      body: JSON.stringify({base_url: baseUrl, api_key: apiKey}),
+      body: JSON.stringify({profile_id: state.upstreamEditingProfileId, name, protocol, base_url: baseUrl, api_key: apiKey}),
     });
     input.value = "";
     state.upstreamEditing = false;
+    state.upstreamEditingProfileId = "";
+    state.upstreamSelectedProfileId = state.upstream.active_profile_id || "";
     renderUpstreamConfiguration();
     toast(state.upstream.persistent ? "上游连接配置已安全保存并启用" : "上游连接配置已在当前进程中启用");
   } catch (error) {
@@ -297,26 +337,43 @@ async function saveUpstreamApiKey(event) {
   }
 }
 
-function setConnectionProtocol(protocol) {
-  if (!state.connection?.protocols?.[protocol]) return;
-  state.connectionProtocol = protocol;
-  renderConnection();
+function selectedUpstreamProfile() {
+  return (state.upstream?.profiles || []).find((profile) => profile.id === state.upstreamSelectedProfileId) || null;
+}
+
+async function activateSelectedUpstreamProfile() {
+  const profile = selectedUpstreamProfile();
+  if (!profile || profile.active) return;
+  state.upstream = await api(`/upstream-configuration/${encodeURIComponent(profile.id)}/activate`, {method: "POST"});
+  state.upstreamSelectedProfileId = state.upstream.active_profile_id || "";
+  renderUpstreamConfiguration();
+  toast(`已启用上游配置：${profile.name}`);
+}
+
+async function deleteSelectedUpstreamProfile() {
+  const profile = selectedUpstreamProfile();
+  if (!profile) return;
+  state.upstream = await api(`/upstream-configuration/${encodeURIComponent(profile.id)}`, {method: "DELETE"});
+  state.upstreamSelectedProfileId = state.upstream.active_profile_id || state.upstream.profiles?.[0]?.id || "";
+  state.upstreamEditing = !state.upstream.profiles?.length;
+  state.upstreamEditingProfileId = "";
+  renderUpstreamConfiguration();
+  toast(`已删除上游配置：${profile.name}`);
 }
 
 function renderConnection() {
   if (!state.connection) return;
-  const protocol = state.connection.protocols[state.connectionProtocol] || state.connection.protocols.openai;
-  const basePath = protocol?.base_path || "";
-  $("#agent-base-url").value = location.origin + basePath;
+  $("#agent-openai-base-url").value = location.origin + (state.connection.protocols.openai?.base_path || "");
+  $("#agent-anthropic-base-url").value = location.origin + (state.connection.protocols.anthropic?.base_path || "");
   $("#agent-api-key").value = state.connection.api_key || "";
   $("#agent-api-key").placeholder = state.connection.api_key ? "" : "未配置本地 API Key";
-  $$('[data-connection-protocol]').forEach((button) => {
-    const active = button.dataset.connectionProtocol === state.connectionProtocol;
-    button.classList.toggle("is-active", active);
-    button.setAttribute("aria-pressed", String(active));
-  });
   $$('[data-copy-connection]').forEach((button) => {
-    const target = button.dataset.copyConnection === "api-key" ? $("#agent-api-key") : $("#agent-base-url");
+    const targets = {
+      "api-key": $("#agent-api-key"),
+      "openai-base-url": $("#agent-openai-base-url"),
+      "anthropic-base-url": $("#agent-anthropic-base-url"),
+    };
+    const target = targets[button.dataset.copyConnection];
     button.disabled = !target.value;
   });
   $("#copy-claude-command").disabled = !state.connection.api_key || !state.connection.protocols.anthropic;
@@ -329,21 +386,15 @@ function toggleAgentKeyVisibility() {
   setVisibilityButton($("#toggle-agent-key"), revealed, "显示 API Key", "隐藏 API Key");
 }
 
-function visibilityIcon(revealed) {
-  if (revealed) {
-    return `<svg class="lucide-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2.062 12.348a1 1 0 0 1 0-.696 10.75 10.75 0 0 1 19.876 0 1 1 0 0 1 0 .696 10.75 10.75 0 0 1-19.876 0"></path><circle cx="12" cy="12" r="3"></circle></svg>`;
-  }
-  return `<svg class="lucide-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m2 2 20 20"></path><path d="M6.71 6.71C4.5 8.05 3.1 10 2 12c2.5 4.5 6 7 10 7a9.77 9.77 0 0 0 5.29-1.71"></path><path d="M10.73 5.08A10.44 10.44 0 0 1 12 5c4 0 7.5 2.5 10 7a18.16 18.16 0 0 1-1.67 2.68"></path><path d="M14.12 14.12a3 3 0 1 1-4.24-4.24"></path></svg>`;
-}
-
 function setVisibilityButton(button, revealed, showLabel, hideLabel) {
   if (!button) return;
   const actionLabel = revealed ? hideLabel : showLabel;
-  button.innerHTML = visibilityIcon(revealed);
+  button.innerHTML = iconMarkup(revealed ? "eye-off" : "eye");
   button.classList.toggle("is-active", revealed);
   button.setAttribute("aria-pressed", String(revealed));
   button.setAttribute("aria-label", actionLabel);
   button.title = actionLabel;
+  renderIcons(button);
 }
 
 function syncVisibilityButtons() {
@@ -353,7 +404,12 @@ function syncVisibilityButtons() {
 }
 
 async function copyConnectionValue(kind) {
-  const input = kind === "api-key" ? $("#agent-api-key") : $("#agent-base-url");
+  const inputs = {
+    "api-key": $("#agent-api-key"),
+    "openai-base-url": $("#agent-openai-base-url"),
+    "anthropic-base-url": $("#agent-anthropic-base-url"),
+  };
+  const input = inputs[kind];
   if (!input.value) return;
   await copyText(input.value);
   toast(kind === "api-key" ? "API Key 已复制" : "Base URL 已复制");
@@ -469,14 +525,15 @@ function renderAuditOperationRows(target, operations, direction) {
       : `<code class="operation-value ${operation.original === "***" ? "is-masked" : ""}">${escapeHtml(operation.original)}</code>`;
     const representation = `<code class="operation-value representation">${escapeHtml(operation.representation)}</code>`;
     const mapping = direction === "replacement"
-      ? `${original}<span class="operation-arrow" aria-label="替换为">→</span>${representation}`
-      : `${representation}<span class="operation-arrow" aria-label="还原为">→</span>${original}`;
+      ? `${original}<span class="operation-arrow" aria-label="替换为">${iconMarkup("arrow-right")}</span>${representation}`
+      : `${representation}<span class="operation-arrow" aria-label="还原为">${iconMarkup("arrow-right")}</span>${original}`;
     const failed = operation.direction === "materialization_failed";
     const handling = direction === "replacement"
       ? `<strong>${escapeHtml(operation.action || "替换")}</strong>${operation.detector ? `<span class="muted">${escapeHtml(operation.detector)}</span>` : ""}`
       : `<strong>${escapeHtml(operation.tool_name || "本地工具")}</strong><span class="muted">${escapeHtml(operation.sink || "-")}</span><span class="badge ${failed ? "red" : "green"}">${escapeHtml(failed ? "未还原" : "已还原")}</span><code class="audit-result-code">${escapeHtml(operation.result_code || "-")}</code>`;
     return `<tr class="audit-operation-row ${failed ? "has-failure" : ""}"><td data-label="时间">${formatDateTime(operation.timestamp)}</td><td class="audit-map-cell" data-label="${direction === "replacement" ? "替换内容" : "还原内容"}"><div class="operation-map audit-list-map">${mapping}</div><div class="operation-metadata"><span class="mapping-id">${escapeHtml(operation.protected_value_id)}</span>${operation.value_state !== "active" ? `<span class="operation-state-inline">${escapeHtml(valueStateLabel(operation.value_state))}</span>` : ""}</div></td><td data-label="类型"><strong>${escapeHtml(operation.subtype || operation.kind || "-")}</strong><span class="badge ${escapeHtml(operation.risk || "low")}">${escapeHtml(operation.risk || "low")}</span></td><td class="audit-handling" data-label="${direction === "replacement" ? "检测与动作" : "工具与结果"}">${handling}</td><td data-label="出现"><strong>${formatNumber(operation.occurrence_count)}</strong></td><td class="audit-context" data-label="上下文"><code>${escapeHtml(operation.endpoint || "-")}</code><span>${escapeHtml(operation.session || "-")}</span><code>${escapeHtml(operation.request_id)}</code></td></tr>`;
   }).join("");
+  renderIcons(target);
 }
 
 function renderAuditRequestRows(target, requests) {
@@ -488,8 +545,9 @@ function renderAuditRequestRows(target, requests) {
     const replacement = formatOperationCount(request.replacement_count, request.replacement_unique_count);
     const materialization = formatOperationCount(request.materialization_count, request.materialization_unique_count);
     const failure = request.materialization_failed_count ? `<span class="operation-failure">${formatNumber(request.materialization_failed_count)} 未还原</span>` : "";
-    return `<tr><td>${formatDateTime(request.timestamp)}</td><td>${replacement}</td><td>${materialization}${failure}</td><td><span class="badge ${statusClass(request.status)}">${escapeHtml(auditStatusLabel(request.status))}</span></td><td class="mono">${escapeHtml(request.endpoint || "-")}</td><td>${escapeHtml(request.session || "-")}</td><td><button class="row-action" type="button" data-audit-request-id="${escapeHtml(request.request_id)}">详情</button></td></tr>`;
+    return `<tr><td>${formatDateTime(request.timestamp)}</td><td>${replacement}</td><td>${materialization}${failure}</td><td><span class="badge ${statusClass(request.status)}">${escapeHtml(auditStatusLabel(request.status))}</span></td><td class="mono">${escapeHtml(request.endpoint || "-")}</td><td>${escapeHtml(request.session || "-")}</td><td><button class="row-action icon-row-button" type="button" data-audit-request-id="${escapeHtml(request.request_id)}" aria-label="查看请求详情" title="查看请求详情">${iconMarkup("search")}</button></td></tr>`;
   }).join("");
+  renderIcons(target);
   $$('[data-audit-request-id]', target).forEach((button) => button.addEventListener("click", () => openAuditRequestDetail(button.dataset.auditRequestId).catch(handleError)));
 }
 
@@ -532,6 +590,7 @@ function renderAuditRequestDetail(detail) {
     content += `<div class="audit-truncated-note">另有 ${formatNumber(detail.omitted_count)} 项操作仅计入总数。</div>`;
   }
   $("#modal-body").innerHTML = content;
+  renderIcons($("#modal-body"));
 }
 
 function renderOperationSection(title, kicker, operations, direction) {
@@ -547,8 +606,8 @@ function renderAuditOperation(operation, direction) {
     : `<code class="operation-value ${operation.original === "***" ? "is-masked" : ""}">${escapeHtml(operation.original)}</code>`;
   const representation = `<code class="operation-value representation">${escapeHtml(operation.representation)}</code>`;
   const mapping = direction === "replacement"
-    ? `${original}<span class="operation-arrow" aria-label="替换为">→</span>${representation}`
-    : `${representation}<span class="operation-arrow" aria-label="还原为">→</span>${original}`;
+    ? `${original}<span class="operation-arrow" aria-label="替换为">${iconMarkup("arrow-right")}</span>${representation}`
+    : `${representation}<span class="operation-arrow" aria-label="还原为">${iconMarkup("arrow-right")}</span>${original}`;
   const metadata = [
     operation.protected_value_id,
     operation.subtype || operation.kind,
@@ -637,8 +696,9 @@ function renderEventRows(target, events, compact) {
     const action = primary.action || event.action || event.termination || "recorded";
     const status = event.parse_errors ? "error" : event.termination || (event.status ? String(event.status) : "safe");
     if (compact) return `<tr><td>${formatTime(event.timestamp)}</td><td><span class="badge ${risk}">${escapeHtml(type)}</span></td><td>${escapeHtml(action)}</td><td class="mono">${escapeHtml(event.endpoint || "-")}</td><td><span class="badge ${statusClass(status)}">${escapeHtml(status)}</span></td></tr>`;
-    return `<tr><td>${formatDateTime(event.timestamp)}</td><td>${escapeHtml(event.phase)}</td><td><span class="badge ${risk}">${escapeHtml(type)}</span>${event.detection_count > 1 ? `<span class="muted"> +${event.detection_count - 1}</span>` : ""}</td><td>${escapeHtml(action)}</td><td class="mono">${escapeHtml(event.endpoint || "-")}</td><td>${escapeHtml(event.session || "-")}</td><td><button class="row-action" type="button" data-event-id="${escapeHtml(event.id)}">详情</button></td></tr>`;
+    return `<tr><td>${formatDateTime(event.timestamp)}</td><td>${escapeHtml(event.phase)}</td><td><span class="badge ${risk}">${escapeHtml(type)}</span>${event.detection_count > 1 ? `<span class="muted"> +${event.detection_count - 1}</span>` : ""}</td><td>${escapeHtml(action)}</td><td class="mono">${escapeHtml(event.endpoint || "-")}</td><td>${escapeHtml(event.session || "-")}</td><td><button class="row-action icon-row-button" type="button" data-event-id="${escapeHtml(event.id)}" aria-label="查看事件详情" title="查看事件详情">${iconMarkup("search")}</button></td></tr>`;
   }).join("");
+  if (!compact) renderIcons(target);
   if (!compact) $$('[data-event-id]', target).forEach((button) => button.addEventListener("click", () => openEventDetail(events.find((event) => event.id === button.dataset.eventId))));
 }
 
@@ -668,8 +728,9 @@ async function loadProtected() {
     const original = record.original === null
       ? `<span class="protected-original-cleared">原文已清除</span>`
       : `<code class="protected-original ${record.original === "***" ? "is-masked" : ""}">${escapeHtml(record.original)}</code>`;
-    return `<tr><td><strong>${escapeHtml(record.label)}</strong><span class="muted mono"> ${escapeHtml(record.id.slice(-6))}</span></td><td class="protected-original-cell">${original}</td><td>${escapeHtml(record.subtype)}<br><span class="muted">${escapeHtml(record.kind)}</span></td><td>${escapeHtml(record.scope)}<br><span class="muted">${escapeHtml(record.session)}</span></td><td><span class="badge ${record.display_state}">${stateLabel(record.display_state)}</span></td><td>${formatRelative(record.last_seen_at)}</td><td>${record.auto_expires ? formatRelative(record.expires_at) : "不自动过期"}</td><td>${record.display_state === "active" ? `<button class="row-action danger" type="button" data-revoke="${escapeHtml(record.id)}">撤销</button>` : ""}</td></tr>`;
+    return `<tr><td><strong>${escapeHtml(record.label)}</strong><span class="muted mono"> ${escapeHtml(record.id.slice(-6))}</span></td><td class="protected-original-cell">${original}</td><td>${escapeHtml(record.subtype)}<br><span class="muted">${escapeHtml(record.kind)}</span></td><td>${escapeHtml(record.scope)}<br><span class="muted">${escapeHtml(record.session)}</span></td><td><span class="badge ${record.display_state}">${stateLabel(record.display_state)}</span></td><td>${formatRelative(record.last_seen_at)}</td><td>${record.auto_expires ? formatRelative(record.expires_at) : "不自动过期"}</td><td>${record.display_state === "active" ? `<button class="row-action danger icon-row-button" type="button" data-revoke="${escapeHtml(record.id)}" aria-label="撤销受保护值 ${escapeHtml(record.label)}" title="撤销受保护值">${iconMarkup("ban")}</button>` : ""}</td></tr>`;
   }).join("") : `<tr><td colspan="8" class="muted">没有受保护值记录</td></tr>`;
+  renderIcons(target);
   $$('[data-revoke]', target).forEach((button) => button.addEventListener("click", () => {
     const record = data.records.find((item) => item.id === button.dataset.revoke);
     confirmAction("撤销受保护值", `${record.label} 将立即失效，之后的占位符无法还原。`, () => revokeProtected(record.id));
@@ -809,8 +870,8 @@ function renderDetectorConfiguration() {
   $("#configuration-status").innerHTML = `${configuration.is_active ? '<span class="badge green">当前启用</span>' : ""}${configuration.readonly ? '<span class="badge neutral">只读模板</span>' : `<span class="muted">Revision ${configuration.revision}</span>`}`;
   $("#core-guard-warning").classList.toggle("is-hidden", configuration.core_guard_enabled);
   $("#activate-configuration").disabled = configuration.is_active || detectorConfigurationDirty();
-  $("#activate-configuration").textContent = configuration.is_active ? "当前配置" : "启用配置";
-  $("#duplicate-configuration").textContent = readonly ? "复制并编辑" : "复制";
+  setIconButton($("#activate-configuration"), configuration.is_active ? "check-circle-2" : "power", configuration.is_active ? "当前检测器配置" : "启用检测器配置");
+  setIconButton($("#duplicate-configuration"), "copy", readonly ? "复制并编辑检测器配置" : "复制检测器配置");
   $("#save-configuration").disabled = readonly || !detectorConfigurationDirty();
   $("#delete-configuration").disabled = readonly || configuration.is_active;
   $("#add-module").disabled = readonly;
@@ -833,9 +894,10 @@ function renderDetectorModules() {
     const unavailable = module.type === "local_model" && module.enabled && module.runtime_available === false;
     const status = !module.enabled ? "disabled" : unavailable ? "unavailable" : module.editable === false ? "managed" : "ready";
     const statusClass = status === "ready" ? "green" : status === "unavailable" ? "red" : "neutral";
-    const controls = readonly || module.editable === false ? "" : `<div class="module-actions"><button type="button" title="上移" aria-label="上移 ${escapeHtml(module.name)}" data-module-up="${index}" ${index === 0 ? "disabled" : ""}>↑</button><button type="button" title="下移" aria-label="下移 ${escapeHtml(module.name)}" data-module-down="${index}" ${index === modules.length - 1 ? "disabled" : ""}>↓</button><button type="button" data-module-edit="${index}">编辑</button><button type="button" data-module-copy="${index}">复制</button><button type="button" class="danger" data-module-delete="${index}">删除</button></div>`;
+    const controls = readonly || module.editable === false ? "" : `<div class="module-actions"><button type="button" title="上移模块" aria-label="上移 ${escapeHtml(module.name)}" data-module-up="${index}" ${index === 0 ? "disabled" : ""}>${iconMarkup("chevron-up")}</button><button type="button" title="下移模块" aria-label="下移 ${escapeHtml(module.name)}" data-module-down="${index}" ${index === modules.length - 1 ? "disabled" : ""}>${iconMarkup("chevron-down")}</button><button type="button" title="编辑模块" aria-label="编辑 ${escapeHtml(module.name)}" data-module-edit="${index}">${iconMarkup("pencil")}</button><button type="button" title="复制模块" aria-label="复制 ${escapeHtml(module.name)}" data-module-copy="${index}">${iconMarkup("copy")}</button><button type="button" class="danger" title="删除模块" aria-label="删除 ${escapeHtml(module.name)}" data-module-delete="${index}">${iconMarkup("trash-2")}</button></div>`;
     return `<div class="module-row"><span class="module-order">${index + 1}</span><div class="module-name"><span class="module-symbol">${escapeHtml(type.slice(0, 2))}</span><div><strong>${escapeHtml(module.name)}</strong><span>${escapeHtml(type)} · ${escapeHtml(module.id)}</span></div></div><span class="badge ${statusClass}">${status}</span><span class="module-meta">${rules === null ? escapeHtml(module.failure_mode) : `${rules} 条规则`}</span>${controls}<label class="toggle"><input type="checkbox" data-module-toggle="${index}" ${module.enabled ? "checked" : ""} ${readonly || module.editable === false ? "disabled" : ""} aria-label="启用 ${escapeHtml(module.name)}"><span></span></label></div>`;
   }).join("");
+  renderIcons(target);
   $$('[data-module-toggle]', target).forEach((input) => input.addEventListener("change", () => updateModuleEnabled(Number(input.dataset.moduleToggle), input.checked)));
   $$('[data-module-up]', target).forEach((button) => button.addEventListener("click", () => moveModule(Number(button.dataset.moduleUp), -1)));
   $$('[data-module-down]', target).forEach((button) => button.addEventListener("click", () => moveModule(Number(button.dataset.moduleDown), 1)));
@@ -1018,7 +1080,8 @@ function renderModuleSpecificFields() {
   const module = state.moduleDraft;
   const target = $("#module-specific-fields");
   if (module.type === "regex") {
-    target.innerHTML = `<div class="specific-heading"><div><p class="section-kicker">REGEX RULES</p><strong>${module.config.rules.length} 条规则</strong></div><button class="secondary-button" type="button" id="add-regex-rule">＋ 添加规则</button></div><div class="rule-editor-list">${module.config.rules.map(renderRegexRule).join("")}</div>`;
+    target.innerHTML = `<div class="specific-heading"><div><p class="section-kicker">REGEX RULES</p><strong>${module.config.rules.length} 条规则</strong></div><button class="secondary-button icon-action-button" type="button" id="add-regex-rule" aria-label="添加正则规则" title="添加正则规则">${iconMarkup("plus")}</button></div><div class="rule-editor-list">${module.config.rules.map(renderRegexRule).join("")}</div>`;
+    renderIcons(target);
     $("#add-regex-rule").addEventListener("click", () => {
       syncModuleSpecificFields();
       state.moduleDraft.config.rules.push({id: `custom.rule_${randomHex(8)}`, pattern: "", type: "MACHINE_SECRET", subtype: "custom_secret", confidence: 0.9, risk: "high", suggested_action: "redact", flags: [], validators: [], require_validators: [], reject_validators: [], preview_keep: 0, enabled: true, metadata: {source: "webui"}});
@@ -1045,7 +1108,7 @@ function renderModuleSpecificFields() {
 }
 
 function renderRegexRule(rule, index) {
-  return `<section class="rule-editor" data-rule-card="${index}"><div class="rule-editor-heading"><strong>${escapeHtml(rule.id)}</strong><label class="inline-check"><input data-rule-field="enabled" type="checkbox" ${rule.enabled !== false ? "checked" : ""}>启用</label><button class="row-action danger" type="button" data-remove-rule="${index}">删除</button></div><div class="form-grid"><label><span>规则 ID</span><input data-rule-field="id" value="${escapeHtml(rule.id)}"></label><label><span>Subtype</span><input data-rule-field="subtype" value="${escapeHtml(rule.subtype)}"></label><label class="full-row"><span>正则表达式</span><textarea data-rule-field="pattern" rows="3">${escapeHtml(rule.pattern)}</textarea></label><label><span>数据类型</span><select data-rule-field="type">${selectOptions(["MACHINE_SECRET", "PII", "LOCAL_CONTEXT", "CREDENTIAL_FILE", "UNKNOWN_SECRET_CANDIDATE"], rule.type)}</select></label><label><span>置信度</span><input data-rule-field="confidence" type="number" min="0" max="1" step="0.01" value="${rule.confidence}"></label><label><span>风险</span><select data-rule-field="risk">${selectOptions(["critical", "high", "medium", "low"], rule.risk)}</select></label><label><span>动作</span><select data-rule-field="suggested_action">${selectOptions(["redact", "block", "pseudonymize", "warn", "alias"], rule.suggested_action)}</select></label><label><span>Flags（逗号分隔）</span><input data-rule-field="flags" value="${escapeHtml((rule.flags || []).join(", "))}"></label><label><span>Validators</span><input data-rule-field="validators" value="${escapeHtml((rule.validators || []).join(", "))}"></label><label><span>必须通过的 Validators</span><input data-rule-field="require_validators" value="${escapeHtml((rule.require_validators || []).join(", "))}"></label><label><span>拒绝的 Validators</span><input data-rule-field="reject_validators" value="${escapeHtml((rule.reject_validators || []).join(", "))}"></label></div></section>`;
+  return `<section class="rule-editor" data-rule-card="${index}"><div class="rule-editor-heading"><strong>${escapeHtml(rule.id)}</strong><label class="inline-check"><input data-rule-field="enabled" type="checkbox" ${rule.enabled !== false ? "checked" : ""}>启用</label><button class="row-action danger icon-row-button" type="button" data-remove-rule="${index}" aria-label="删除正则规则 ${escapeHtml(rule.id)}" title="删除正则规则">${iconMarkup("trash-2")}</button></div><div class="form-grid"><label><span>规则 ID</span><input data-rule-field="id" value="${escapeHtml(rule.id)}"></label><label><span>Subtype</span><input data-rule-field="subtype" value="${escapeHtml(rule.subtype)}"></label><label class="full-row"><span>正则表达式</span><textarea data-rule-field="pattern" rows="3">${escapeHtml(rule.pattern)}</textarea></label><label><span>数据类型</span><select data-rule-field="type">${selectOptions(["MACHINE_SECRET", "PII", "LOCAL_CONTEXT", "CREDENTIAL_FILE", "UNKNOWN_SECRET_CANDIDATE"], rule.type)}</select></label><label><span>置信度</span><input data-rule-field="confidence" type="number" min="0" max="1" step="0.01" value="${rule.confidence}"></label><label><span>风险</span><select data-rule-field="risk">${selectOptions(["critical", "high", "medium", "low"], rule.risk)}</select></label><label><span>动作</span><select data-rule-field="suggested_action">${selectOptions(["redact", "block", "pseudonymize", "warn", "alias"], rule.suggested_action)}</select></label><label><span>Flags（逗号分隔）</span><input data-rule-field="flags" value="${escapeHtml((rule.flags || []).join(", "))}"></label><label><span>Validators</span><input data-rule-field="validators" value="${escapeHtml((rule.validators || []).join(", "))}"></label><label><span>必须通过的 Validators</span><input data-rule-field="require_validators" value="${escapeHtml((rule.require_validators || []).join(", "))}"></label><label><span>拒绝的 Validators</span><input data-rule-field="reject_validators" value="${escapeHtml((rule.reject_validators || []).join(", "))}"></label></div></section>`;
 }
 
 function riskActionFields(prefix, label, risk, action) {
@@ -1270,7 +1333,6 @@ function toast(message, error = false) {
 }
 
 function handleError(error) {
-  if (error.status === 401) { logout(); return; }
   toast(error.message || "请求失败", true);
 }
 

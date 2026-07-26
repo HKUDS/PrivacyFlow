@@ -35,6 +35,23 @@ def test_env_assignment_preserves_key_and_redacts_only_value(redactor) -> None:
     assert "svc_apgtest" not in read_output
 
 
+def test_env_assignment_preserves_status_and_inline_log_context(redactor) -> None:
+    status, status_events = redactor.sanitize_text(
+        "OPENAI_API_KEY_SET=true/false",
+        "sess_1",
+    )
+    assert status == "OPENAI_API_KEY_SET=true/false"
+    assert status_events == []
+
+    log_line, _ = redactor.sanitize_text(
+        "SERVICE_TOKEN=svc_apgtest_edge_inline_55555555555555555555; retry=true; status=401",
+        "sess_1",
+    )
+    assert log_line.startswith("SERVICE_TOKEN=<APG:v1:secret:")
+    assert log_line.endswith("; retry=true; status=401")
+    assert "svc_apgtest_edge_" not in log_line
+
+
 def test_email_pseudonymized_consistently(redactor) -> None:
     a, _ = redactor.sanitize_text("howard@example.com", "sess_1")
     b, _ = redactor.sanitize_text("howard@example.com", "sess_1")

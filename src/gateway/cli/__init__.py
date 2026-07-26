@@ -1,19 +1,31 @@
 from gateway.cli.launcher import (
     LauncherConfigError,
+    activate_launcher_upstream_profile,
     apply_launcher_environment,
+    delete_launcher_upstream_profile,
+    load_launcher_upstream_profiles,
     main,
     normalize_upstream_base_url,
+    normalize_upstream_profile_name,
+    normalize_upstream_protocol,
     prepare_launcher_config,
     save_launcher_upstream_api_key,
     save_launcher_upstream_configuration,
+    save_launcher_upstream_profile,
 )
 
 __all__ = [
     "LauncherConfigError",
+    "activate_launcher_upstream_profile",
     "apply_launcher_environment",
+    "delete_launcher_upstream_profile",
+    "load_launcher_upstream_profiles",
     "main",
     "normalize_upstream_base_url",
+    "normalize_upstream_profile_name",
+    "normalize_upstream_protocol",
     "prepare_launcher_config",
     "save_launcher_upstream_api_key",
     "save_launcher_upstream_configuration",
+    "save_launcher_upstream_profile",
 ]

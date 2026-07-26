@@ -96,6 +96,13 @@ Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.fakepayload.fakesigna
 OPENAI_API_KEY=sk-apgtest-333333333333333333333333333333333333
 Traceback: ...
 """,
+    "config/edge.env": """OPENAI_API_KEY_SET=false
+PRIMARY_API_KEY='sk-apgtest-edge-44444444444444444444444444444444'
+SERVICE_TOKEN="svc_apgtest_edge_quoted_value_2026 with spaces"
+FORWARDED_TOKEN=${SERVICE_TOKEN}
+""",
+    "logs/assignment_edge.log": """2026-07-23 ERROR request failed; SERVICE_TOKEN=svc_apgtest_edge_inline_55555555555555555555; retry=true; status=401; response="invalid authentication credentials"
+""",
     "fixtures/sensitive_commands.txt": SENSITIVE_COPY_CONTENT,
     "scripts/deploy.sh": """#!/usr/bin/env bash
 echo "Deploying..."

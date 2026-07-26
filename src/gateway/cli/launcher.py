@@ -10,8 +10,15 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
 
+from gateway.upstream_protocol import (
+    OPENAI_CHAT_COMPLETIONS,
+    SUPPORTED_UPSTREAM_PROTOCOLS,
+    canonical_upstream_protocol,
+)
+
 
 DEFAULT_LAUNCHER_PATH = Path(".apg/launcher.json")
+DEFAULT_UPSTREAM_PROFILE_NAME = "默认配置"
 
 
 class LauncherConfigError(RuntimeError):
@@ -32,11 +39,13 @@ def main(argv: Sequence[str] | None = None) -> None:
     apply_launcher_environment(config)
     host = os.environ.get("APG_HOST", "127.0.0.1")
     port = os.environ.get("APG_PORT", "8765")
-    admin_key = os.environ["APG_ADMIN_API_KEYS"].split(",", 1)[0]
     print("Agent Privacy Gateway")
     print(f"WebUI: http://{host}:{port}/ui/")
-    print(f"Admin key: {admin_key}")
-    if not config["_resolved_upstream_base_url"] or not config["_resolved_upstream_api_key"]:
+    if (
+        config["_resolved_upstream_protocol"] not in SUPPORTED_UPSTREAM_PROTOCOLS
+        or not config["_resolved_upstream_base_url"]
+        or not config["_resolved_upstream_api_key"]
+    ):
         print("Upstream connection: not configured (finish setup in the WebUI).")
     print("Press Ctrl+C to stop.")
 
@@ -58,23 +67,33 @@ def prepare_launcher_config(
         config["signing_secret"] = secrets.token_urlsafe(32)
         changed = True
     if not config.get("local_api_key"):
-        config["local_api_key"] = "apg-local"
+        config["local_api_key"] = f"apg_local_{secrets.token_urlsafe(24)}"
         changed = True
-    if not config.get("admin_api_key"):
-        config["admin_api_key"] = config["local_api_key"]
-        changed = True
-    if "upstream_base_url" not in config:
-        config["upstream_base_url"] = ""
+    if "admin_api_key" in config:
+        config.pop("admin_api_key", None)
         changed = True
     if "strip_local_v1" not in config:
         config["strip_local_v1"] = True
         changed = True
+    profiles, active_profile_id, profiles_changed = _normalize_upstream_profiles(config)
+    changed = changed or profiles_changed
 
-    provider_key = environment.get("APG_UPSTREAM_API_KEY", "").strip() or str(config.get("upstream_api_key", "")).strip()
-    provider_base_url = environment.get("APG_UPSTREAM_BASE_URL", "").strip() or str(config.get("upstream_base_url", "")).strip()
+    active_profile = next((profile for profile in profiles if profile["id"] == active_profile_id), None)
+    provider_key = environment.get("APG_UPSTREAM_API_KEY", "").strip() or str(
+        (active_profile or {}).get("api_key", "")
+    ).strip()
+    provider_base_url = environment.get("APG_UPSTREAM_BASE_URL", "").strip() or str(
+        (active_profile or {}).get("base_url", "")
+    ).strip()
+    provider_protocol = canonical_upstream_protocol(
+        environment.get("APG_UPSTREAM_PROTOCOL", "") or str((active_profile or {}).get("protocol", ""))
+    )
 
+    config["upstream_profiles"] = profiles
+    config["active_upstream_profile_id"] = active_profile_id
     config["_resolved_upstream_api_key"] = provider_key
     config["_resolved_upstream_base_url"] = provider_base_url.rstrip("/")
+    config["_resolved_upstream_protocol"] = provider_protocol
     config["_launcher_config_path"] = str(path.resolve())
     if changed:
         _write_launcher_config(path, {key: value for key, value in config.items() if not key.startswith("_")})
@@ -90,9 +109,9 @@ def apply_launcher_environment(
     defaults = {
         "APG_UPSTREAM_BASE_URL": str(config["_resolved_upstream_base_url"]),
         "APG_UPSTREAM_API_KEY": str(config["_resolved_upstream_api_key"]),
+        "APG_UPSTREAM_PROTOCOL": str(config["_resolved_upstream_protocol"]),
         "APG_UPSTREAM_STRIP_LOCAL_V1": "true" if config.get("strip_local_v1", True) else "false",
         "APG_LOCAL_API_KEYS": str(config["local_api_key"]),
-        "APG_ADMIN_API_KEYS": str(config["admin_api_key"]),
         "APG_SIGNING_SECRET": str(config["signing_secret"]),
         "APG_LAUNCHER_CONFIG_PATH": str(config["_launcher_config_path"]),
     }
@@ -101,22 +120,130 @@ def apply_launcher_environment(
 
 
 def save_launcher_upstream_api_key(path: Path, api_key: str) -> None:
-    config = _read_launcher_config(path)
-    save_launcher_upstream_configuration(path, str(config.get("upstream_base_url", "")), api_key)
+    config = prepare_launcher_config(path, environ={})
+    active = next(
+        (
+            profile
+            for profile in config["upstream_profiles"]
+            if profile["id"] == config["active_upstream_profile_id"]
+        ),
+        None,
+    )
+    save_launcher_upstream_configuration(
+        path,
+        str((active or {}).get("protocol", "")),
+        str((active or {}).get("base_url", "")),
+        api_key,
+    )
 
 
-def save_launcher_upstream_configuration(path: Path, base_url: str, api_key: str) -> tuple[str, str]:
+def save_launcher_upstream_configuration(path: Path, protocol: str, base_url: str, api_key: str) -> tuple[str, str, str]:
+    config = prepare_launcher_config(path, environ={})
+    active_id = str(config.get("active_upstream_profile_id", ""))
+    active = next(
+        (profile for profile in config["upstream_profiles"] if profile["id"] == active_id),
+        None,
+    )
+    profile = save_launcher_upstream_profile(
+        path,
+        profile_id=active_id,
+        name=str((active or {}).get("name") or DEFAULT_UPSTREAM_PROFILE_NAME),
+        protocol=protocol,
+        base_url=base_url,
+        api_key=api_key,
+    )
+    return str(profile["protocol"]), str(profile["base_url"]), str(profile["api_key"])
+
+
+def save_launcher_upstream_profile(
+    path: Path,
+    *,
+    profile_id: str,
+    name: str,
+    protocol: str,
+    base_url: str,
+    api_key: str,
+) -> dict[str, Any]:
+    normalized_protocol = normalize_upstream_protocol(protocol)
     normalized_base_url = normalize_upstream_base_url(base_url)
-    normalized = api_key.strip()
-    if not normalized or len(normalized) > 4096:
+    normalized_name = normalize_upstream_profile_name(name)
+    config = prepare_launcher_config(path, environ={})
+    profiles = [dict(profile) for profile in config["upstream_profiles"]]
+    existing = next((profile for profile in profiles if profile["id"] == profile_id), None)
+    normalized_key = api_key.strip() or str((existing or {}).get("api_key", "")).strip()
+    if not normalized_key or len(normalized_key) > 4096:
         raise LauncherConfigError("The upstream API key must contain between 1 and 4096 characters.")
-    if any(ord(char) < 32 or ord(char) == 127 for char in normalized):
+    if any(ord(char) < 32 or ord(char) == 127 for char in normalized_key):
         raise LauncherConfigError("The upstream API key contains unsupported control characters.")
-    config = _read_launcher_config(path)
-    config["upstream_base_url"] = normalized_base_url
-    config["upstream_api_key"] = normalized
-    _write_launcher_config(path, config)
-    return normalized_base_url, normalized
+    resolved_id = profile_id if existing is not None else f"up_{secrets.token_urlsafe(12)}"
+    profile = {
+        "id": resolved_id,
+        "name": normalized_name,
+        "protocol": normalized_protocol,
+        "base_url": normalized_base_url,
+        "api_key": normalized_key,
+    }
+    profiles = [profile if item["id"] == resolved_id else item for item in profiles]
+    if existing is None:
+        profiles.append(profile)
+    config["upstream_profiles"] = profiles
+    config["active_upstream_profile_id"] = resolved_id
+    _write_launcher_config(path, _persistent_launcher_config(config))
+    return profile
+
+
+def activate_launcher_upstream_profile(path: Path, profile_id: str) -> dict[str, Any]:
+    config = prepare_launcher_config(path, environ={})
+    profile = next(
+        (profile for profile in config["upstream_profiles"] if profile["id"] == profile_id),
+        None,
+    )
+    if profile is None:
+        raise LauncherConfigError("The upstream profile does not exist.")
+    config["active_upstream_profile_id"] = profile_id
+    _write_launcher_config(path, _persistent_launcher_config(config))
+    return dict(profile)
+
+
+def delete_launcher_upstream_profile(path: Path, profile_id: str) -> dict[str, Any] | None:
+    config = prepare_launcher_config(path, environ={})
+    profiles = [dict(profile) for profile in config["upstream_profiles"]]
+    if not any(profile["id"] == profile_id for profile in profiles):
+        raise LauncherConfigError("The upstream profile does not exist.")
+    profiles = [profile for profile in profiles if profile["id"] != profile_id]
+    active_id = str(config.get("active_upstream_profile_id", ""))
+    if active_id == profile_id:
+        active_id = str(profiles[0]["id"]) if profiles else ""
+    config["upstream_profiles"] = profiles
+    config["active_upstream_profile_id"] = active_id
+    _write_launcher_config(path, _persistent_launcher_config(config))
+    return next((profile for profile in profiles if profile["id"] == active_id), None)
+
+
+def load_launcher_upstream_profiles(path: Path) -> tuple[list[dict[str, Any]], str]:
+    config = prepare_launcher_config(path, environ={})
+    return [dict(profile) for profile in config["upstream_profiles"]], str(
+        config.get("active_upstream_profile_id", "")
+    )
+
+
+def normalize_upstream_profile_name(name: str) -> str:
+    normalized = name.strip()
+    if not normalized or len(normalized) > 80:
+        raise LauncherConfigError("The upstream profile name must contain between 1 and 80 characters.")
+    if any(ord(char) < 32 or ord(char) == 127 for char in normalized):
+        raise LauncherConfigError("The upstream profile name contains unsupported control characters.")
+    return normalized
+
+
+def normalize_upstream_protocol(protocol: str) -> str:
+    normalized = canonical_upstream_protocol(protocol)
+    if normalized not in SUPPORTED_UPSTREAM_PROTOCOLS:
+        raise LauncherConfigError(
+            "The upstream protocol must be 'openai_chat_completions', 'openai_responses', "
+            "or 'anthropic_messages'."
+        )
+    return normalized
 
 
 def normalize_upstream_base_url(base_url: str) -> str:
@@ -140,6 +267,61 @@ def normalize_upstream_base_url(base_url: str) -> str:
     return normalized
 
 
+def _normalize_upstream_profiles(config: dict[str, Any]) -> tuple[list[dict[str, Any]], str, bool]:
+    changed = False
+    raw_profiles = config.get("upstream_profiles")
+    profiles: list[dict[str, Any]] = []
+    if isinstance(raw_profiles, list):
+        for index, raw in enumerate(raw_profiles):
+            if not isinstance(raw, dict):
+                changed = True
+                continue
+            profile_id = str(raw.get("id") or f"up_{secrets.token_urlsafe(12)}")
+            name = str(raw.get("name") or f"配置 {index + 1}")
+            protocol = canonical_upstream_protocol(str(raw.get("protocol", "")))
+            profile = {
+                "id": profile_id,
+                "name": name,
+                "protocol": protocol,
+                "base_url": str(raw.get("base_url", "")).rstrip("/"),
+                "api_key": str(raw.get("api_key", "")).strip(),
+            }
+            if profile != raw:
+                changed = True
+            profiles.append(profile)
+    else:
+        legacy_base_url = str(config.get("upstream_base_url", "")).rstrip("/")
+        legacy_api_key = str(config.get("upstream_api_key", "")).strip()
+        legacy_protocol = canonical_upstream_protocol(
+            str(
+                config.get("upstream_protocol")
+                or (OPENAI_CHAT_COMPLETIONS if legacy_base_url or legacy_api_key else "")
+            )
+        )
+        if legacy_base_url or legacy_api_key:
+            profiles.append(
+                {
+                    "id": f"up_{secrets.token_urlsafe(12)}",
+                    "name": DEFAULT_UPSTREAM_PROFILE_NAME,
+                    "protocol": legacy_protocol,
+                    "base_url": legacy_base_url,
+                    "api_key": legacy_api_key,
+                }
+            )
+        changed = True
+    active_id = str(config.get("active_upstream_profile_id", ""))
+    if not any(profile["id"] == active_id for profile in profiles):
+        active_id = str(profiles[0]["id"]) if profiles else ""
+        changed = True
+    for key in ("upstream_protocol", "upstream_base_url", "upstream_api_key"):
+        if key in config:
+            config.pop(key, None)
+            changed = True
+    config["upstream_profiles"] = profiles
+    config["active_upstream_profile_id"] = active_id
+    return profiles, active_id, changed
+
+
 def _read_launcher_config(path: Path) -> dict[str, Any]:
     if not path.exists():
         return {}
@@ -150,6 +332,10 @@ def _read_launcher_config(path: Path) -> dict[str, Any]:
     if not isinstance(raw, dict):
         raise LauncherConfigError(f"{path} must contain a JSON object.")
     return raw
+
+
+def _persistent_launcher_config(config: Mapping[str, Any]) -> dict[str, Any]:
+    return {key: value for key, value in config.items() if not key.startswith("_")}
 
 
 def _write_launcher_config(path: Path, config: Mapping[str, Any]) -> None:

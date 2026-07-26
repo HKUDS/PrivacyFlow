@@ -13,6 +13,7 @@ upstream:
   # DeepSeek's official OpenAI-compatible base URL is https://api.deepseek.com.
   # APG's local client path is /v1/chat/completions, so strip_local_v1 maps it
   # to DeepSeek's /chat/completions upstream path.
+  protocol: openai_chat_completions
   base_url: https://api.deepseek.com
   api_key: ${DEEPSEEK_API_KEY}
   timeout_seconds: 60

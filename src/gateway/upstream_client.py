@@ -6,13 +6,25 @@ from typing import Any
 import httpx
 
 from gateway.config import UpstreamConfig
+from gateway.upstream_protocol import (
+    ANTHROPIC_MESSAGES,
+    anthropic_message_to_openai,
+    anthropic_stream_to_openai,
+    canonical_upstream_protocol,
+    openai_chat_to_anthropic,
+)
 
 
 class UpstreamClient:
-    def __init__(self, config: UpstreamConfig) -> None:
+    def __init__(self, config: UpstreamConfig, *, transport: httpx.AsyncBaseTransport | None = None) -> None:
         self.config = config
+        self.transport = transport
 
     def upstream_path(self, path: str) -> str:
+        if canonical_upstream_protocol(self.config.protocol) == ANTHROPIC_MESSAGES:
+            if path == "/v1/chat/completions":
+                return "/v1/messages"
+            return path
         if self.config.strip_local_v1 and path.startswith("/v1/"):
             return path.removeprefix("/v1")
         return path
@@ -21,22 +33,28 @@ class UpstreamClient:
         self.config = config
 
     async def request_json(self, method: str, path: str, payload: Any | None = None) -> tuple[int, dict[str, str], Any]:
-        headers = {"Authorization": f"Bearer {self.config.api_key}", "Content-Type": "application/json"}
+        anthropic_chat = canonical_upstream_protocol(self.config.protocol) == ANTHROPIC_MESSAGES and path == "/v1/chat/completions"
+        headers = self._headers()
         upstream_path = self.upstream_path(path)
-        async with httpx.AsyncClient(timeout=self.config.timeout_seconds) as client:
-            resp = await client.request(method, f"{self.config.base_url}{upstream_path}", headers=headers, json=payload)
+        upstream_payload = openai_chat_to_anthropic(payload) if anthropic_chat and isinstance(payload, dict) else payload
+        async with httpx.AsyncClient(timeout=self.config.timeout_seconds, transport=self.transport) as client:
+            resp = await client.request(method, f"{self.config.base_url}{upstream_path}", headers=headers, json=upstream_payload)
         content_type = resp.headers.get("content-type", "")
         if "application/json" in content_type:
             body: Any = resp.json()
+            if anthropic_chat and isinstance(body, dict):
+                body = anthropic_message_to_openai(body)
         else:
             body = {"error": {"message": "Upstream returned non-JSON response", "status_code": resp.status_code}}
         return resp.status_code, {"content-type": "application/json"}, body
 
     async def stream_request(self, method: str, path: str, payload: Any | None = None) -> tuple[int, dict[str, str], AsyncIterator[bytes]]:
-        headers = {"Authorization": f"Bearer {self.config.api_key}", "Content-Type": "application/json"}
+        anthropic_chat = canonical_upstream_protocol(self.config.protocol) == ANTHROPIC_MESSAGES and path == "/v1/chat/completions"
+        headers = self._headers()
         upstream_path = self.upstream_path(path)
-        client = httpx.AsyncClient(timeout=self.config.timeout_seconds)
-        stream = client.stream(method, f"{self.config.base_url}{upstream_path}", headers=headers, json=payload)
+        upstream_payload = openai_chat_to_anthropic(payload) if anthropic_chat and isinstance(payload, dict) else payload
+        client = httpx.AsyncClient(timeout=self.config.timeout_seconds, transport=self.transport)
+        stream = client.stream(method, f"{self.config.base_url}{upstream_path}", headers=headers, json=upstream_payload)
         try:
             resp = await stream.__aenter__()
         except Exception:
@@ -51,4 +69,14 @@ class UpstreamClient:
                 await stream.__aexit__(None, None, None)
                 await client.aclose()
 
-        return resp.status_code, {"content-type": resp.headers.get("content-type", "text/event-stream")}, body()
+        response_body = anthropic_stream_to_openai(body()) if anthropic_chat else body()
+        return resp.status_code, {"content-type": resp.headers.get("content-type", "text/event-stream")}, response_body
+
+    def _headers(self) -> dict[str, str]:
+        headers = {"Content-Type": "application/json"}
+        if canonical_upstream_protocol(self.config.protocol) == ANTHROPIC_MESSAGES:
+            headers["x-api-key"] = self.config.api_key
+            headers["anthropic-version"] = "2023-06-01"
+        else:
+            headers["Authorization"] = f"Bearer {self.config.api_key}"
+        return headers

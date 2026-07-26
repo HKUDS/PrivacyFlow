@@ -226,6 +226,10 @@ def test_v2_copied_template_upgrades_historical_builtin_rule_without_losing_acti
         reloaded.manager_for_configuration(restored["id"]),
         '    42\u2192export SERVICE_TOKEN="secret-value"',
     )
+    assert "env_assignment" not in subtypes(
+        reloaded.manager_for_configuration(restored["id"]),
+        "OPENAI_API_KEY_SET=true/false",
+    )
 
 
 def test_v1_migration_failure_keeps_original_state_and_runtime(tmp_path) -> None:

@@ -7,11 +7,18 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from gateway.upstream_protocol import (
+    OPENAI_CHAT_COMPLETIONS,
+    SUPPORTED_UPSTREAM_PROTOCOLS,
+    canonical_upstream_protocol,
+)
+
 
 @dataclass(frozen=True)
 class UpstreamConfig:
     base_url: str = "https://api.openai.com"
     api_key: str = ""
+    protocol: str = OPENAI_CHAT_COMPLETIONS
     timeout_seconds: float = 60.0
     strip_local_v1: bool = False
 
@@ -52,12 +59,21 @@ def load_config(path: str | None = None) -> GatewayConfig:
     raw = _expand_env_refs(raw, strict_mode)
     upstream_raw = raw.get("upstream", {})
     detectors_raw = dict(raw.get("detectors", {}))
+    upstream_protocol = canonical_upstream_protocol(
+        os.getenv("APG_UPSTREAM_PROTOCOL", upstream_raw.get("protocol", OPENAI_CHAT_COMPLETIONS))
+    )
     upstream = UpstreamConfig(
         base_url=os.getenv("APG_UPSTREAM_BASE_URL", upstream_raw.get("base_url", "https://api.openai.com")).rstrip("/"),
         api_key=os.getenv("APG_UPSTREAM_API_KEY", upstream_raw.get("api_key", "")),
+        protocol=upstream_protocol,
         timeout_seconds=float(os.getenv("APG_UPSTREAM_TIMEOUT", upstream_raw.get("timeout_seconds", 60.0))),
         strip_local_v1=_env_bool("APG_UPSTREAM_STRIP_LOCAL_V1", upstream_raw.get("strip_local_v1", False)),
     )
+    if upstream.protocol not in {"", *SUPPORTED_UPSTREAM_PROTOCOLS}:
+        raise RuntimeError(
+            "upstream.protocol must be 'openai_chat_completions', 'openai_responses', "
+            "or 'anthropic_messages'. (APG_UPSTREAM_PROTOCOL_INVALID)"
+        )
     keys = os.getenv("APG_LOCAL_API_KEYS")
     local_api_keys = set(keys.split(",")) if keys else set(raw.get("local_api_keys", ["apg-local"]))
     admin_keys = os.getenv("APG_ADMIN_API_KEYS")

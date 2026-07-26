@@ -2,10 +2,13 @@
 
 DeepSeek's official OpenAI-compatible API uses:
 
+- `protocol`: `openai_chat_completions`
 - `base_url`: `https://api.deepseek.com`
 - current models: `deepseek-v4-flash` and `deepseek-v4-pro`
 
 APG exposes local OpenAI-compatible routes under `/v1`, while DeepSeek's upstream chat route is `/chat/completions`. Use `strip_local_v1: true` for DeepSeek upstreams.
+
+DeepSeek's Anthropic-compatible API can instead be selected explicitly with `protocol: anthropic_messages` and `base_url: https://api.deepseek.com/anthropic`. APG then uses the Messages API and does not infer the format from this suffix.
 
 ## Safe Harness
 

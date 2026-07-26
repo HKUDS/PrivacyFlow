@@ -1,16 +1,18 @@
 # Local Management WebUI
 
-APG serves a zero-build management panel at `/ui/`. It is designed for repeated local operations rather than provider traffic and uses the authenticated `/api/admin/*` control plane.
+APG serves a zero-build management panel at `/ui/`. It is designed for repeated local operations rather than provider traffic and uses an unauthenticated `/api/admin/*` control plane.
 
 ## Language
 
-The WebUI supports Chinese and English. The language switch is available on both the sign-in panel and the authenticated control plane, and updates static labels, dynamically rendered tables, detector diagnostics, forms, and dialogs without reloading the page. The initial locale follows the browser language; later choices are stored under `apg_locale` in browser `localStorage`.
+The WebUI supports Chinese and English. The language switch updates static labels, dynamically rendered tables, detector diagnostics, forms, and dialogs without reloading the page. The initial locale follows the browser language; later choices are stored under `apg_locale` in browser `localStorage`.
+
+The zero-build panel vendors Lucide `1.27.0` locally and serves it through `/ui/assets/lucide.min.js`; no icon CDN or additional CSP origin is required. Icon-only actions keep localized `aria-label` and `title` text while their SVGs remain decorative.
 
 The locale preference contains no credential or gateway data. Authentication remains in `sessionStorage`, while the CLI and launcher output remain English-only.
 
 ## Security Boundary
 
-The authenticated overview can return one configured local Agent credential from `APG_LOCAL_API_KEYS` so it can be copied into an Agent client. This is an APG-local access key, not the upstream provider key. Ordinary control-plane summaries do not return:
+The overview can return one configured local Agent credential from `APG_LOCAL_API_KEYS` so it can be copied into an Agent client. This is an APG-local access key, not the upstream provider key. Ordinary control-plane summaries do not return:
 
 - Raw values from the mapping database
 - Complete APG placeholders or internal mapping handles
@@ -18,31 +20,30 @@ The authenticated overview can return one configured local Agent credential from
 - Provider API keys
 - Full APG session ids
 
-The first-run upstream-configuration endpoint is the deliberate provider-connection write path. It accepts a Base URL and API key over the administrator-authenticated local control plane, validates the URL, atomically writes both to `.apg/launcher.json` with mode `0600`, hot-applies them to the running upstream client, clears the browser key input, and returns only configured status, protocol metadata, and the non-secret upstream URL. It never echoes or audits the key.
+The upstream-configuration endpoint is the deliberate provider-connection write path. It accepts named configurations over the local control plane, validates the URL, atomically writes each format, Base URL, and API key to `.apg/launcher.json` with mode `0600`, hot-applies the selected profile, clears the browser key input, and returns only configured status, protocol metadata, and non-secret upstream URLs. It never echoes or audits a provider key.
 
 Protected values are identified by an HMAC-derived `pv_...` administration id. The id supports revocation but cannot be used for placeholder materialization. Revocation tombstones the mapping and clears its stored raw value.
 
-The administrator-only operation-list, request-detail, and protected-value endpoints provide a deliberate opt-in exception. With `include_raw=false` they return `***`; with `include_raw=true` they read an original only while the referenced mapping is active. Audit-operation rows do not duplicate the original or store a complete signed placeholder, and `.apg/audit.jsonl` remains free of both. Every raw read records a safe `view_audit_raw_values` or `view_protected_raw_values` administrator event without the viewed content.
+The operation-list, request-detail, and protected-value endpoints provide a deliberate opt-in exception. With `include_raw=false` they return `***`; with `include_raw=true` they read an original only while the referenced mapping is active. Audit-operation rows do not duplicate the original or store a complete signed placeholder, and `.apg/audit.jsonl` remains free of both. Every raw read records a safe `view_audit_raw_values` or `view_protected_raw_values` management event without the viewed content.
 
-Set a dedicated administrator key where possible:
-
-```bash
-export APG_ADMIN_API_KEYS='a-random-local-admin-key'
-```
-
-When `APG_ADMIN_API_KEYS` is absent, the WebUI accepts `APG_LOCAL_API_KEYS` for backward compatibility. The browser stores the entered key in `sessionStorage`; it is cleared when the browser session ends. Static UI assets contain no credentials and may load before authentication, while every data and mutation endpoint requires the administrator key.
-
-APG binds to `127.0.0.1` by default. If the gateway is deliberately bound to another interface, terminate TLS in front of it and use a separate administrator key. Set `APG_ADMIN_ENABLED=false` to remove both `/ui/` and `/api/admin/*`.
+The WebUI and every `/api/admin/*` data or mutation endpoint require no key. APG binds to `127.0.0.1` by default, which is the management plane's security boundary. Do not bind APG to another interface unless that unauthenticated access is explicitly intended and protected by an external trusted boundary. Set `APG_ADMIN_ENABLED=false` to remove both `/ui/` and `/api/admin/*`.
 
 ## Views
 
 ### Overview
 
-When the launcher has no complete provider connection, the dashboard opens an upstream Base URL and API-key setup form before the Agent connection strip. Saving persists both locally and enables the current process without a restart; subsequent loads show the configured Base URL, protocol, status, and an explicit change action. The key input is never stored by the browser or returned by APG.
+When the launcher has no complete provider connection, the dashboard requires a configuration name, an explicit upstream API format—OpenAI Chat Completions, OpenAI Responses, or Anthropic Messages—plus a Base URL and API key before the Agent connection strip. Multiple named configurations can be saved, activated, edited, and deleted without restarting APG. Each configuration keeps its own provider key; editing with an empty key field preserves the saved value. Keys are never stored by the browser or returned by APG.
 
-The upstream transport is currently OpenAI-compatible. The Agent connection strip separately exposes OpenAI and Anthropic local entrypoints; Anthropic Agent requests are converted inside APG before reaching the OpenAI-compatible upstream. APG does not infer or silently change the upstream protocol from the Base URL. Provider-specific suffixes such as `/anthropic` can be suggestive, but generic gateways, self-hosted proxies, and custom routes make URL-only detection unreliable.
+APG does not infer or silently change the upstream API format from the Base URL. Provider-specific suffixes can be suggestive, but generic gateways, self-hosted proxies, and custom routes make URL-only detection unreliable. With an Anthropic Messages upstream, APG uses `/v1/messages`, `x-api-key`, and `anthropic-version: 2023-06-01`; a local `/v1/messages` request stays in native Anthropic JSON/SSE form end to end, apart from APG's privacy transformations and system-contract injection. Legacy stored values `openai` and `anthropic` migrate to `openai_chat_completions` and `anthropic_messages`.
 
-The Agent connection strip switches between the OpenAI-compatible and Anthropic base URLs, keeps the local Agent API key masked by default, and copies either value with one action. An eye icon temporarily reveals the local key. A separate Claude Code action copies a multiline shell environment block containing the local Anthropic URL and local Agent key, DeepSeek `deepseek-v4-pro[1m]` defaults for 1M-context primary work, DeepSeek v4 Flash defaults for Haiku and subagents, and maximum effort. It does not append a `claude` invocation, so users can apply their preferred Claude Code settings and startup command separately. The rest of the view summarizes the latest audit window: requests, interceptions, local tool-argument materializations, active protected values, seven-day activity, and risk distribution. The upstream is represented by hostname only.
+The Agent connection strip displays the OpenAI-compatible and Anthropic local Base URLs simultaneously and provides an independent copy action for each. On a new launcher installation, the local Agent API key is generated with cryptographic randomness and persisted in the private launcher file; existing keys are never rotated by migration. The Agent key stays masked by default, and an eye icon temporarily reveals it. A separate Claude Code action copies a multiline shell environment block containing the local Anthropic URL and local Agent key, DeepSeek `deepseek-v4-pro[1m]` defaults for 1M-context primary work, DeepSeek v4 Flash defaults for Haiku and subagents, and maximum effort. It does not append a `claude` invocation, so users can apply their preferred Claude Code settings and startup command separately. The rest of the view summarizes the latest audit window: requests, interceptions, local tool-argument materializations, active protected values, seven-day activity, and risk distribution. The upstream is represented by hostname only.
+
+| Agent endpoint | Chat Completions upstream | Responses upstream | Anthropic Messages upstream |
+| --- | --- | --- | --- |
+| `/v1/chat/completions` | Native | Unsupported (`501`) | Converted request, response, and SSE |
+| `/v1/messages` | Converted request, response, and SSE | Unsupported (`501`) | Native Anthropic JSON and SSE |
+| `/v1/responses` | Unsupported (`501`) | Native | Unsupported (`501`) |
+| `/v1/models` | Native | Native | Native Anthropic Models API |
 
 ### Audit
 
@@ -51,7 +52,7 @@ The audit view has two independent operation-level lists: **Replacement records*
 - `original or *** -> exact placeholder/path alias` for upstream replacement
 - `exact placeholder/path alias -> original or ***` for local materialization
 
-Repeated uses of one mapping and representation are merged with an occurrence count. Historical JSONL events created before per-operation storage remain available through the compatibility request-summary API, but APG does not invent operation rows for them. The eye control is off by default and requires confirmation; it is not written to browser storage. Turning it off clears the operation list and fetches masked data, while page reload, logout, and reauthentication restore the hidden state. Expired, revoked, or unavailable mappings display `原文已清除` rather than recovering an audit copy.
+Repeated uses of one mapping and representation are merged with an occurrence count. Historical JSONL events created before per-operation storage remain available through the compatibility request-summary API, but APG does not invent operation rows for them. The eye control is off by default and requires confirmation; it is not written to browser storage. Turning it off clears the operation list and fetches masked data, while page reload restores the hidden state. Expired, revoked, or unavailable mappings display `原文已清除` rather than recovering an audit copy.
 
 ### Protected Values
 
@@ -80,10 +81,10 @@ The APG core guard is enabled by default. Disabling it requires explicit confirm
 | `GET` | `/api/admin/upstream-configuration` | Provider-key configured status and safe upstream metadata |
 | `PUT` | `/api/admin/upstream-configuration` | Validate, persist, and hot-apply an upstream Base URL and provider API key without echoing the key |
 | `GET` | `/api/admin/audit` | Filtered audit events |
-| `GET` | `/api/admin/audit/operations` | Separate replacement or materialization operation list; optional administrator-only `include_raw=true` |
+| `GET` | `/api/admin/audit/operations` | Separate replacement or materialization operation list; optional `include_raw=true` |
 | `GET` | `/api/admin/audit/requests` | Request-level replacement/materialization summaries |
-| `GET` | `/api/admin/audit/requests/{request_id}` | Per-operation detail; optional administrator-only `include_raw=true` |
-| `GET` | `/api/admin/protected-values` | Mapping metadata; optional administrator-only `include_raw=true` |
+| `GET` | `/api/admin/audit/requests/{request_id}` | Per-operation detail; optional `include_raw=true` |
+| `GET` | `/api/admin/protected-values` | Mapping metadata; optional `include_raw=true` |
 | `PUT` | `/api/admin/protected-values/retention` | Save revision-protected automatic-clearing state and idle duration |
 | `POST` | `/api/admin/protected-values/{id}/revoke` | Tombstone one mapping |
 | `POST` | `/api/admin/protected-values/purge-expired` | Tombstone expired mappings |

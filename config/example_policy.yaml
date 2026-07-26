@@ -16,6 +16,8 @@ pii_mode: pseudonymize
 gc_interval_seconds: 60
 
 upstream:
+  # One of: openai_chat_completions, openai_responses, anthropic_messages.
+  protocol: openai_chat_completions
   base_url: https://api.openai.com
   api_key: ${APG_UPSTREAM_API_KEY}
   timeout_seconds: 60

@@ -10,6 +10,7 @@ from fastapi.testclient import TestClient
 from gateway.config import GatewayConfig, UpstreamConfig, load_config
 from gateway.mapping_store import MappingStore
 from gateway.server import create_app
+from gateway.upstream_protocol import ANTHROPIC_MESSAGES, OPENAI_CHAT_COMPLETIONS
 
 
 class AdminFakeUpstream:
@@ -66,7 +67,7 @@ def _admin_headers() -> dict[str, str]:
     return {"Authorization": "Bearer admin-key"}
 
 
-def test_webui_assets_and_admin_auth_are_separated(tmp_path) -> None:
+def test_webui_assets_and_admin_api_require_no_authentication(tmp_path) -> None:
     with TestClient(create_app(_config(tmp_path), AdminFakeUpstream())) as client:
         page = client.get("/ui/")
         assert page.status_code == 200
@@ -76,6 +77,9 @@ def test_webui_assets_and_admin_auth_are_separated(tmp_path) -> None:
         assert app_js.status_code == 200
         i18n_js = client.get("/ui/assets/i18n.js")
         assert i18n_js.status_code == 200
+        lucide_js = client.get("/ui/assets/lucide.min.js")
+        assert lucide_js.status_code == 200
+        assert "@license lucide v1.27.0 - ISC" in lucide_js.text
         assert "Privacy operations overview" in i18n_js.text
         assert "Detectors" in i18n_js.text
         assert "apg:localechange" in i18n_js.text
@@ -86,16 +90,16 @@ def test_webui_assets_and_admin_auth_are_separated(tmp_path) -> None:
         assert "claude --setting-sources project,local" not in app_js.text
         assert client.get("/ui/assets/unknown.js").status_code == 404
 
-        assert client.get("/api/admin/overview").status_code == 401
-        assert client.get("/api/admin/overview", headers={"Authorization": "Bearer agent-key"}).status_code == 401
+        assert client.get("/api/admin/overview").status_code == 200
+        assert client.get("/api/admin/overview", headers={"Authorization": "Bearer agent-key"}).status_code == 200
         assert client.get("/api/admin/overview", headers=_admin_headers()).status_code == 200
-        assert client.get("/api/admin/audit/requests").status_code == 401
-        assert client.get("/api/admin/audit/requests", headers={"Authorization": "Bearer agent-key"}).status_code == 401
-        assert client.get("/api/admin/audit/operations?direction=replacement").status_code == 401
+        assert client.get("/api/admin/audit/requests").status_code == 200
+        assert client.get("/api/admin/audit/requests", headers={"Authorization": "Bearer agent-key"}).status_code == 200
+        assert client.get("/api/admin/audit/operations?direction=replacement").status_code == 200
         assert client.get(
             "/api/admin/audit/operations?direction=replacement",
             headers={"Authorization": "Bearer agent-key"},
-        ).status_code == 401
+        ).status_code == 200
         assert client.get(
             "/api/admin/audit/operations?direction=all",
             headers=_admin_headers(),
@@ -109,7 +113,10 @@ def test_webui_assets_and_admin_auth_are_separated(tmp_path) -> None:
             "available_key_count": 1,
             "protocols": {"openai": {"base_path": "/v1"}, "anthropic": {"base_path": ""}},
         }
-        assert client.get("/api/admin/connection", headers={"Authorization": "Bearer agent-key"}).status_code == 401
+        assert client.get("/api/admin/connection", headers={"Authorization": "Bearer agent-key"}).status_code == 200
+        assert "login-overlay" not in page.text
+        assert "admin-key" not in page.text
+        assert "Authorization" not in app_js.text
 
         assert "Agent 接入" in page.text
         assert "agent-api-key" in page.text
@@ -119,11 +126,40 @@ def test_webui_assets_and_admin_auth_are_separated(tmp_path) -> None:
         assert "复制接入命令" in page.text
         assert "配置上游模型" in page.text
         assert "upstream-base-url-input" in page.text
-        assert "OpenAI-compatible" in page.text
+        assert 'id="upstream-protocol"' in page.text
+        assert 'value="openai_chat_completions"' in page.text
+        assert 'value="openai_responses"' in page.text
+        assert 'value="anthropic_messages"' in page.text
+        assert "data-connection-protocol" not in page.text
+        assert "agent-openai-base-url" in page.text
+        assert "agent-anthropic-base-url" in page.text
         assert 'api("/upstream-configuration"' in app_js.text
         assert 'data-locale="zh"' in page.text
         assert 'data-locale="en"' in page.text
         assert page.text.index("/ui/assets/i18n.js") < page.text.index("/ui/assets/app.js")
+        assert page.text.index("/ui/assets/i18n.js") < page.text.index("/ui/assets/lucide.min.js") < page.text.index("/ui/assets/app.js")
+        assert "https://unpkg.com" not in page.text
+        assert "https://cdn.jsdelivr.net" not in page.text
+        assert 'data-lucide="layout-dashboard"' in page.text
+        assert 'data-lucide="scroll-text"' in page.text
+        assert 'data-lucide="shield-check"' in page.text
+        assert 'data-lucide="sliders-horizontal"' in page.text
+        icon_only_buttons = [
+            button
+            for button in re.findall(r'<button class="[^"]+"[^>]*>', page.text)
+            if {"icon-button", "icon-action-button"}
+            & set(re.search(r'class="([^"]+)"', button).group(1).split())
+        ]
+        assert icon_only_buttons
+        assert all('aria-label="' in button and 'title="' in button for button in icon_only_buttons)
+        assert "renderIcons" in app_js.text
+        assert "setIconButton" in app_js.text
+        assert "visibilityIcon" not in app_js.text
+        assert 'iconMarkup(revealed ? "eye-off" : "eye")' in app_js.text
+        for legacy_symbol in ("↻", "×", "↑", "↓", "＋"):
+            assert legacy_symbol not in page.text
+            assert legacy_symbol not in app_js.text
+            assert legacy_symbol not in i18n_js.text
         assert 'data-audit-direction="replacement"' in page.text
         assert 'data-audit-direction="materialization"' in page.text
         assert "替换记录" in page.text
@@ -132,9 +168,11 @@ def test_webui_assets_and_admin_auth_are_separated(tmp_path) -> None:
         assert 'api("/audit/operations?" + params)' in app_js.text
         assert "本地映射保留" in page.text
         assert "mapping-retention-enabled" in page.text
+        assert "upstream-profile-select" in page.text
+        assert "new-upstream-profile" in page.text
+        assert "activate-upstream-profile" in page.text
         assert "protected-show-raw" in page.text
         assert "visibility-button" in page.text
-        assert "visibilityIcon" in app_js.text
         assert 'api("/protected-values/retention"' in app_js.text
 
         audit_text = (tmp_path / "audit.jsonl").read_text(encoding="utf-8")
@@ -175,13 +213,16 @@ def test_webui_can_persist_and_hot_apply_first_run_upstream_key(tmp_path, monkey
     with TestClient(create_app(cfg, AdminFakeUpstream())) as client:
         status = client.get("/api/admin/upstream-configuration", headers=_admin_headers())
         assert status.status_code == 200
-        assert status.json() == {
-            "configured": False,
-            "base_url": "https://api.deepseek.com",
-            "protocol": "openai",
-            "persistent": True,
-        }
-        assert "api_key" not in status.text
+        status_body = status.json()
+        assert status_body["configured"] is False
+        assert status_body["base_url"] == "https://api.deepseek.com"
+        assert status_body["protocol"] == OPENAI_CHAT_COMPLETIONS
+        assert status_body["persistent"] is True
+        assert len(status_body["profiles"]) == 1
+        assert status_body["profiles"][0]["has_api_key"] is False
+        assert status_body["profiles"][0]["active"] is True
+        first_profile_id = status_body["active_profile_id"]
+        assert '"api_key":' not in status.text
 
         unavailable = client.post(
             "/v1/chat/completions",
@@ -194,33 +235,76 @@ def test_webui_can_persist_and_hot_apply_first_run_upstream_key(tmp_path, monkey
         missing_url = client.put(
             "/api/admin/upstream-configuration",
             headers=_admin_headers(),
-            json={"api_key": "saved-provider-key"},
+            json={"name": "Primary", "api_key": "saved-provider-key"},
         )
         assert missing_url.status_code == 400
 
         invalid_url = client.put(
             "/api/admin/upstream-configuration",
             headers=_admin_headers(),
-            json={"base_url": "https://user:password@new.example/v1", "api_key": "saved-provider-key"},
+            json={"name": "Primary", "protocol": OPENAI_CHAT_COMPLETIONS, "base_url": "https://user:password@new.example/v1", "api_key": "saved-provider-key"},
         )
         assert invalid_url.status_code == 400
         assert "upstream_api_key" not in launcher_path.read_text(encoding="utf-8")
 
-        assert client.put(
-            "/api/admin/upstream-configuration",
-            headers={"Authorization": "Bearer agent-key"},
-            json={"base_url": "https://new.example/v1", "api_key": "saved-provider-key"},
-        ).status_code == 401
-        configured = client.put(
+        invalid_protocol = client.put(
             "/api/admin/upstream-configuration",
             headers=_admin_headers(),
-            json={"base_url": "https://new.example/v1/", "api_key": "saved-provider-key"},
+            json={"name": "Primary", "protocol": "auto", "base_url": "https://new.example/v1", "api_key": "saved-provider-key"},
+        )
+        assert invalid_protocol.status_code == 400
+
+        configured = client.put(
+            "/api/admin/upstream-configuration",
+            json={"profile_id": first_profile_id, "name": "Anthropic primary", "protocol": ANTHROPIC_MESSAGES, "base_url": "https://new.example/anthropic/", "api_key": "saved-provider-key"},
         )
         assert configured.status_code == 200
         assert configured.json()["configured"] is True
-        assert configured.json()["base_url"] == "https://new.example/v1"
-        assert configured.json()["protocol"] == "openai"
+        assert configured.json()["base_url"] == "https://new.example/anthropic"
+        assert configured.json()["protocol"] == ANTHROPIC_MESSAGES
+        assert configured.json()["active_profile_id"] == first_profile_id
+        assert configured.json()["profiles"][0]["name"] == "Anthropic primary"
         assert "saved-provider-key" not in configured.text
+
+        second = client.put(
+            "/api/admin/upstream-configuration",
+            headers=_admin_headers(),
+            json={
+                "name": "OpenAI backup",
+                "protocol": OPENAI_CHAT_COMPLETIONS,
+                "base_url": "https://backup.example/v1",
+                "api_key": "backup-provider-key",
+            },
+        )
+        assert second.status_code == 200
+        assert len(second.json()["profiles"]) == 2
+        second_profile_id = second.json()["active_profile_id"]
+        assert second_profile_id != first_profile_id
+        assert "backup-provider-key" not in second.text
+
+        activated = client.post(
+            f"/api/admin/upstream-configuration/{first_profile_id}/activate",
+            headers=_admin_headers(),
+        )
+        assert activated.status_code == 200
+        assert activated.json()["active_profile_id"] == first_profile_id
+        assert activated.json()["protocol"] == ANTHROPIC_MESSAGES
+
+        reactivated = client.post(
+            f"/api/admin/upstream-configuration/{second_profile_id}/activate",
+            headers=_admin_headers(),
+        )
+        assert reactivated.status_code == 200
+        assert reactivated.json()["protocol"] == OPENAI_CHAT_COMPLETIONS
+
+        deleted = client.delete(
+            f"/api/admin/upstream-configuration/{second_profile_id}",
+            headers=_admin_headers(),
+        )
+        assert deleted.status_code == 200
+        assert len(deleted.json()["profiles"]) == 1
+        assert deleted.json()["active_profile_id"] == first_profile_id
+        assert deleted.json()["protocol"] == ANTHROPIC_MESSAGES
 
         response = client.post(
             "/v1/chat/completions",
@@ -231,8 +315,11 @@ def test_webui_can_persist_and_hot_apply_first_run_upstream_key(tmp_path, monkey
 
     assert os.stat(launcher_path).st_mode & 0o777 == 0o600
     stored_launcher = json.loads(launcher_path.read_text(encoding="utf-8"))
-    assert stored_launcher["upstream_base_url"] == "https://new.example/v1"
-    assert stored_launcher["upstream_api_key"] == "saved-provider-key"
+    assert stored_launcher["active_upstream_profile_id"] == first_profile_id
+    assert len(stored_launcher["upstream_profiles"]) == 1
+    assert stored_launcher["upstream_profiles"][0]["protocol"] == ANTHROPIC_MESSAGES
+    assert stored_launcher["upstream_profiles"][0]["base_url"] == "https://new.example/anthropic"
+    assert stored_launcher["upstream_profiles"][0]["api_key"] == "saved-provider-key"
     audit_text = (tmp_path / "audit.jsonl").read_text(encoding="utf-8")
     assert "configure_upstream_connection" in audit_text
     assert "saved-provider-key" not in audit_text
@@ -300,13 +387,7 @@ def test_admin_can_temporarily_reveal_active_protected_values(tmp_path) -> None:
         assert hidden.json()["records"][0]["original"] == "***"
         assert secret not in hidden.text
 
-        assert client.get("/api/admin/protected-values?include_raw=true").status_code == 401
-        assert client.get(
-            "/api/admin/protected-values?include_raw=true",
-            headers={"Authorization": "Bearer agent-key"},
-        ).status_code == 401
-
-        revealed = client.get("/api/admin/protected-values?include_raw=true", headers=_admin_headers())
+        revealed = client.get("/api/admin/protected-values?include_raw=true")
         assert revealed.status_code == 200
         assert revealed.headers["cache-control"] == "no-store"
         assert revealed.json()["raw_values_included"] is True
@@ -347,13 +428,8 @@ def test_admin_can_configure_mapping_retention_with_revision_protection(tmp_path
         assert protected["records"][0]["auto_expires"] is False
         assert protected["records"][0]["expires_at"] is None
 
-        assert client.put(
-            "/api/admin/protected-values/retention",
-            json={"enabled": True, "idle_ttl_seconds": 3600, "revision": 0},
-        ).status_code == 401
         enabled = client.put(
             "/api/admin/protected-values/retention",
-            headers=_admin_headers(),
             json={"enabled": True, "idle_ttl_seconds": 3600, "revision": 0},
         )
         assert enabled.status_code == 200

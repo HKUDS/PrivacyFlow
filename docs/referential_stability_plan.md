@@ -331,7 +331,7 @@ signer.issue_for_record(record)
 - APG 在读取后、工具调用前重启的 deterministic mini-agent loop。
 - 合法旧 marker、invalid MAC、cross-session、expired 和 tombstone 各自只有一次稳定错误。
 
-Live runner 只负责构造失败和记录工具轨迹；工具权限仍属于 harness，不作为 APG 产品能力。
+Live runner 只负责构造失败和记录工具轨迹；每个 Agent 在所有场景中保持同一份、不按场景裁剪的原生工具配置。两个 Agent 产品实际暴露的工具名称可以不同。网络与仓库边界仍属于 harness 的隔离环境，不是 APG 产品能力，也不规定 Agent 的行动路线。
 
 ## 8. 数据迁移与发布
 

@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from collections.abc import Iterable
 
+import pytest
+
 from gateway.detectors.base import Detector
 from gateway.detectors.findings import Finding, SourceBlock
 from gateway.detectors.manager import HierarchicalDetectorManager, extract_text_blocks
@@ -59,6 +61,35 @@ def test_env_assignment_finding_covers_value_only() -> None:
     assert read_output[read_finding.original_start : read_finding.original_end] == '"secret-value"'
 
 
+@pytest.mark.parametrize(
+    "text",
+    [
+        "OPENAI_API_KEY_SET=true",
+        "OPENAI_API_KEY_SET=true/false",
+        "SERVICE_TOKEN='configured'",
+        "DATABASE_URL=${DATABASE_URL}",
+        "API_KEY=your-openai-api-key-here",
+    ],
+)
+def test_env_assignment_ignores_status_references_and_placeholders(text: str) -> None:
+    assert "env_assignment" not in subtypes(text)
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        ("API_KEY=x", "x"),
+        ("lowercase_api_key=real-short-value", "real-short-value"),
+        ('SERVICE_TOKEN="secret value with spaces"', '"secret value with spaces"'),
+        ("PASSWORD=p@ssword#part", "p@ssword#part"),
+        ("TOKEN=secret-value; retry=true; status=401", "secret-value"),
+    ],
+)
+def test_env_assignment_detects_real_values_without_consuming_suffix(text: str, expected: str) -> None:
+    finding = by_subtype(text, "env_assignment")
+    assert text[finding.original_start : finding.original_end] == expected
+
+
 def test_database_url_with_password_detected() -> None:
     finding = by_subtype("DATABASE_URL=postgres://user:pass@example.com/db", "database_url")
     assert "database_url_password" in finding.validators
@@ -111,6 +142,7 @@ def test_plain_schema_url_is_not_high_entropy_secret() -> None:
 def test_repository_script_path_is_not_high_entropy_secret() -> None:
     assert "high_entropy_token" not in subtypes("run python scripts/validate_secret.py VALUE")
     assert "high_entropy_token" not in subtypes("ripts/validate_secret.py")
+    assert "high_entropy_token" not in subtypes("inspect logs/assignment_edge.log")
 
 
 def test_local_path_span_excludes_sentence_punctuation() -> None:

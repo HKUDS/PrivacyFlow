@@ -72,8 +72,13 @@ _ENV_ASSIGNMENT_V1_PATTERN = (
     r"^\s*[A-Z0-9_]*(?:API_KEY|TOKEN|SECRET|PASSWORD|PASSWD|PASS|CREDENTIAL|PRIVATE_KEY|DATABASE_URL)"
     r"[A-Z0-9_]*\s*=\s*(?P<value>.+)$"
 )
+_ENV_ASSIGNMENT_V2_PATTERN = (
+    r"(?<![A-Z0-9_])(?:export\s+)?[A-Z0-9_]*(?:API_KEY|TOKEN|SECRET|PASSWORD|PASSWD|PASS|CREDENTIAL|PRIVATE_KEY|DATABASE_URL)"
+    r"[A-Z0-9_]*\s*=\s*(?P<value>[^\r\n]+)$"
+)
 TRUSTED_RULE_PATTERN_UPGRADES = {
     ("secret.env_assignment", _ENV_ASSIGNMENT_V1_PATTERN): _CURRENT_RULE_PATTERNS["secret.env_assignment"],
+    ("secret.env_assignment", _ENV_ASSIGNMENT_V2_PATTERN): _CURRENT_RULE_PATTERNS["secret.env_assignment"],
 }
 TRUSTED_RULE_PATTERNS = {
     (str(rule["id"]), str(rule["pattern"])) for rule in BUILTIN_RULE_VALUES
@@ -483,6 +488,7 @@ class DetectorControlPlane:
             pattern = str(raw.get("pattern", ""))
             if not pattern or len(pattern) > 512:
                 raise DetectorControlError("Pattern must be between 1 and 512 characters")
+            upgraded_builtin = (rule_id, pattern) in TRUSTED_RULE_PATTERN_UPGRADES
             pattern = TRUSTED_RULE_PATTERN_UPGRADES.get((rule_id, pattern), pattern)
             if (rule_id, pattern) not in TRUSTED_RULE_PATTERNS and (
                 _UNSAFE_GROUP_REPEAT_RE.search(pattern) or _UNSAFE_REGEX_FEATURE_RE.search(pattern)
@@ -513,6 +519,9 @@ class DetectorControlPlane:
             validators = self._validator_names(raw.get("validators", []))
             require_validators = self._validator_names(raw.get("require_validators", []))
             reject_validators = self._validator_names(raw.get("reject_validators", []))
+            if upgraded_builtin:
+                validators = list(dict.fromkeys([*validators, "credential_assignment_value"]))
+                require_validators = list(dict.fromkeys([*require_validators, "credential_assignment_value"]))
             out.append({
                 "id": rule_id,
                 "pattern": pattern,

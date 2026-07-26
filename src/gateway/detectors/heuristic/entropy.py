@@ -134,7 +134,7 @@ def _path_like_token(value: str, text: str, end: int) -> bool:
         return False
     if value.startswith(("/", "./", "../", "~/")):
         return True
-    if re.match(r"\.(?:py|pyi|js|jsx|ts|tsx|json|ya?ml|toml|md|txt|sh|zsh|bash)\b", text[end:], re.I):
+    if re.match(r"\.(?:py|pyi|js|jsx|ts|tsx|json|ya?ml|toml|md|txt|log|sh|zsh|bash)\b", text[end:], re.I):
         return True
     first_segment = value.split("/", 1)[0].lower()
     return first_segment in {
@@ -146,6 +146,7 @@ def _path_like_token(value: str, text: str, end: int) -> bool:
         "e2e_agent_tests",
         "examples",
         "lib",
+        "logs",
         "packages",
         "scripts",
         "src",

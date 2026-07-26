@@ -14,6 +14,14 @@ from gateway.server import APG_UPSTREAM_SYSTEM_PROMPT
 def test_prompt_uses_the_reserved_placeholder_format_example() -> None:
     assert f"`{APG_PLACEHOLDER_FORMAT_EXAMPLE}`" in APG_UPSTREAM_SYSTEM_PROMPT
     assert "never substitute one placeholder for another" in APG_UPSTREAM_SYSTEM_PROMPT
+    assert (
+        "repeated occurrences of the exact same APG placeholder refer to the same protected local value"
+        in APG_UPSTREAM_SYSTEM_PROMPT
+    )
+    assert (
+        "Different placeholders do not imply that their underlying values are equal or different"
+        in APG_UPSTREAM_SYSTEM_PROMPT
+    )
     assert PLACEHOLDER_RE.fullmatch(APG_PLACEHOLDER_FORMAT_EXAMPLE) is None
 
 

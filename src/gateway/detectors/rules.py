@@ -16,6 +16,7 @@ from gateway.placeholder_parser import PLACEHOLDER_RE
 
 
 VALIDATORS = {
+    "credential_assignment_value": lambda value: _credential_assignment_value(value),
     "database_url_password": database_url_has_password,
     "email_structure": lambda value: "@" in value and "." in value.rsplit("@", 1)[-1],
     "jwt_header": jwt_header_valid,
@@ -24,6 +25,17 @@ VALIDATORS = {
     "phone_shape": lambda value: len(re.sub(r"\D", "", value)) >= 8,
     "placeholder_parser_required": lambda value: bool(PLACEHOLDER_RE.fullmatch(value)),
 }
+
+
+_SAFE_ASSIGNMENT_VALUES = re.compile(
+    r"(?:"
+    r"(?:true|false|yes|no|on|off|0|1)(?:/(?:true|false|yes|no|on|off|0|1))?"
+    r"|null|none|unset|missing|present|configured|enabled|disabled"
+    r"|\$(?:[A-Z_][A-Z0-9_]*|\{[A-Z_][A-Z0-9_]*\})"
+    r"|your[-_][A-Z0-9_-]+[-_]here"
+    r")",
+    re.I,
+)
 
 
 @dataclass(frozen=True)
@@ -138,6 +150,13 @@ def _match_value(match: re.Match[str]) -> str:
 def _validator_passes(name: str, value: str) -> bool:
     validator = VALIDATORS.get(name)
     return bool(validator and validator(value))
+
+
+def _credential_assignment_value(value: str) -> bool:
+    candidate = value.strip()
+    if len(candidate) >= 2 and candidate[0] == candidate[-1] and candidate[0] in {"'", '"'}:
+        candidate = candidate[1:-1].strip()
+    return bool(candidate) and _SAFE_ASSIGNMENT_VALUES.fullmatch(candidate) is None
 
 
 def _detector_name(rule: DetectionRule, default: str) -> str:
@@ -320,13 +339,15 @@ BUILTIN_RULES: tuple[dict[str, Any], ...] = (
     },
     {
         "id": "secret.env_assignment",
-        "pattern": r"(?<![A-Z0-9_])(?:export\s+)?[A-Z0-9_]*(?:API_KEY|TOKEN|SECRET|PASSWORD|PASSWD|PASS|CREDENTIAL|PRIVATE_KEY|DATABASE_URL)[A-Z0-9_]*\s*=\s*(?P<value>[^\r\n]+)$",
+        "pattern": r"(?<![A-Z0-9_])(?:export[ \t]+)?[A-Z0-9_]*(?:API_KEY|TOKEN|SECRET|PASSWORD|PASSWD|PASS|CREDENTIAL|PRIVATE_KEY|DATABASE_URL)[A-Z0-9_]*[ \t]*=[ \t]*(?P<value>\"(?:\\.|[^\"\\\r\n])*\"|'(?:\\.|[^'\\\r\n])*'|[^\s;]+)",
         "type": "MACHINE_SECRET",
         "subtype": "env_assignment",
         "confidence": 0.98,
         "risk": "high",
         "suggested_action": "redact",
         "flags": ["IGNORECASE", "MULTILINE"],
+        "validators": ["credential_assignment_value"],
+        "require_validators": ["credential_assignment_value"],
     },
     {
         "id": "pii.email",

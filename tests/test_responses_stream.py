@@ -8,6 +8,7 @@ from gateway.config import GatewayConfig, UpstreamConfig
 from gateway.placeholder_parser import PLACEHOLDER_RE
 from gateway.redaction_engine import PROTECTED_VALUE, SSEDecoder, parse_sse_event
 from gateway.server import APG_UPSTREAM_SYSTEM_PROMPT, create_app
+from gateway.upstream_protocol import OPENAI_RESPONSES
 
 
 SECRET = "sk-proj-abcdefghijklmnopqrstuvwxyz0"
@@ -47,7 +48,7 @@ def _cfg(tmp_path) -> GatewayConfig:
         audit_log_path=str(tmp_path / "audit.jsonl"),
         signing_secret="responses-secret",
         local_api_keys={"local"},
-        upstream=UpstreamConfig(base_url="https://upstream", api_key="up"),
+        upstream=UpstreamConfig(base_url="https://upstream", api_key="up", protocol=OPENAI_RESPONSES),
     )
 
 
