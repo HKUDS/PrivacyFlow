@@ -159,8 +159,9 @@ def test_webui_assets_and_admin_api_require_no_authentication(tmp_path) -> None:
             assert f'{detector_type}: "{detector_icon}"' in app_js.text
         assert "moduleTypeIcon" in app_js.text
         assert "type.slice(0, 2)" not in app_js.text
-        assert ".brand-mark .lucide { width: 28px; height: 28px;" in styles.text
-        assert ".module-symbol .lucide { width: 28px; height: 28px;" in styles.text
+        assert ".brand-mark .lucide { display: block; width: 28px; height: 28px;" in styles.text
+        assert ".module-symbol .lucide { display: block; width: 28px; height: 28px;" in styles.text
+        assert styles.text.count("transform: translate(1px, 1px);") == 2
         icon_only_buttons = [
             button
             for button in re.findall(r'<button class="[^"]+"[^>]*>', page.text)
