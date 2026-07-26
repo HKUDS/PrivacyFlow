@@ -1453,7 +1453,6 @@ def create_app(config: GatewayConfig | None = None, upstream_client: UpstreamCli
         ) -> Response:
             authenticate_admin(authorization, x_api_key)
             try:
-                previous = detector_control.get_configuration(configuration_id)
                 result = detector_control.save_configuration(configuration_id, await admin_body(request))
             except DetectorConfigurationNotFound as exc:
                 raise HTTPException(status_code=404, detail=str(exc)) from exc
@@ -1469,8 +1468,6 @@ def create_app(config: GatewayConfig | None = None, upstream_client: UpstreamCli
                     "revision": result["revision"],
                     "module_count": len(result["modules"]),
                     "module_types": [module["type"] for module in result["modules"]],
-                    "core_guard_enabled": result["core_guard_enabled"],
-                    "core_guard_changed": previous["core_guard_enabled"] != result["core_guard_enabled"],
                     "result_code": "OK",
                 }
             )
@@ -1514,7 +1511,6 @@ def create_app(config: GatewayConfig | None = None, upstream_client: UpstreamCli
                     "configuration_id": result["id"],
                     "revision": result["revision"],
                     "module_count": len(result["modules"]),
-                    "core_guard_enabled": result["core_guard_enabled"],
                     "result_code": "OK",
                 }
             )

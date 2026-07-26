@@ -15,7 +15,7 @@ from gateway.detector_manager import DetectorManager
 from gateway.mapping_store import MappingRecord, MappingStore
 from gateway.materialization_engine import MaterializationEngine
 from gateway.path_alias_manager import PathAliasManager
-from gateway.placeholder_parser import APG_PLACEHOLDER_FORMAT_EXAMPLE, PlaceholderSigner
+from gateway.placeholder_parser import PlaceholderSigner
 from gateway.policy_engine import PolicyEngine
 
 PROTOCOL_KEYS = {"model", "tool_call_id", "tool_use_id", "call_id", "item_id", "previous_response_id"}
@@ -239,20 +239,9 @@ class BalancedStreamScanner:
     def __init__(self, redactor: "RedactionEngine", session_id: str) -> None:
         self.redactor = redactor
         self.session_id = session_id
-        self.core_guard_enabled = redactor.detector_manager.core_guard_enabled
-        self.known_secrets = (
-            [
-                value
-                for value in redactor.active_secret_values(session_id)
-                if value != APG_PLACEHOLDER_FORMAT_EXAMPLE
-            ]
-            if self.core_guard_enabled
-            else []
-        )
         self.path_aliases = redactor.active_path_aliases(session_id)
-        longest = max((len(value) for value in self.known_secrets), default=0)
-        self.strict = redactor.stream_requires_strict_buffering() or longest > STREAM_TEXT_MAX_PENDING
-        self.tail = min(STREAM_TEXT_MAX_PENDING, max(STREAM_TEXT_BASE_TAIL, longest - 1))
+        self.strict = redactor.stream_requires_strict_buffering()
+        self.tail = STREAM_TEXT_BASE_TAIL
         self.pending = ""
         self.discard_mode: str | None = None
         self.suppressed = False
@@ -276,9 +265,6 @@ class BalancedStreamScanner:
         for detection in detections:
             if detection.span_end > cut:
                 cut = min(cut, detection.span_start)
-        for start, end in self._known_secret_spans(self.pending):
-            if end > cut:
-                cut = min(cut, start)
         for start, end in self._sequence_spans(self.pending, self.path_aliases):
             if end > cut:
                 cut = min(cut, start)
@@ -316,19 +302,7 @@ class BalancedStreamScanner:
     def _sanitize(self, text: str) -> tuple[str, list[dict[str, Any]]]:
         if not text:
             return "", []
-        folded = text
-        events: list[dict[str, Any]] = []
-        for value in self.known_secrets:
-            count = folded.count(value)
-            if not count:
-                continue
-            folded = folded.replace(value, PROTECTED_VALUE)
-            events.extend(self._fold_event("known_session_secret") for _ in range(count))
-        safe, scan_events = self.redactor.scan_local_text(folded, self.session_id)
-        return safe, [*events, *scan_events]
-
-    def _known_secret_spans(self, text: str) -> list[tuple[int, int]]:
-        return self._sequence_spans(text, self.known_secrets)
+        return self.redactor.scan_local_text(text, self.session_id)
 
     @staticmethod
     def _sequence_spans(text: str, sequences: list[str]) -> list[tuple[int, int]]:
@@ -345,20 +319,15 @@ class BalancedStreamScanner:
 
     def _incomplete_candidate_start(self, text: str, *, include_pem: bool = False) -> int | None:
         starts: list[int] = []
-        if self.core_guard_enabled:
-            apg_start = _partial_apg_start(text)
-            if apg_start is not None:
-                starts.append(apg_start)
-        secret_start = _partial_sequence_start(text, self.known_secrets)
-        if secret_start is not None:
-            starts.append(secret_start)
+        apg_start = _partial_apg_start(text)
+        if apg_start is not None:
+            starts.append(apg_start)
         alias_start = _partial_sequence_start(text, self.path_aliases)
         if alias_start is not None:
             starts.append(alias_start)
-        if self.core_guard_enabled:
-            pem_start = _unclosed_pem_start(text)
-            if pem_start is not None and (include_pem or len(text) - pem_start >= STREAM_TEXT_BASE_TAIL):
-                starts.append(pem_start)
+        pem_start = _unclosed_pem_start(text)
+        if pem_start is not None and (include_pem or len(text) - pem_start >= STREAM_TEXT_BASE_TAIL):
+            starts.append(pem_start)
         return min(starts) if starts else None
 
     def _overflow_candidate(self, detections: list[Any]) -> tuple[str, list[dict[str, Any]]]:
@@ -722,14 +691,6 @@ class RedactionEngine:
                 )
         return materialized, events
 
-    def active_secret_values(self, session_id: str) -> list[str]:
-        values = self.mapping_store.active_values(
-            session_id,
-            self.workspace_id,
-            materialization_class="secret",
-        )
-        return sorted(set(values), key=len, reverse=True)
-
     def _active_path_mapping(self, session_id: str) -> list[tuple[str, str, MappingRecord]]:
         pairs = [
             (self._hierarchical_path_alias(str(record.value), session_id), str(record.value), record)
@@ -980,7 +941,7 @@ class RedactionEngine:
             session_id,
             scope="response",
             alias_paths=False,
-            fold_apg_markers=fold_apg_markers and self.detector_manager.core_guard_enabled,
+            fold_apg_markers=fold_apg_markers,
         )
         for token, value in restorations.items():
             safe = safe.replace(token, value, 1)

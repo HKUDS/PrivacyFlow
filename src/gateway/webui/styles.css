@@ -276,12 +276,7 @@ input:focus, select:focus, textarea:focus { border-color: var(--green); box-shad
 .configuration-identity textarea:focus { padding: 6px 9px; border: 1px solid var(--green); background: var(--surface); }
 .configuration-tags, .configuration-status { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
 .configuration-status { justify-content: flex-end; }
-.configuration-settings { min-height: 72px; padding: 15px 20px; border-top: 1px solid var(--line); background: var(--surface-soft); display: grid; grid-template-columns: minmax(160px, 240px) minmax(280px, 1fr) minmax(230px, .7fr); align-items: end; gap: 18px; }
-.guard-setting { display: grid; grid-template-columns: minmax(0, 1fr) 38px; align-items: center; gap: 12px; }
-.guard-setting > span:first-child { margin: 0; }
-.guard-setting-copy strong, .guard-setting-copy small { display: block; }
-.guard-setting-copy strong { color: var(--ink); font-size: 11px; }
-.guard-setting-copy small { margin-top: 4px; color: var(--muted); font-size: 10px; font-weight: 500; line-height: 1.35; }
+.configuration-settings { min-height: 72px; padding: 15px 20px; border-top: 1px solid var(--line); background: var(--surface-soft); display: grid; grid-template-columns: minmax(160px, 240px) minmax(230px, 1fr); align-items: end; gap: 18px; }
 .configuration-save-actions { display: flex; justify-content: flex-end; gap: 8px; }
 .danger-text { color: var(--coral); }
 .danger-note { padding: 11px 20px; border-top: 1px solid #e8b2ad; color: #8c2924; background: var(--coral-soft); font-size: 11px; }

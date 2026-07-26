@@ -112,6 +112,29 @@ def test_balanced_scanner_handles_every_placeholder_and_secret_split(redactor) -
                 assert PROTECTED_VALUE in output
 
 
+def test_balanced_scanner_does_not_hide_an_unclassified_value_only_because_it_was_seen(redactor) -> None:
+    session_id = "sess_seen_value"
+    value = "violet cabin ordinary phrase"
+    redactor.mapping_store.upsert_mapping(
+        session_id=session_id,
+        workspace_id="ws",
+        scope="request",
+        kind="secret",
+        subtype="opaque",
+        value=value,
+        store_value=True,
+        materialization_class="secret",
+        ttl_seconds=1800,
+    )
+
+    scanner = BalancedStreamScanner(redactor, session_id)
+    output, events = scanner.feed(f"Model output: {value}")
+    tail, tail_events = scanner.flush()
+
+    assert output + tail == f"Model output: {value}"
+    assert events + tail_events == []
+
+
 def test_balanced_scanner_folds_incomplete_and_oversized_candidates(redactor) -> None:
     scanner = BalancedStreamScanner(redactor, "sess_stream")
     output, events = scanner.feed("<APG:v1:secret:" + "x" * 5000)

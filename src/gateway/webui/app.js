@@ -167,7 +167,6 @@ function bindActions() {
   for (const id of ["configuration-name", "configuration-description", "configuration-timeout"]) {
     $("#" + id).addEventListener("input", updateConfigurationFields);
   }
-  $("#configuration-core-guard").addEventListener("change", updateCoreGuard);
   $("#run-detection").addEventListener("click", runDetection);
   $("#confirm-action").addEventListener("click", async () => {
     const action = state.confirmAction;
@@ -875,11 +874,9 @@ function renderDetectorConfiguration() {
   $("#configuration-name").value = uiText(configuration.name);
   $("#configuration-description").value = uiText(configuration.description || "");
   $("#configuration-timeout").value = configuration.flow_timeout_ms ?? "";
-  $("#configuration-core-guard").checked = configuration.core_guard_enabled;
-  for (const id of ["configuration-name", "configuration-description", "configuration-timeout", "configuration-core-guard"]) $("#" + id).disabled = readonly;
+  for (const id of ["configuration-name", "configuration-description", "configuration-timeout"]) $("#" + id).disabled = readonly;
   $("#configuration-tags").innerHTML = (configuration.content_tags || []).map((tag) => `<span class="badge neutral">${escapeHtml(detectorTagLabel(tag))}</span>`).join("");
   $("#configuration-status").innerHTML = `${configuration.is_active ? '<span class="badge green">当前启用</span>' : ""}${configuration.readonly ? '<span class="badge neutral">只读模板</span>' : `<span class="muted">Revision ${configuration.revision}</span>`}`;
-  $("#core-guard-warning").classList.toggle("is-hidden", configuration.core_guard_enabled);
   $("#activate-configuration").disabled = configuration.is_active || detectorConfigurationDirty();
   setIconButton($("#activate-configuration"), configuration.is_active ? "check-circle-2" : "power", configuration.is_active ? "当前检测器配置" : "启用检测器配置");
   setIconButton($("#duplicate-configuration"), "copy", readonly ? "复制并编辑检测器配置" : "复制检测器配置");
@@ -926,19 +923,6 @@ function updateConfigurationFields(event) {
   renderDetectorSaveState();
 }
 
-function updateCoreGuard(event) {
-  if (state.detectorDraft.readonly) return;
-  if (!event.target.checked) {
-    event.target.checked = true;
-    return confirmAction("关闭 APG 内置安全防线", "这会关闭 APG 标记、已知会话 Secret 和流式边界折叠。占位符签名与 session 校验仍保持开启。", () => {
-      state.detectorDraft.core_guard_enabled = false;
-      renderDetectorConfiguration();
-    });
-  }
-  state.detectorDraft.core_guard_enabled = true;
-  renderDetectorConfiguration();
-}
-
 function renderDetectorSaveState() {
   $("#save-configuration").disabled = state.detectorDraft.readonly || !detectorConfigurationDirty();
   $("#activate-configuration").disabled = state.detectorDraft.is_active || detectorConfigurationDirty();
@@ -949,7 +933,6 @@ function detectorConfigurationPayload(configuration) {
     revision: configuration.revision,
     name: configuration.name,
     description: configuration.description || "",
-    core_guard_enabled: configuration.core_guard_enabled,
     flow_timeout_ms: configuration.flow_timeout_ms,
     content_tags: configuration.content_tags || [],
     modules: configuration.modules,

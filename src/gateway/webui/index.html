@@ -221,19 +221,11 @@
             </div>
             <div class="configuration-settings">
               <label><span>总流程超时（ms）</span><input id="configuration-timeout" type="number" min="10" max="120000"></label>
-              <label class="guard-setting">
-                <span class="guard-setting-copy">
-                  <strong>APG 内置安全防线</strong>
-                  <small>独立于预设，检测 APG 标记、已知会话 Secret 和跨流式分片的敏感内容。</small>
-                </span>
-                <span class="toggle"><input id="configuration-core-guard" type="checkbox"><span></span></span>
-              </label>
               <div class="configuration-save-actions">
                 <button class="secondary-button danger-text icon-action-button" type="button" id="delete-configuration" aria-label="删除检测器配置" title="删除检测器配置"><i data-lucide="trash-2"></i></button>
                 <button class="primary-button labeled-icon-button" type="button" id="save-configuration"><i data-lucide="save"></i><span>保存配置</span></button>
               </div>
             </div>
-            <div class="danger-note is-hidden" id="core-guard-warning">内置安全防线已关闭：APG 标记、已知会话 Secret 和流式边界折叠将不再提供完整保护。</div>
           </section>
 
           <section class="detector-section module-pipeline-section">

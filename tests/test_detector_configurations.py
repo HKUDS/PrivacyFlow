@@ -130,14 +130,15 @@ def test_missing_local_model_is_reported_as_unavailable() -> None:
     assert result.diagnostics[0].error == "model_unavailable"
 
 
-def test_core_guard_can_be_disabled_without_changing_materialization_boundary(tmp_path) -> None:
+def test_core_guard_is_always_enabled_and_materialization_boundary_remains_strict(tmp_path) -> None:
     detector_control, _ = control(tmp_path)
-    created = detector_control.create_configuration({"name": "Unsafe", "source_id": "builtin.local_context"})
+    created = detector_control.create_configuration({"name": "Always guarded", "source_id": "builtin.local_context"})
     created["core_guard_enabled"] = False
     saved = detector_control.save_configuration(created["id"], created)
     manager = detector_control.manager_for_configuration(saved["id"])
-    assert manager.core_guard_enabled is False
-    assert "signed_placeholder" not in subtypes(manager, "<APG:v1:secret:fake:fake:123:fake>")
+    assert saved["core_guard_enabled"] is True
+    assert manager.core_guard_enabled is True
+    assert "signed_placeholder" in subtypes(manager, "<APG:v1:secret:fake:fake:123:fake>")
 
     redactor = RedactionEngine(
         manager,
@@ -149,8 +150,8 @@ def test_core_guard_can_be_disabled_without_changing_materialization_boundary(tm
     forged = "<APG:v1:secret:secr_bogus:sess_bogus:1:AAAAAAAAAAAAAAAAAAAA>"
     value, events = redactor.materialize_local_text_with_events(forged, "sess_local")
     assert value == forged
-    assert events[-1]["action"] == "preserve"
-    assert events[-1]["result_code"] != "OK"
+    assert events[0]["action"] == "preserve"
+    assert events[0]["result_code"] != "OK"
 
 
 def test_v1_state_migrates_module_overrides_and_custom_rules(tmp_path) -> None:

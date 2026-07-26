@@ -242,7 +242,7 @@ class DetectorControlPlane:
                 "description": str(payload.get("description") or (source.get("description", "") if source else "")),
                 "revision": 1,
                 "source_template_id": source_id if source and source.get("template") else source.get("source_template_id") if source else None,
-                "core_guard_enabled": bool(source.get("core_guard_enabled", True)) if source else True,
+                "core_guard_enabled": True,
                 "flow_timeout_ms": source.get("flow_timeout_ms", 1500) if source else 1500,
                 "modules": copy.deepcopy(source.get("modules", [])) if source else [],
                 "content_tags": list(source.get("content_tags", [])) if source else [],
@@ -271,7 +271,7 @@ class DetectorControlPlane:
                 **copy.deepcopy(current),
                 "name": payload.get("name", current["name"]),
                 "description": payload.get("description", current.get("description", "")),
-                "core_guard_enabled": payload.get("core_guard_enabled", current.get("core_guard_enabled", True)),
+                "core_guard_enabled": True,
                 "flow_timeout_ms": payload.get("flow_timeout_ms", current.get("flow_timeout_ms")),
                 "modules": payload.get("modules", current["modules"]),
                 "content_tags": payload.get("content_tags", current.get("content_tags", [])),
@@ -340,18 +340,17 @@ class DetectorControlPlane:
 
     def _runtime_config(self, configuration: dict[str, Any]) -> dict[str, Any]:
         modules: list[dict[str, Any]] = []
-        if configuration.get("core_guard_enabled", True):
-            modules.append({
-                "id": "apg_core",
-                "type": "regex_rules",
-                "rules": copy.deepcopy(CORE_RULES),
-                "enabled": True,
-                "fail_open": False,
-                "stream_safe": True,
-            })
+        modules.append({
+            "id": "apg_core",
+            "type": "regex_rules",
+            "rules": copy.deepcopy(CORE_RULES),
+            "enabled": True,
+            "fail_open": False,
+            "stream_safe": True,
+        })
         modules.extend(self._runtime_module(module) for module in configuration["modules"])
         return {
-            "core_guard_enabled": bool(configuration.get("core_guard_enabled", True)),
+            "core_guard_enabled": True,
             "allow_model_download": bool(self.base_config.get("allow_model_download", False)),
             "allow_external_tools": copy.deepcopy(self.base_config.get("allow_external_tools", [])),
             "allow_python_plugins": copy.deepcopy(self.base_config.get("allow_python_plugins", [])),
@@ -402,7 +401,7 @@ class DetectorControlPlane:
             raise DetectorControlError("Configuration name must be between 1 and 80 characters")
         value["name"] = name
         value["description"] = str(value.get("description", "")).strip()[:240]
-        value["core_guard_enabled"] = bool(value.get("core_guard_enabled", True))
+        value["core_guard_enabled"] = True
         timeout = value.get("flow_timeout_ms")
         value["flow_timeout_ms"] = self._bounded_int(timeout, 10, 120_000, "flow_timeout_ms", allow_none=True)
         modules = value.get("modules")

@@ -86,7 +86,6 @@ def test_webui_assets_and_admin_api_require_no_authentication(tmp_path) -> None:
         assert "Detectors" in i18n_js.text
         assert "apg:localechange" in i18n_js.text
         assert "APG built-in safety guard" in i18n_js.text
-        assert "Independent of presets" in i18n_js.text
         assert "ANTHROPIC_BASE_URL" in app_js.text
         assert "export ANTHROPIC_MODEL=deepseek-v4-pro[1m]" in app_js.text
         assert "export ANTHROPIC_DEFAULT_SONNET_MODEL=deepseek-v4-pro[1m]" in app_js.text
@@ -170,9 +169,9 @@ def test_webui_assets_and_admin_api_require_no_authentication(tmp_path) -> None:
         assert ".brand-mark .lucide { display: block; width: 28px; height: 28px;" in styles.text
         assert ".module-symbol .lucide { display: block; width: 28px; height: 28px;" in styles.text
         assert styles.text.count("transform: translate(1px, 1px);") == 2
-        assert "APG 内置安全防线" in page.text
-        assert "独立于预设" in page.text
-        assert ">APG 核心保护<" not in page.text
+        assert "configuration-core-guard" not in page.text
+        assert "core-guard-warning" not in page.text
+        assert "updateCoreGuard" not in app_js.text
         icon_only_buttons = [
             button
             for button in re.findall(r'<button class="[^"]+"[^>]*>', page.text)
@@ -713,7 +712,7 @@ def test_detector_control_hot_reload_and_persistence(tmp_path) -> None:
                 "revision": configuration["revision"],
                 "name": configuration["name"],
                 "description": configuration["description"],
-                "core_guard_enabled": configuration["core_guard_enabled"],
+                "core_guard_enabled": False,
                 "flow_timeout_ms": configuration["flow_timeout_ms"],
                 "content_tags": configuration["content_tags"],
                 "modules": configuration["modules"],
@@ -721,6 +720,7 @@ def test_detector_control_hot_reload_and_persistence(tmp_path) -> None:
         )
         assert saved.status_code == 200
         configuration = saved.json()
+        assert configuration["core_guard_enabled"] is True
         assert configuration["modules"][0]["id"] == "custom_rules"
 
         stale = client.put(
