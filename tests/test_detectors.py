@@ -9,12 +9,16 @@ def subtypes(text: str) -> set[str]:
 
 
 def test_api_key_detected() -> None:
-    assert "openai_api_key" in subtypes("key sk-proj-abcdefghijklmnopqrstuvwxyz123456")
+    assert "api_key" in subtypes("key sk-proj-abcdefghijklmnopqrstuvwxyz123456")
 
 
-def test_synthetic_secret_prefixes_detected() -> None:
-    found = subtypes("Key prefix: sk-apgtest\nJWT prefix: eyJhbGci\nDB pass apgtest-db-pass")
-    assert "openai_api_key" in found
+def test_realistic_synthetic_secret_formats_detected() -> None:
+    found = subtypes(
+        "Key: sk-apgtest-111111111111111111111111111111111111\n"
+        "JWT: eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c\n"
+        "DATABASE_URL=postgres://admin:apgtest-db-pass@localhost:5432/app"
+    )
+    assert "api_key" in found
     assert "jwt" in found
     assert "database_url" in found
 

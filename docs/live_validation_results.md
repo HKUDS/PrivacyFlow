@@ -2,25 +2,35 @@
 
 ## Uniform-Tool 15-by-2 Matrix
 
-Date: 2026-07-26
+Date: 2026-07-28
 
 All 15 scenarios keep each real coding agent on one unpruned native-tool configuration. There are no scenario-specific file permissions, validator-only Bash patterns, required tool choices, or required action sequences. The harness requests `Read`, `Glob`, `Grep`, `Edit`, `Write`, and `Bash`; the effective Claude Code evidence uses Read/Bash/Write/Edit, while the OpenCode evidence uses read/bash/write/glob. Web fetching, external directories, and ordinary direct outbound network access remain uniformly isolated as test-environment boundaries. The provider key exists only in the APG server process.
 
 Current effective result:
 
-- The runner used its new configurable concurrent scheduler with `concurrency=4`. Each case retained an isolated repository, APG process, port, audit log, and SQLite database; completion progress was concurrent while `summary.json` retained deterministic Agent/scenario order.
-- Claude Code `2.1.218` through APG's local Anthropic Messages endpoint to the real DeepSeek OpenAI Chat Completions API: `15/15`.
-- OpenCode `1.17.18` through APG's OpenAI Chat Completions endpoint to the same real DeepSeek API: `15/15`.
-- All 30 runs passed task-completion and privacy conditions. The matrix produced 177 API streams, 3,725 audited upstream replacements, and 227 successful local materializations: 218 into `local_tool` and 9 into the new transparent `local_user` sink.
-- Raw canary leak files, final APG handles, failed materializations, omitted audit details, upstream private-path leaks, and provider-key file hits were all zero. None of the final answers happened to reproduce a complete canary in this run; all final-value authorization checks passed.
-- Of the 177 streams, 174 completed normally and three ended with the runner's allowed early `client_disconnected` state after the task result was available. Parse errors, stream parse errors, tool-argument JSON errors, and protocol failures were zero. The isolated databases contain 103 per-run unique replacement/materialization representation pairs.
+- The runner used its configurable concurrent scheduler with `concurrency=4` and `retries=1`. Each case retained an isolated repository, APG process, port, audit log, and SQLite database; completion progress was concurrent while `summary.json` retained deterministic Agent/scenario order. Failed combinations are retried independently and record `attempt_count`.
+- Claude Code `2.1.220` through APG's local Anthropic Messages endpoint and explicit Anthropic-to-OpenAI adapter to the configured OpenAI-compatible e2ez profile, model `gpt-5.6-terra`: `15/15`.
+- OpenCode `1.17.18` through APG's OpenAI Chat Completions endpoint to the same profile and model: `15/15`.
+- The effective 30 runs passed task-completion and privacy conditions. OpenCode `sanitized_customer_reply` passed on its second attempt; the other 29 combinations passed on their first effective attempt. The runs produced 125 API streams, 1,377 audited upstream replacements, and 113 successful `local_tool` materializations.
+- Raw canary leak files, final APG handles, failed materializations, omitted audit details, upstream private-path leaks, and provider-key file hits were all zero. All final-value authorization checks passed.
+- All 125 streams completed without an allowed disconnect. Parse errors, stream parse errors, tool-argument JSON errors, and protocol failures were zero. The isolated databases contain 62 per-run unique replacement/materialization representation pairs.
+- The first Claude attempt exposed a provider-specific adapter bug: APG silently rewrote any non-DeepSeek Anthropic model name to `deepseek-v4-flash`, which the selected upstream rejected with `404`. APG now preserves the requested model across protocol conversion. The runner also uses the selected `--model` for both Agents and passes only `ANTHROPIC_AUTH_TOKEN`, avoiding Claude Code's conflicting-auth warning. Protocol and runner regressions cover both fixes.
+- Large Agent requests no longer invoke an enabled local model once per tool-schema or protocol-metadata string. Deterministic rules still inspect those fields, while expensive model inference is restricted to content-bearing prompt/response fields and diagnostics are aggregated by module.
+- The live run exposed and verified fixes for three detector boundaries: grep-style `path:content` output no longer absorbs a credential into a path alias, zero-character audit previews now remain fully hidden, and split credentials in hex-dump ASCII gutters keep their high-signal key/JWT fragments protected. Hex columns are also excluded from phone-number detection.
+- Reserved placeholder-format examples are now treated consistently by the live assertion and APG detector. A model's literal `<APG:v1:secret:...>` format example is not mistaken for an unresolved signed handle, while real or malformed non-example APG markers still fail the assertion.
 - The upstream-format follow-up separates `openai_chat_completions`, `openai_responses`, and `anthropic_messages`. Matching Anthropic `/v1/messages` requests, responses, tool inputs, errors, and SSE stay in native Anthropic form while still using APG's leak and materialization guards. Named multi-profile upstream storage, a randomly generated local Agent key, and the unauthenticated loopback management plane are also covered.
-- The WebUI now serves locally pinned Lucide `1.27.0` icons under the existing self-only CSP. Desktop `1440×1000` and mobile `390×844` renders had no page-width overflow; all 33 rendered icons were non-focusable decorative SVGs, and every icon-only action retained a localized accessible name and tooltip.
-- The full offline regression after transparent user restoration and concurrent-runner changes is `253 passed`; the deterministic E2E suite is `14/14`.
-- Exact synthetic fixture contents, compact trajectories, complete terminal-visible model text, tool inputs, tool outputs, errors, step token usage, per-run counters, changed files, and artifact paths are exported to `docs/live_agent_evidence.js` and rendered by `docs/live_agent_scenarios.html`. The current export comes from this single complete concurrent matrix and covers all 30 transcripts, 419 visible events, and 1,589 joined operation annotations. Model text uses locally vendored, sanitized GFM rendering; tool input/output remains verbatim. Synthetic materialized values are retained only inside this local validation artifact; the active provider credential is absent.
+- The WebUI now presents local models as a one-input **Add and prepare** workflow. Runtime packages are atomically installed into a versioned `.apg/runtimes/model-runtime-v1/` environment, while a persistent offline Worker owns model loading and inference without receiving provider, Agent, signing, or Hugging Face credentials. Desktop `1440×1000` and mobile `390×844` renders had no page-width overflow or console errors; the mobile document and body widths both remained exactly 390px.
+- The final full offline regression is `338 passed`, with the explicit networked CPU tiny-model Worker integration test deselected. The deterministic E2E suite is `14/14`.
+- Sanitized fixture structure, compact trajectories, terminal-visible model text, tool inputs, tool outputs, errors, step token usage, per-run counters, and changed-file metadata are exported to `docs/live_agent_evidence.js` and rendered by `docs/live_agent_scenarios.html`. The export covers all 30 passing transcripts, 315 visible events, and 592 joined operation annotations. Protected fixture values, APG placeholders, token-like strings, and machine-local artifact paths are replaced during export; the original local run artifacts remain outside the repository and the active provider credential is absent.
 
-Evidence: `/private/tmp/apg-live-agents-20260726-transparent-concurrent/summary.json`
-(`passed=true`, `execution_count=30`, `concurrency=4`).
+Source evidence:
+
+- `<local-run-artifacts>/apg-open-source-ready-live/summary.json` (effective OpenCode `15/15`);
+- `<local-run-artifacts>/apg-open-source-ready-claude-rerun/summary.json` (`passed=true`, Claude `15/15`).
+
+The checked-in evidence exporter applies the later passing Claude summary over
+the diagnostic first attempt. Thirty standalone artifact leak assertions also
+returned `ok=true`.
 
 ## API-Key Assignment Edge Matrix
 
@@ -38,9 +48,9 @@ The assertion now checks semantic content, and repository `.log` paths under `lo
 
 Evidence:
 
-- `/private/tmp/apg-live-api-key-edges-opencode-20260723/summary.json`
-- `/private/tmp/apg-live-api-key-edges-claude-20260723/summary.json`
-- `/private/tmp/apg-live-api-key-edges-claude-rerun-20260723/summary.json`
+- `<local-run-artifacts>/apg-live-api-key-edges-opencode-20260723/summary.json`
+- `<local-run-artifacts>/apg-live-api-key-edges-claude-20260723/summary.json`
+- `<local-run-artifacts>/apg-live-api-key-edges-claude-rerun-20260723/summary.json`
 
 ## Historical Natural-Task 12-by-2 Matrix
 
@@ -63,9 +73,9 @@ Current real results:
 
 Evidence:
 
-- `/private/tmp/apg-live-natural-v2-claude-anthropic-20260723/summary.json`
-- `/private/tmp/apg-live-natural-v2-claude-safe-debug-rerun-20260723/summary.json`
-- `/private/tmp/apg-live-natural-v2-opencode-openai-20260723/summary.json`
+- `<local-run-artifacts>/apg-live-natural-v2-claude-anthropic-20260723/summary.json`
+- `<local-run-artifacts>/apg-live-natural-v2-claude-safe-debug-rerun-20260723/summary.json`
+- `<local-run-artifacts>/apg-live-natural-v2-opencode-openai-20260723/summary.json`
 
 ## Default-Persistent Mapping Retention
 
@@ -77,7 +87,7 @@ Date: 2026-07-22
 - The isolated live-agent database used the default disabled policy and retained all 12 active mappings without idle or maximum expiry deadlines.
 - Existing tombstones were not revived. The administration API and WebUI now distinguish mappings that expired under an earlier policy from mappings that were manually revoked.
 
-Evidence: `/private/tmp/apg-retention-live/summary.json` and the isolated state database below that directory.
+Evidence: `<local-run-artifacts>/apg-retention-live/summary.json` and the isolated state database below that directory.
 
 ## Operation-Level Audit Pairing
 
@@ -89,7 +99,7 @@ Date: 2026-07-22
 - Failed materializations, omitted operation details, upstream private-path leaks, safe-log canary hits, final-answer canary/APG-handle hits, and provider-key file hits were all zero.
 - A separate live DeepSeek tool call was inspected through the WebUI: masked and temporarily revealed detail views used the same `pv_...` id in both directions, disabling raw display cleared the DOM immediately, refresh restored the hidden default, and desktop/390px layouts had no horizontal overflow.
 
-Evidence: `/private/tmp/apg-readable-audit-live/summary.json`.
+Evidence: `<local-run-artifacts>/apg-readable-audit-live/summary.json`.
 
 ## Tool-Argument JSON And Exact-Copy Regression
 
@@ -102,7 +112,7 @@ Date: 2026-07-22
 - The successful Claude exact-copy run completed 4 streams and 12 local materializations; OpenCode completed 4 streams and 10 materializations. Both had zero upstream canary hits, zero final APG handles, and zero provider-key file hits.
 - Two preceding attempts exposed and then verified fixes for shell `export KEY=value` detection and line-number-decorated Claude Read output. Both attempts still produced byte-identical local files, but correctly failed the upstream leak assertion until the detector gap was closed.
 
-Evidence: `/private/tmp/apg-tool-json-fix-live/summary.json`, `/private/tmp/apg-exact-sensitive-copy-live-final/summary.json`, and `/private/tmp/apg-exact-sensitive-copy-opencode-final/summary.json`.
+Evidence: `<local-run-artifacts>/apg-tool-json-fix-live/summary.json`, `<local-run-artifacts>/apg-exact-sensitive-copy-live-final/summary.json`, and `<local-run-artifacts>/apg-exact-sensitive-copy-opencode-final/summary.json`.
 
 The exact-copy change was later included in the complete natural-task 12-by-2 matrix documented above.
 
@@ -119,7 +129,7 @@ After removing the live-agent `prompt_injection` case, the current matrix was ru
 - First matrix run: 22 executions, 68 streams, and 57 materializations.
 - Raw canary leak files, final-answer leaks, APG handles in final answers, and provider-key file hits: `0`.
 
-Evidence: `/private/tmp/apg-live-11x2-latest/summary.json` and `/private/tmp/apg-live-11x2-pii-rerun/summary.json`.
+Evidence: `<local-run-artifacts>/apg-live-11x2-latest/summary.json` and `<local-run-artifacts>/apg-live-11x2-pii-rerun/summary.json`.
 
 ## Reproducible Claude Code And OpenCode Runner
 
@@ -152,7 +162,7 @@ The expanded run exposed and fixed issues that the original three-scenario smoke
 - Child paths received unrelated aliases instead of preserving the workspace hierarchy. Existing parent aliases now produce stable child suffixes such as `/workspace/project-hash/scripts/validate_secret.py`.
 - Live assertions now verify actual tool calls, exact workspace changes, validator output, generated-file contents, stream termination, and provider-key absence instead of defaulting non-secret scenarios to success.
 
-Final evidence is local-only at `/private/tmp/apg-live-final-claude-r2/summary.json` and `/private/tmp/apg-live-final-opencode-r2/summary.json`.
+Final evidence is local-only at `<local-run-artifacts>/apg-live-final-claude-r2/summary.json` and `<local-run-artifacts>/apg-live-final-opencode-r2/summary.json`.
 
 ## Earlier Focused Stateful Streaming And Tool Calls
 
@@ -171,7 +181,7 @@ The final validation used two real coding agents and the same real DeepSeek API 
 
 The real agents' own local JSON trajectories contain the materialized tool argument. This is the documented local-transcript boundary: APG controls remote upload and downstream model-visible text, not logging performed by a trusted local agent after it receives a tool call.
 
-Evidence is local-only at `/private/tmp/apg-stream-real-agents-final/summary.json` with the upstream log, safe audit log, and both agent trajectories beside it.
+Evidence is local-only at `<local-run-artifacts>/apg-stream-real-agents-final/summary.json` with the upstream log, safe audit log, and both agent trajectories beside it.
 
 ## Claude Code Roleplay Agent Validation
 

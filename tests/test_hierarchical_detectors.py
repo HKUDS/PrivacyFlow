@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Iterable
+from pathlib import Path
 
 import pytest
 
@@ -8,12 +9,16 @@ from gateway.detectors.base import Detector
 from gateway.detectors.findings import Finding, SourceBlock
 from gateway.detectors.manager import HierarchicalDetectorManager, extract_text_blocks
 from gateway.detectors.models.base_model_detector import BaseModelDetector, ModelDetectorConfig
-from gateway.detectors.normalizer import NormalizedText
+from gateway.detectors.normalizer import NormalizedText, normalize_with_mapping
 from gateway.detectors.scoring import FindingAggregator
 
 
 def scan(text: str):
     return HierarchicalDetectorManager().scan_text(text)
+
+
+def scan_with_entropy(text: str):
+    return HierarchicalDetectorManager(detectors_config={"preset": "strict"}).scan_text(text)
 
 
 def subtypes(text: str) -> set[str]:
@@ -38,7 +43,15 @@ def test_jwt_detected_and_validated() -> None:
 
 
 def test_bearer_token_detected() -> None:
-    assert "bearer_token" in subtypes("Authorization: Bearer abcdefghijklmnopqrstuvwxyz1234567890")
+    text = "Authorization: Bearer abcdefghijklmnopqrstuvwxyz1234567890"
+    finding = by_subtype(text, "bearer_token")
+    assert text[finding.original_start : finding.original_end] == "abcdefghijklmnopqrstuvwxyz1234567890"
+
+
+def test_cookie_finding_covers_value_only() -> None:
+    text = "sessionid=abcdefghijklmnopqrstuvwxyz1234567890"
+    finding = by_subtype(text, "cookie")
+    assert text[finding.original_start : finding.original_end] == "abcdefghijklmnopqrstuvwxyz1234567890"
 
 
 def test_env_api_key_assignment_detected() -> None:
@@ -54,11 +67,11 @@ def test_env_assignment_finding_covers_value_only() -> None:
 
     exported = 'export SERVICE_TOKEN="secret-value"'
     exported_finding = by_subtype(exported, "env_assignment")
-    assert exported[exported_finding.original_start : exported_finding.original_end] == '"secret-value"'
+    assert exported[exported_finding.original_start : exported_finding.original_end] == "secret-value"
 
     read_output = '    42\u2192export SERVICE_TOKEN="secret-value"'
     read_finding = by_subtype(read_output, "env_assignment")
-    assert read_output[read_finding.original_start : read_finding.original_end] == '"secret-value"'
+    assert read_output[read_finding.original_start : read_finding.original_end] == "secret-value"
 
 
 @pytest.mark.parametrize(
@@ -69,6 +82,15 @@ def test_env_assignment_finding_covers_value_only() -> None:
         "SERVICE_TOKEN='configured'",
         "DATABASE_URL=${DATABASE_URL}",
         "API_KEY=your-openai-api-key-here",
+        "TOKEN_COUNT=42",
+        "MAX_OUTPUT_TOKEN_COUNT=650000",
+        "SERVICE_TOKEN_TIMEOUT=30",
+        "OPENAI_API_KEY_NAME=primary",
+        "PRIVATE_KEY_PATH=keys/service.pem",
+        "api_key=os.getenv('API_KEY')",
+        "api_key=body.get('api_key', '')",
+        "signing_secret == 'configured'",
+        "api_key=effective_api_key,",
     ],
 )
 def test_env_assignment_ignores_status_references_and_placeholders(text: str) -> None:
@@ -80,8 +102,11 @@ def test_env_assignment_ignores_status_references_and_placeholders(text: str) ->
     [
         ("API_KEY=x", "x"),
         ("lowercase_api_key=real-short-value", "real-short-value"),
-        ('SERVICE_TOKEN="secret value with spaces"', '"secret value with spaces"'),
+        ('SERVICE_TOKEN="secret value with spaces"', "secret value with spaces"),
         ("PASSWORD=p@ssword#part", "p@ssword#part"),
+        ("AUTH_TOKEN_VALUE=real-token-value", "real-token-value"),
+        ("PASSWORD_HASH=synthetic-hash-value", "synthetic-hash-value"),
+        ('api_key="short-real-secret"', "short-real-secret"),
         ("TOKEN=secret-value; retry=true; status=401", "secret-value"),
     ],
 )
@@ -100,8 +125,38 @@ def test_email_detected() -> None:
     assert "email" in subtypes("howard@example.com")
 
 
+def test_ssh_public_key_comment_is_not_email() -> None:
+    text = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAICGbGKiJ8TBhWnykh1AW2xLIPjuBdP3MbpvNWLkhB developer@workstation.local"
+    assert "email" not in subtypes(text)
+
+
+def test_login_pair_is_classified_as_credentials() -> None:
+    findings = scan("user123@cluster.example.org\nSyntheticPass649")
+    assert {finding.subtype for finding in findings} == {"credential_username", "credential_password"}
+
+
+def test_decoded_prefix_keeps_later_original_spans_exact() -> None:
+    text = "节点：%20 🇭🇰\\u0020\nalice@example.com"
+    normalized = normalize_with_mapping(text)
+    start = normalized.normalized.index("alice@example.com")
+    original_start, original_end = normalized.original_span(start, start + len("alice@example.com"))
+    assert text[original_start:original_end] == "alice@example.com"
+
+
 def test_phone_detected() -> None:
     assert "phone" in subtypes("+1 (415) 555-1212")
+    assert "phone" in subtypes("电话：2345 6789")
+    assert "phone" in subtypes("phone: 12345678")
+
+
+@pytest.mark.parametrize("text", ["20260728", "build=12345678", "revision 38154239"])
+def test_unformatted_eight_digit_values_are_not_phone_numbers(text: str) -> None:
+    assert "phone" not in subtypes(text)
+
+
+def test_operational_token_count_is_not_a_secret_assignment() -> None:
+    assert "env_assignment" not in subtypes("CLAUDE_CODE_MAX_OUTPUT_TOKENS=650000")
+    assert "env_assignment" in subtypes("ANTHROPIC_AUTH_TOKEN=synthetic-secret-value")
 
 
 def test_hong_kong_address_detected() -> None:
@@ -127,25 +182,78 @@ def test_users_env_path_uses_the_same_local_path_policy() -> None:
 
 
 def test_high_entropy_token_uses_fixed_risk_without_context() -> None:
-    finding = by_subtype("value abcdefghijklmnopqrstuvwxyzABCDEFGH1234567890", "high_entropy_token")
+    finding = next(
+        finding
+        for finding in scan_with_entropy("value abcdefghijklmnopqrstuvwxyzABCDEFGH1234567890")
+        if finding.subtype == "high_entropy_token"
+    )
     assert finding.risk == "medium"
     assert "sensitive_context" not in finding.metadata
     assert "weak_context" not in finding.metadata
 
 
-def test_high_entropy_sha256_uses_same_context_free_risk() -> None:
-    finding = by_subtype("SHA256 abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890", "high_entropy_token")
-    assert finding.risk == "medium"
+@pytest.mark.parametrize(
+    "text",
+    [
+        "SHA256 abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890",
+        "checksum=abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890",
+        "commit abcdef1234567890abcdef1234567890abcdef12",
+    ],
+)
+def test_labeled_digests_are_not_high_entropy_secrets(text: str) -> None:
+    assert "high_entropy_token" not in {finding.subtype for finding in scan_with_entropy(text)}
 
 
 def test_plain_schema_url_is_not_high_entropy_secret() -> None:
-    assert "high_entropy_token" not in subtypes("schema: https://json-schema.org/draft-07/schema#")
+    assert "high_entropy_token" not in {
+        finding.subtype for finding in scan_with_entropy("schema: https://json-schema.org/draft-07/schema#")
+    }
 
 
 def test_repository_script_path_is_not_high_entropy_secret() -> None:
-    assert "high_entropy_token" not in subtypes("run python scripts/validate_secret.py VALUE")
-    assert "high_entropy_token" not in subtypes("ripts/validate_secret.py")
-    assert "high_entropy_token" not in subtypes("inspect logs/assignment_edge.log")
+    assert "high_entropy_token" not in {finding.subtype for finding in scan_with_entropy("run python scripts/validate_secret.py VALUE")}
+    assert "high_entropy_token" not in {finding.subtype for finding in scan_with_entropy("ripts/validate_secret.py")}
+    assert "high_entropy_token" not in {finding.subtype for finding in scan_with_entropy("inspect logs/assignment_edge.log")}
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "--kb-names calculus_volume_2_web_13_238",
+        "CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS=1",
+        "google/gemini-3-flash-preview",
+        "/opt/cisco/secureclient/bin/vpn",
+        "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAICGbGKiJ8TBhWnykh1AW2xLIPjuBdP3MbpvNWLkhB developer@workstation.local",
+    ],
+)
+def test_structured_identifiers_and_ssh_public_keys_are_not_high_entropy_tokens(text: str) -> None:
+    assert "high_entropy_token" not in {finding.subtype for finding in scan_with_entropy(text)}
+
+
+def test_realistic_benign_shell_fixture_has_no_findings() -> None:
+    text = (Path(__file__).parent / "fixtures" / "detector_shell_benign.txt").read_text(encoding="utf-8")
+    assert scan(text) == []
+    assert scan_with_entropy(text) == []
+
+
+def test_realistic_sensitive_shell_fixture_has_precise_findings() -> None:
+    text = (Path(__file__).parent / "fixtures" / "detector_shell_sensitive.txt").read_text(encoding="utf-8")
+    findings = scan(text)
+    observed = [(finding.subtype, text[finding.original_start : finding.original_end]) for finding in findings]
+    expected = [
+        ("local_path", "~/.config/mihomo"),
+        ("api_key", "sk-syntheticABCDEFGHIJKLMNOPQRSTUV"),
+        ("access_url_token", "8pySFiZlBQ5b0Synthetic"),
+        ("local_path", "~/.ssh/id_ed25519.pub"),
+        ("credential_username", "u3629000@hpc2021.example"),
+        ("credential_password", "SyntheticPass649"),
+        ("api_key", "sk-syntheticZYXWVUTSRQPONMLKJIHGF"),
+    ]
+    assert observed == expected
+    assert [
+        (finding.subtype, text[finding.original_start : finding.original_end])
+        for finding in scan_with_entropy(text)
+    ] == expected
 
 
 def test_local_path_span_excludes_sentence_punctuation() -> None:
@@ -155,7 +263,7 @@ def test_local_path_span_excludes_sentence_punctuation() -> None:
 
 
 def test_fake_context_does_not_downgrade_provider_token() -> None:
-    finding = by_subtype("fake example key sk-proj-abcdefghijklmnopqrstuvwxyz123456", "openai_api_key")
+    finding = by_subtype("fake example key sk-proj-abcdefghijklmnopqrstuvwxyz123456", "api_key")
     assert finding.risk == "critical"
 
 
@@ -216,7 +324,7 @@ def test_model_findings_merge_with_rule_findings() -> None:
 
 def test_overlapping_jwt_and_entropy_merge_into_one() -> None:
     token = "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c"
-    findings = [f for f in scan("TOKEN=" + token) if f.subtype == "jwt"]
+    findings = [f for f in scan_with_entropy("TOKEN=" + token) if f.subtype == "jwt"]
     assert len(findings) == 1
     assert "heuristic.entropy_context" in findings[0].detectors
 
@@ -280,7 +388,7 @@ def test_multiple_weak_signals_raise_risk() -> None:
 
 def test_detector_output_suggests_action_but_does_not_redact() -> None:
     text = "sk-proj-abcdefghijklmnopqrstuvwxyz123456"
-    finding = by_subtype(text, "openai_api_key")
+    finding = by_subtype(text, "api_key")
     assert finding.suggested_action == "redact"
     assert text[finding.original_start : finding.original_end].startswith("sk-proj-")
 
@@ -296,6 +404,18 @@ def test_redaction_marker_detected_in_file_write_content() -> None:
     findings = manager.scan_text("OPENAI_API_KEY=<APG_REDACTED:SECRET>", kind="file_write_content")
     finding = next(f for f in findings if f.subtype == "redaction_marker")
     assert finding.suggested_action == "block"
+
+
+def test_incomplete_apg_marker_does_not_span_lines() -> None:
+    assert "redaction_marker" not in subtypes('print("<APG")\nif value > limit: pass')
+
+
+@pytest.mark.parametrize(
+    "example",
+    ["<APG:v1:pii:...>", "<APG:v1:secret:...>", "<APG_PII:handle>"],
+)
+def test_canonical_placeholder_format_examples_are_not_findings(example: str) -> None:
+    assert scan(example) == []
 
 
 def test_json_extraction_preserves_pointer() -> None:

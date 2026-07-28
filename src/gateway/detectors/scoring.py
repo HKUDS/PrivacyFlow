@@ -34,7 +34,7 @@ def score_finding(finding: Finding) -> Finding:
     risk = finding.risk
     suggested_action = finding.suggested_action
 
-    if finding.subtype in {"private_key", "openai_api_key", "github_token", "slack_token", "credit_card"}:
+    if finding.subtype in {"private_key", "api_key", "github_token", "slack_token", "credit_card"}:
         risk = "critical"
         suggested_action = "block" if finding.subtype == "private_key" else "redact"
     elif finding.subtype == "database_url" and "database_url_password" in finding.validators:
@@ -81,10 +81,12 @@ def _raise_risk(risk: str) -> str:
 def _finding_priority(finding: Finding) -> tuple[int, int]:
     subtype_priority = {
         "private_key": 100,
-        "openai_api_key": 95,
+        "api_key": 95,
         "github_token": 95,
         "slack_token": 95,
         "database_url": 92,
+        "credential_password": 91,
+        "access_url_token": 89,
         "jwt": 90,
         "bearer_token": 88,
         "redaction_marker": 86,
@@ -92,9 +94,9 @@ def _finding_priority(finding: Finding) -> tuple[int, int]:
         "credit_card": 82,
         "credential_file": 81,
         "local_path": 80,
+        "env_assignment": 78,
+        "cookie": 76,
         "high_entropy_token": 70,
-        "env_assignment": 55,
-        "cookie": 54,
     }.get(finding.subtype, 50)
     return (
         subtype_priority,

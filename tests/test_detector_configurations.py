@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+from pathlib import Path
 
 import pytest
 
@@ -33,13 +34,13 @@ def test_content_templates_detect_declared_categories(tmp_path) -> None:
     comprehensive = detector_control.manager_for_configuration("builtin.comprehensive")
     text = "sk-proj-abcdefghijklmnopqrstuvwxyz123456 alice@example.com /Users/alice/private/project/.env"
 
-    assert "openai_api_key" in subtypes(credentials, text)
+    assert "api_key" in subtypes(credentials, text)
     assert "email" not in subtypes(credentials, text)
     assert "email" in subtypes(personal, text)
-    assert "openai_api_key" not in subtypes(personal, text)
+    assert "api_key" not in subtypes(personal, text)
     assert "local_path" in subtypes(local_context, text)
     assert "email" not in subtypes(local_context, text)
-    assert {"openai_api_key", "email", "local_path"} <= subtypes(comprehensive, text)
+    assert {"api_key", "email", "local_path"} <= subtypes(comprehensive, text)
     path_config = detector_control.get_configuration("builtin.local_context")["modules"][0]["config"]
     assert detector_control.get_configuration("builtin.local_context")["modules"][0]["name"] == "本地路径"
     assert path_config["path_risk"] == "medium"
@@ -51,6 +52,64 @@ def test_content_templates_detect_declared_categories(tmp_path) -> None:
     diagnostics = comprehensive.diagnostics()
     assert [item["id"] for item in diagnostics] == ["apg_core", "credentials", "personal_data", "local_paths", "entropy", "personal_model"]
     assert diagnostics[-1]["status"] == "disabled"
+
+
+def test_builtin_presets_are_precise_on_realistic_shell_fixtures(tmp_path) -> None:
+    detector_control, _ = control(tmp_path)
+    fixture_dir = Path(__file__).parent / "fixtures"
+    benign = (fixture_dir / "detector_shell_benign.txt").read_text(encoding="utf-8")
+    sensitive = (fixture_dir / "detector_shell_sensitive.txt").read_text(encoding="utf-8")
+
+    assert detector_control.manager_for_configuration("builtin.comprehensive").scan_findings(benign) == []
+
+    credentials = subtypes(detector_control.manager_for_configuration("builtin.credentials"), sensitive)
+    personal = subtypes(detector_control.manager_for_configuration("builtin.personal"), sensitive)
+    local_context = subtypes(detector_control.manager_for_configuration("builtin.local_context"), sensitive)
+    comprehensive = subtypes(detector_control.manager_for_configuration("builtin.comprehensive"), sensitive)
+
+    assert credentials == {"api_key", "access_url_token", "credential_password"}
+    assert personal == {"credential_username"}
+    assert local_context == {"local_path"}
+    assert comprehensive == {
+        "api_key",
+        "access_url_token",
+        "credential_username",
+        "credential_password",
+        "local_path",
+    }
+    credential_rules = next(
+        module["config"]["rules"]
+        for module in detector_control.get_configuration("builtin.credentials")["modules"]
+        if module["type"] == "regex"
+    )
+    assert len(credential_rules) == 13
+    assert not any("apg_test" in rule["id"] or rule["id"].endswith("_prefix") for rule in credential_rules)
+
+
+def test_local_model_availability_requires_cached_model_when_downloads_are_disabled(tmp_path, monkeypatch) -> None:
+    applied = []
+    detector_control = DetectorControlPlane(
+        {},
+        str(tmp_path / "detector-control.json"),
+        applied.append,
+        model_path_resolver=lambda *_args: None,
+    )
+    monkeypatch.setattr(detector_control, "_module_available", lambda _package: True)
+    module = next(
+        item
+        for item in detector_control.get_configuration("builtin.personal")["modules"]
+        if item["type"] == "local_model"
+    )
+    assert module["runtime_available"] is False
+    assert module["local_model_id"].startswith("lmodel_")
+
+    detector_control.model_path_resolver = lambda *_args: str(tmp_path / "cached-model")
+    module = next(
+        item
+        for item in detector_control.get_configuration("builtin.personal")["modules"]
+        if item["type"] == "local_model"
+    )
+    assert module["runtime_available"] is True
 
 
 def test_copy_edit_activate_and_atomic_revision(tmp_path) -> None:
@@ -80,25 +139,25 @@ def test_template_module_switch_persists_and_hot_applies(tmp_path) -> None:
     assert detector_control.active_configuration()["id"] == configuration_id
     assert next(
         module for module in detector_control.active_configuration()["modules"] if module["id"] == module_id
-    )["enabled"] is True
+    )["enabled"] is False
 
     applied_before = len(applied)
-    updated = detector_control.set_template_module_enabled(configuration_id, module_id, False)
+    updated = detector_control.set_template_module_enabled(configuration_id, module_id, True)
     assert updated["readonly"] is True
-    assert next(module for module in updated["modules"] if module["id"] == module_id)["enabled"] is False
+    assert next(module for module in updated["modules"] if module["id"] == module_id)["enabled"] is True
     assert len(applied) == applied_before + 1
     assert applied[-1].hierarchical.flow.preset == configuration_id
 
     state_path = tmp_path / "detector-control.json"
     state = json.loads(state_path.read_text(encoding="utf-8"))
-    assert state["template_module_overrides"] == {configuration_id: {module_id: False}}
+    assert state["template_module_overrides"] == {configuration_id: {module_id: True}}
 
     reloaded, _ = control(tmp_path)
     restored = reloaded.get_configuration(configuration_id)
-    assert next(module for module in restored["modules"] if module["id"] == module_id)["enabled"] is False
+    assert next(module for module in restored["modules"] if module["id"] == module_id)["enabled"] is True
 
-    reset = reloaded.set_template_module_enabled(configuration_id, module_id, True)
-    assert next(module for module in reset["modules"] if module["id"] == module_id)["enabled"] is True
+    reset = reloaded.set_template_module_enabled(configuration_id, module_id, False)
+    assert next(module for module in reset["modules"] if module["id"] == module_id)["enabled"] is False
     state = json.loads(state_path.read_text(encoding="utf-8"))
     assert state["template_module_overrides"] == {}
 
@@ -272,6 +331,115 @@ def test_v2_copied_template_upgrades_historical_builtin_rule_without_losing_acti
         reloaded.manager_for_configuration(restored["id"]),
         "OPENAI_API_KEY_SET=true/false",
     )
+
+
+def test_v2_copied_template_upgrades_previous_value_boundaries(tmp_path) -> None:
+    previous_env_pattern = (
+        r"(?<![A-Z0-9_])(?:export[ \t]+)?[A-Z0-9_]*(?:API_KEY|TOKEN|SECRET|PASSWORD|PASSWD|PASS|CREDENTIAL|PRIVATE_KEY|DATABASE_URL)"
+        r"[A-Z0-9_]*[ \t]*=[ \t]*(?P<value>\"(?:\\.|[^\"\\\r\n])*\"|'(?:\\.|[^'\\\r\n])*'|[^\s;]+)"
+    )
+    previous_bearer_pattern = r"\bAuthorization\s*:\s*Bearer\s+[A-Za-z0-9._~+/=-]{16,}"
+    detector_control, _ = control(tmp_path)
+    created = detector_control.create_configuration({"name": "Copied", "source_id": "builtin.credentials"})
+    saved = detector_control.save_configuration(created["id"], created)
+
+    state_path = tmp_path / "detector-control.json"
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    copied = next(item for item in state["configurations"] if item["id"] == saved["id"])
+    rules = copied["modules"][0]["config"]["rules"]
+    next(rule for rule in rules if rule["id"] == "secret.env_assignment")["pattern"] = previous_env_pattern
+    next(rule for rule in rules if rule["id"] == "secret.bearer_token")["pattern"] = previous_bearer_pattern
+    state_path.write_text(json.dumps(state), encoding="utf-8")
+
+    reloaded, _ = control(tmp_path)
+    manager = reloaded.manager_for_configuration(saved["id"])
+    assert "env_assignment" not in subtypes(manager, "CLAUDE_CODE_MAX_OUTPUT_TOKENS=650000")
+
+    assignment = 'export SERVICE_TOKEN="synthetic-secret-value"'
+    assignment_finding = next(f for f in manager.scan_findings(assignment) if f.subtype == "env_assignment")
+    assert assignment[assignment_finding.original_start : assignment_finding.original_end] == "synthetic-secret-value"
+
+    bearer = "Authorization: Bearer abcdefghijklmnopqrstuvwxyz1234567890"
+    bearer_finding = next(f for f in manager.scan_findings(bearer) if f.subtype == "bearer_token")
+    assert bearer[bearer_finding.original_start : bearer_finding.original_end] == "abcdefghijklmnopqrstuvwxyz1234567890"
+
+
+def test_copied_builtin_configuration_receives_new_security_rules_once(tmp_path) -> None:
+    detector_control, _ = control(tmp_path)
+    created = detector_control.create_configuration({"name": "Copied", "source_id": "builtin.comprehensive"})
+    state_path = tmp_path / "detector-control.json"
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    copied = next(item for item in state["configurations"] if item["id"] == created["id"])
+    for module in copied["modules"]:
+        if module["type"] != "regex":
+            continue
+        rules = module["config"]["rules"]
+        rules[:] = [
+            rule
+            for rule in rules
+            if rule["id"] not in {"secret.credential_pair_password", "secret.ip_access_url_token", "pii.phone_labeled"}
+        ]
+    state["builtin_ruleset_revision"] = 1
+    state_path.write_text(json.dumps(state), encoding="utf-8")
+
+    reloaded, _ = control(tmp_path)
+    restored = reloaded.get_configuration(created["id"])
+    restored_ids = {
+        rule["id"]
+        for module in restored["modules"]
+        if module["type"] == "regex"
+        for rule in module["config"]["rules"]
+    }
+    assert {"secret.credential_pair_password", "secret.ip_access_url_token", "pii.phone_labeled"} <= restored_ids
+    assert restored["revision"] == created["revision"] + 1
+    persisted = json.loads(state_path.read_text(encoding="utf-8"))
+    assert persisted["builtin_ruleset_revision"] == 4
+
+    copied = next(item for item in persisted["configurations"] if item["id"] == created["id"])
+    copied["modules"][0]["config"]["rules"] = [
+        rule
+        for rule in copied["modules"][0]["config"]["rules"]
+        if rule["id"] != "secret.ip_access_url_token"
+    ]
+    state_path.write_text(json.dumps(persisted), encoding="utf-8")
+    reloaded_after_user_edit, _ = control(tmp_path)
+    ids_after_user_edit = {
+        rule["id"]
+        for module in reloaded_after_user_edit.get_configuration(created["id"])["modules"]
+        if module["type"] == "regex"
+        for rule in module["config"]["rules"]
+    }
+    assert "secret.ip_access_url_token" not in ids_after_user_edit
+
+
+def test_saved_builtin_rules_receive_precise_revision_three_subtypes(tmp_path) -> None:
+    detector_control, _ = control(tmp_path)
+    created = detector_control.create_configuration({"name": "Copied", "source_id": "builtin.comprehensive"})
+    state_path = tmp_path / "detector-control.json"
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    state["builtin_ruleset_revision"] = 2
+    copied = next(item for item in state["configurations"] if item["id"] == created["id"])
+    for module in copied["modules"]:
+        for rule in module.get("config", {}).get("rules", []):
+            if rule["id"] == "secret.openai_api_key":
+                rule["subtype"] = "openai_api_key"
+                rule["metadata"] = {}
+            elif rule["id"] == "secret.credential_pair_password":
+                rule["subtype"] = "password"
+                rule["metadata"] = {}
+    state_path.write_text(json.dumps(state), encoding="utf-8")
+
+    reloaded, _ = control(tmp_path)
+    restored = reloaded.get_configuration(created["id"])
+    rules = {
+        rule["id"]: rule
+        for module in restored["modules"]
+        for rule in module.get("config", {}).get("rules", [])
+    }
+    assert rules["secret.openai_api_key"]["subtype"] == "api_key"
+    assert rules["secret.credential_pair_password"]["subtype"] == "credential_password"
+    assert rules["secret.openai_api_key"]["metadata"]["display_name"] == "API 密钥（sk- 格式）"
+    assert json.loads(state_path.read_text(encoding="utf-8"))["builtin_ruleset_revision"] == 4
 
 
 def test_v1_migration_failure_keeps_original_state_and_runtime(tmp_path) -> None:

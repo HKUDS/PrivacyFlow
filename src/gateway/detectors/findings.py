@@ -23,6 +23,8 @@ SourceKind = Literal[
     "tool_call_argument",
     "file_write_content",
     "audit_log",
+    "tool_schema",
+    "protocol_metadata",
     "json",
     "text",
 ]
@@ -125,6 +127,8 @@ class Finding:
 def safe_preview(value: str, keep: int = 4) -> str:
     if not value:
         return ""
+    if keep <= 0:
+        return "<hidden>"
     if len(value) <= keep * 2:
         return "<hidden>"
     return f"{value[:keep]}...{value[-keep:]}"

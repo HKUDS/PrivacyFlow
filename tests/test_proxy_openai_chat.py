@@ -102,7 +102,7 @@ def test_apg_detect_returns_safe_dry_run_summary(tmp_path) -> None:
     )
     assert resp.status_code == 200
     body = resp.json()
-    assert body["findings"][0]["subtype"] == "openai_api_key"
+    assert body["findings"][0]["subtype"] == "api_key"
     assert "sk-proj-" not in body["sanitized_text"]
     assert "sk-proj-abcdefghijklmnopqrstuvwxyz123456" not in resp.text
     assert body["diagnostics"]
@@ -165,7 +165,7 @@ def test_anthropic_messages_forwards_sanitized_request(tmp_path) -> None:
     assert resp.status_code == 200
     assert resp.json()["type"] == "message"
     assert fake.calls[0][1] == "/v1/chat/completions"
-    assert fake.calls[0][2]["model"] == "deepseek-v4-flash"
+    assert fake.calls[0][2]["model"] == "claude-sonnet-4-5-20250929"
     assert "sk-proj-" not in json.dumps(fake.calls[0][2])
     assert fake.calls[0][2]["messages"][0]["role"] == "system"
     assert APG_UPSTREAM_SYSTEM_PROMPT in fake.calls[0][2]["messages"][0]["content"]

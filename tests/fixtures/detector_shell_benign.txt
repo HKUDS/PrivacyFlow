@@ -1,0 +1,37 @@
+python3 -m benchmark.pipeline.step1_generate_entries \
+  --kb-names "calculus_volume_2_web_13_238,calculus_volume_2_web_239_380,calculus_volume_2_web_381_542,calculus_volume_3_web_15_242,calculus_volume_3_web_243_426,calculus_volume_3_web_427_752" \
+  --concurrency 18
+
+python3 -m benchmark.pipeline.step2_generate_transcripts \
+  --kb-names "agent_memory_survey,deepseek_r1,openvla,towards_reasoning_era,yolov9,livecodebench" \
+  --backends "mock,deep_tutor" \
+  --concurrency 18 \
+  --max-turns 30
+
+python3 -m benchmark.pipeline.step3_evaluate_transcripts \
+  --kb-names "introduction_to_philosophy_web_cszrkyp_17_148" \
+  --concurrency 18 --model openai/gpt-5.3-chat --backends cot,self_refine,react
+
+source nanobot_env/bin/activate
+while true; do nanobot gateway; echo "process exited; restarting"; sleep 2; done
+
+export http_proxy=http://127.0.0.1:7890
+export https_proxy=http://127.0.0.1:7890
+curl -X PUT http://127.0.0.1:9090/proxies/selected \
+  -H "Content-Type: application/json" \
+  -d '{"name":"synthetic-node"}'
+curl -s https://ipinfo.io
+
+export API_TIMEOUT_MS="3000000"
+export CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1
+export CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS=1
+export ANTHROPIC_MODEL="ExampleModel-M2.5"
+export ANTHROPIC_SMALL_FAST_MODEL="ExampleModel-M2.5"
+export ANTHROPIC_DEFAULT_SONNET_MODEL="ExampleModel-M2.5"
+export ANTHROPIC_DEFAULT_OPUS_MODEL="ExampleModel-M2.5"
+export ANTHROPIC_DEFAULT_HAIKU_MODEL="ExampleModel-M2.5"
+export CLAUDE_CODE_MAX_OUTPUT_TOKENS=650000
+
+ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAICGbGKiJ8TBhWnykh1AW2xLIPjuBdP3MbpvNWLkhB build-host
+/opt/cisco/secureclient/bin/vpn connect vpn.example.test
+schema: https://json-schema.org/draft-07/schema#

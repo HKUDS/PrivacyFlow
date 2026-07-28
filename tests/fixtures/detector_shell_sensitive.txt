@@ -1,0 +1,15 @@
+~/bin/mihomo -d ~/.config/mihomo
+
+export ANTHROPIC_BASE_URL="http://model-gateway.example.test:8080"
+export ANTHROPIC_AUTH_TOKEN="sk-syntheticABCDEFGHIJKLMNOPQRSTUV"
+
+https://192.0.2.10:46825/8pySFiZlBQ5b0Synthetic/
+
+cat ~/.ssh/id_ed25519.pub
+ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAICGbGKiJ8TBhWnykh1AW2xLIPjuBdP3MbpvNWLkhB developer@workstation.local
+
+u3629000@hpc2021.example
+SyntheticPass649
+
+export ANTHROPIC_BASE_URL=https://api.example.test/anthropic
+export ANTHROPIC_AUTH_TOKEN=sk-syntheticZYXWVUTSRQPONMLKJIHGF

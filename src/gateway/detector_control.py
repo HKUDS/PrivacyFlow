@@ -16,6 +16,7 @@ from typing import Any, Callable
 from gateway.detector_manager import DetectorManager
 from gateway.detectors.flow import compile_flow_config
 from gateway.detectors.rules import VALIDATORS, builtin_rules
+from gateway.local_models import local_model_id
 
 
 MODULE_TYPE_LABELS = {
@@ -67,6 +68,25 @@ def _rule_dict(rule: Any) -> dict[str, Any]:
 
 
 BUILTIN_RULE_VALUES = tuple(_rule_dict(rule) for rule in builtin_rules())
+BUILTIN_RULESET_REVISION = 4
+BUILTIN_RULESET_REVISION_2_ADDITIONS = {
+    "secret.credential_pair_password",
+    "secret.ip_access_url_token",
+    "pii.phone_labeled",
+}
+BUILTIN_RULESET_REVISION_2_REMOVALS = {
+    "secret.database_test_password",
+    "secret.github_apg_test_token",
+    "secret.jwt_prefix",
+    "secret.openai_apg_test_key",
+}
+BUILTIN_RULESET_REVISION_3_SUBTYPES = {
+    "secret.openai_api_key": ("openai_api_key", "api_key"),
+    "secret.credential_pair_password": ("password", "credential_password"),
+}
+BUILTIN_RULESET_REVISION_4_ADDITIONS = {
+    "secret.hex_dump_jwt_fragment",
+}
 _CURRENT_RULE_PATTERNS = {str(rule["id"]): str(rule["pattern"]) for rule in BUILTIN_RULE_VALUES}
 _ENV_ASSIGNMENT_V1_PATTERN = (
     r"^\s*[A-Z0-9_]*(?:API_KEY|TOKEN|SECRET|PASSWORD|PASSWD|PASS|CREDENTIAL|PRIVATE_KEY|DATABASE_URL)"
@@ -76,9 +96,30 @@ _ENV_ASSIGNMENT_V2_PATTERN = (
     r"(?<![A-Z0-9_])(?:export\s+)?[A-Z0-9_]*(?:API_KEY|TOKEN|SECRET|PASSWORD|PASSWD|PASS|CREDENTIAL|PRIVATE_KEY|DATABASE_URL)"
     r"[A-Z0-9_]*\s*=\s*(?P<value>[^\r\n]+)$"
 )
+_ENV_ASSIGNMENT_V3_PATTERN = (
+    r"(?<![A-Z0-9_])(?:export[ \t]+)?[A-Z0-9_]*(?:API_KEY|TOKEN|SECRET|PASSWORD|PASSWD|PASS|CREDENTIAL|PRIVATE_KEY|DATABASE_URL)"
+    r"[A-Z0-9_]*[ \t]*=[ \t]*(?P<value>\"(?:\\.|[^\"\\\r\n])*\"|'(?:\\.|[^'\\\r\n])*'|[^\s;]+)"
+)
+_ENV_ASSIGNMENT_V4_PATTERN = (
+    r"(?<![A-Z0-9_])(?:export[ \t]+)?(?:[A-Z0-9]+_)*(?:API_KEY|APIKEY|TOKEN|SECRET|PASSWORD|PASSWD|PASS|CREDENTIAL|PRIVATE_KEY|DATABASE_URL)"
+    r"(?:_[A-Z0-9]+)*[ \t]*=[ \t]*(?P<value>\"(?:\\.|[^\"\\\r\n])*\"|'(?:\\.|[^'\\\r\n])*'|[^\s;]+)"
+)
+_ENV_ASSIGNMENT_V5_PATTERN = (
+    r"(?<![A-Z0-9_])(?:export[ \t]+)?(?P<name>[A-Z][A-Z0-9_]*)[ \t]*=[ \t]*"
+    r"(?P<value>\"(?:\\.|[^\"\\\r\n])*\"|'(?:\\.|[^'\\\r\n])*'|[^\s;]+)"
+)
+_BEARER_TOKEN_V1_PATTERN = r"\bAuthorization\s*:\s*Bearer\s+[A-Za-z0-9._~+/=-]{16,}"
+_BEARER_TOKEN_V2_PATTERN = r"\bAuthorization\s*:\s*Bearer\s+(?P<value>[A-Za-z0-9._~+/=-]{16,})"
+_COOKIE_V1_PATTERN = r"\b(?:cookie|sessionid|sid|connect\.sid)\s*[:=]\s*[A-Za-z0-9._~+/=-]{16,}"
 TRUSTED_RULE_PATTERN_UPGRADES = {
     ("secret.env_assignment", _ENV_ASSIGNMENT_V1_PATTERN): _CURRENT_RULE_PATTERNS["secret.env_assignment"],
     ("secret.env_assignment", _ENV_ASSIGNMENT_V2_PATTERN): _CURRENT_RULE_PATTERNS["secret.env_assignment"],
+    ("secret.env_assignment", _ENV_ASSIGNMENT_V3_PATTERN): _CURRENT_RULE_PATTERNS["secret.env_assignment"],
+    ("secret.env_assignment", _ENV_ASSIGNMENT_V4_PATTERN): _CURRENT_RULE_PATTERNS["secret.env_assignment"],
+    ("secret.env_assignment", _ENV_ASSIGNMENT_V5_PATTERN): _CURRENT_RULE_PATTERNS["secret.env_assignment"],
+    ("secret.bearer_token", _BEARER_TOKEN_V1_PATTERN): _CURRENT_RULE_PATTERNS["secret.bearer_token"],
+    ("secret.bearer_token", _BEARER_TOKEN_V2_PATTERN): _CURRENT_RULE_PATTERNS["secret.bearer_token"],
+    ("secret.cookie", _COOKIE_V1_PATTERN): _CURRENT_RULE_PATTERNS["secret.cookie"],
 }
 TRUSTED_RULE_PATTERNS = {
     (str(rule["id"]), str(rule["pattern"])) for rule in BUILTIN_RULE_VALUES
@@ -163,7 +204,7 @@ def _builtin_templates() -> dict[str, dict[str, Any]]:
 
     credentials = [
         _module("credentials", "凭据与密钥规则", "regex", {"rules": CREDENTIAL_RULES}, failure_mode="closed"),
-        _module("entropy", "高熵 Token", "entropy", _entropy_config(), timeout_ms=100),
+        _module("entropy", "高熵 Token", "entropy", _entropy_config(), enabled=False, timeout_ms=100),
     ]
     personal = [
         _module("personal_data", "个人信息规则", "regex", {"rules": PII_RULES}),
@@ -193,10 +234,14 @@ class DetectorControlPlane:
         base_config: dict[str, Any],
         state_path: str,
         apply_manager: Callable[[DetectorManager], None],
+        model_path_resolver: Callable[[str, str, str], str | None] | None = None,
+        model_runner: Callable[..., list[dict[str, Any]]] | None = None,
     ) -> None:
         self.base_config = copy.deepcopy(base_config)
         self.state_path = Path(state_path)
         self.apply_manager = apply_manager
+        self.model_path_resolver = model_path_resolver
+        self.model_runner = model_runner
         self._lock = threading.RLock()
         self._templates = _builtin_templates()
         self._templates.update(self._deployment_templates())
@@ -219,6 +264,30 @@ class DetectorControlPlane:
     def get_configuration(self, configuration_id: str) -> dict[str, Any]:
         with self._lock:
             return self._public_configuration(self._configuration(configuration_id))
+
+    def local_model_references(self) -> list[dict[str, Any]]:
+        """Expose only local-model references without invoking runtime availability checks."""
+        with self._lock:
+            active_id = self._state["active_configuration_id"]
+            configurations = [
+                *self._templates.values(),
+                *self._state["configurations"],
+            ]
+            references: list[dict[str, Any]] = []
+            for configuration in configurations:
+                for module in configuration.get("modules", []):
+                    if module.get("type") != "local_model":
+                        continue
+                    references.append({
+                        "configuration_id": configuration["id"],
+                        "configuration_name": configuration["name"],
+                        "module_id": module["id"],
+                        "module_name": module["name"],
+                        "active": configuration["id"] == active_id,
+                        "enabled": bool(module.get("enabled", True)),
+                        "config": copy.deepcopy(module.get("config", {})),
+                    })
+            return references
 
     def create_configuration(self, payload: dict[str, Any]) -> dict[str, Any]:
         with self._lock:
@@ -403,6 +472,8 @@ class DetectorControlPlane:
         return {
             "core_guard_enabled": True,
             "allow_model_download": bool(self.base_config.get("allow_model_download", False)),
+            "model_path_resolver": self.model_path_resolver,
+            "model_runner": self.model_runner,
             "allow_external_tools": copy.deepcopy(self.base_config.get("allow_external_tools", [])),
             "allow_python_plugins": copy.deepcopy(self.base_config.get("allow_python_plugins", [])),
             "flow": {
@@ -571,9 +642,17 @@ class DetectorControlPlane:
             validators = self._validator_names(raw.get("validators", []))
             require_validators = self._validator_names(raw.get("require_validators", []))
             reject_validators = self._validator_names(raw.get("reject_validators", []))
-            if upgraded_builtin:
+            if upgraded_builtin and rule_id == "secret.env_assignment":
                 validators = list(dict.fromkeys([*validators, "credential_assignment_value"]))
                 require_validators = list(dict.fromkeys([*require_validators, "credential_assignment_value"]))
+            required_builtin_validators = {
+                "pii.email": "email_structure",
+                "pii.phone": "phone_shape",
+            }
+            required_validator = required_builtin_validators.get(rule_id)
+            if (rule_id, pattern) in TRUSTED_RULE_PATTERNS and required_validator is not None:
+                validators = list(dict.fromkeys([*validators, required_validator]))
+                require_validators = list(dict.fromkeys([*require_validators, required_validator]))
             out.append({
                 "id": rule_id,
                 "pattern": pattern,
@@ -690,7 +769,12 @@ class DetectorControlPlane:
         gliner = self._module_available("gliner")
         return [
             {"id": "regex", "label": MODULE_TYPE_LABELS["regex"], "description": "多条安全正则与格式验证器", "available": True},
-            {"id": "entropy", "label": MODULE_TYPE_LABELS["entropy"], "description": "按长度和熵值检测随机 Token", "available": True},
+            {
+                "id": "entropy",
+                "label": MODULE_TYPE_LABELS["entropy"],
+                "description": "按长度和熵值检测随机 Token（可选，代码场景可能误报）",
+                "available": True,
+            },
             {"id": "path", "label": MODULE_TYPE_LABELS["path"], "description": "本地路径位置", "available": True},
             {
                 "id": "local_model",
@@ -732,9 +816,17 @@ class DetectorControlPlane:
         value["is_active"] = configuration["id"] == self._state["active_configuration_id"]
         for module in value.get("modules", []):
             if module.get("type") == "local_model":
-                adapter = module.get("config", {}).get("adapter", "transformers_token_classification")
-                package = "gliner" if adapter == "gliner" else "transformers"
-                module["runtime_available"] = self._module_available(package)
+                config = module.get("config", {})
+                adapter = config.get("adapter", "transformers_token_classification")
+                model_name = str(config.get("model_name", ""))
+                device = str(config.get("device", "cpu"))
+                if self.model_path_resolver is not None:
+                    runtime_available = self.model_path_resolver(model_name, str(adapter), device) is not None
+                else:
+                    package = "gliner" if adapter == "gliner" else "transformers"
+                    runtime_available = self._module_available(package)
+                module["runtime_available"] = runtime_available
+                module["local_model_id"] = local_model_id(model_name, str(adapter), device)
         return value
 
     def _deployment_templates(self) -> dict[str, dict[str, Any]]:
@@ -751,6 +843,15 @@ class DetectorControlPlane:
         if isinstance(flow, dict) and flow.get("modules"):
             compiled = compile_flow_config(copy.deepcopy(self.base_config))
             templates["deployment.current"] = self._deployment_template("deployment.current", str(flow.get("id", "Deployment flow")), compiled)
+        elif self.base_config.get("overrides") or (
+            "preset" in self.base_config and str(self.base_config.get("preset")) in LEGACY_PRESETS
+        ):
+            compiled = compile_flow_config(copy.deepcopy(self.base_config))
+            templates["deployment.current"] = self._deployment_template(
+                "deployment.current",
+                str(self.base_config.get("preset", "Configured detector flow")),
+                compiled,
+            )
         return templates
 
     def _deployment_template(self, template_id: str, name: str, compiled: dict[str, Any]) -> dict[str, Any]:
@@ -807,6 +908,7 @@ class DetectorControlPlane:
     def _load_state(self) -> dict[str, Any]:
         empty = {
             "version": 2,
+            "builtin_ruleset_revision": BUILTIN_RULESET_REVISION,
             "active_configuration_id": self._default_active_id(),
             "apg_enabled": True,
             "template_module_overrides": {},
@@ -828,6 +930,7 @@ class DetectorControlPlane:
                 stored_enabled = data.get("apg_enabled", True)
                 state = {
                     "version": 2,
+                    "builtin_ruleset_revision": int(data.get("builtin_ruleset_revision", 1)),
                     "active_configuration_id": active,
                     "apg_enabled": stored_enabled if isinstance(stored_enabled, bool) else True,
                     "template_module_overrides": self._validate_template_module_overrides(data.get("template_module_overrides", {})),
@@ -835,6 +938,12 @@ class DetectorControlPlane:
                 }
                 if active not in self._templates and not any(item["id"] == active for item in configurations):
                     state["active_configuration_id"] = self._default_active_id()
+                if state["builtin_ruleset_revision"] < BUILTIN_RULESET_REVISION:
+                    self._upgrade_builtin_ruleset(state)
+                    try:
+                        self._persist_state(state)
+                    except OSError:
+                        pass
                 return state
             except DetectorControlError:
                 return empty
@@ -855,6 +964,10 @@ class DetectorControlPlane:
 
     def _default_active_id(self) -> str:
         if isinstance(self.base_config.get("flow"), dict) and self.base_config["flow"].get("modules"):
+            return "deployment.current"
+        if self.base_config.get("overrides") or (
+            "preset" in self.base_config and str(self.base_config.get("preset")) in LEGACY_PRESETS
+        ):
             return "deployment.current"
         preset = str(self.base_config.get("preset", "default"))
         deployment_id = f"deployment.{self._slug(preset)}"
@@ -882,6 +995,7 @@ class DetectorControlPlane:
         configuration = self._validate_configuration(configuration, trusted=True)
         return {
             "version": 2,
+            "builtin_ruleset_revision": BUILTIN_RULESET_REVISION,
             "active_configuration_id": configuration["id"],
             "apg_enabled": True,
             "template_module_overrides": {},
@@ -946,11 +1060,91 @@ class DetectorControlPlane:
         }
         return {
             "version": 2,
+            "builtin_ruleset_revision": BUILTIN_RULESET_REVISION,
             "active_configuration_id": configuration["id"],
             "apg_enabled": True,
             "template_module_overrides": {},
             "configurations": [configuration],
         }
+
+    def _upgrade_builtin_ruleset(self, state: dict[str, Any]) -> None:
+        previous_revision = int(state.get("builtin_ruleset_revision", 1))
+        for configuration in state.get("configurations", []):
+            changed = False
+            if previous_revision < 2:
+                for module in configuration.get("modules", []):
+                    if module.get("type") != "regex":
+                        continue
+                    rules = module.get("config", {}).get("rules", [])
+                    retained = [
+                        rule
+                        for rule in rules
+                        if str(rule.get("id")) not in BUILTIN_RULESET_REVISION_2_REMOVALS
+                    ]
+                    if len(retained) != len(rules):
+                        rules[:] = retained
+                        changed = True
+            source_id = str(configuration.get("source_template_id") or "")
+            source = self._templates.get(source_id)
+            if previous_revision < 2 and source is not None:
+                source_modules = {str(module["id"]): module for module in source.get("modules", [])}
+                for module in configuration.get("modules", []):
+                    if module.get("type") != "regex":
+                        continue
+                    source_module = source_modules.get(str(module.get("id")))
+                    if source_module is None or source_module.get("type") != "regex":
+                        continue
+                    rules = module.get("config", {}).get("rules", [])
+                    existing_ids = {str(rule.get("id")) for rule in rules}
+                    additions = [
+                        copy.deepcopy(rule)
+                        for rule in source_module.get("config", {}).get("rules", [])
+                        if str(rule.get("id")) in BUILTIN_RULESET_REVISION_2_ADDITIONS
+                        and str(rule.get("id")) not in existing_ids
+                    ]
+                    if additions:
+                        rules.extend(additions)
+                        changed = True
+            if previous_revision < 3:
+                for module in configuration.get("modules", []):
+                    if module.get("type") != "regex":
+                        continue
+                    for rule in module.get("config", {}).get("rules", []):
+                        rule_id = str(rule.get("id"))
+                        subtype_update = BUILTIN_RULESET_REVISION_3_SUBTYPES.get(rule_id)
+                        if subtype_update is None or str(rule.get("pattern")) != _CURRENT_RULE_PATTERNS.get(rule_id):
+                            continue
+                        old_subtype, new_subtype = subtype_update
+                        if str(rule.get("subtype")) != old_subtype:
+                            continue
+                        builtin = next(item for item in BUILTIN_RULE_VALUES if str(item["id"]) == rule_id)
+                        rule["subtype"] = new_subtype
+                        if not rule.get("metadata") and builtin.get("metadata"):
+                            rule["metadata"] = copy.deepcopy(builtin["metadata"])
+                        changed = True
+            if previous_revision < 4 and source is not None:
+                source_modules = {str(module["id"]): module for module in source.get("modules", [])}
+                for module in configuration.get("modules", []):
+                    if module.get("type") != "regex":
+                        continue
+                    source_module = source_modules.get(str(module.get("id")))
+                    if source_module is None or source_module.get("type") != "regex":
+                        continue
+                    rules = module.get("config", {}).get("rules", [])
+                    existing_ids = {str(rule.get("id")) for rule in rules}
+                    additions = [
+                        copy.deepcopy(rule)
+                        for rule in source_module.get("config", {}).get("rules", [])
+                        if str(rule.get("id")) in BUILTIN_RULESET_REVISION_4_ADDITIONS
+                        and str(rule.get("id")) not in existing_ids
+                    ]
+                    if additions:
+                        rules.extend(additions)
+                        changed = True
+            if changed:
+                configuration["revision"] = int(configuration.get("revision", 0)) + 1
+                configuration["updated_at"] = _now()
+        state["builtin_ruleset_revision"] = BUILTIN_RULESET_REVISION
 
     def _validate_template_module_overrides(self, value: Any) -> dict[str, dict[str, bool]]:
         if not isinstance(value, dict):

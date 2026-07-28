@@ -72,6 +72,8 @@ def test_webui_assets_and_admin_api_require_no_authentication(tmp_path) -> None:
         page = client.get("/ui/")
         assert page.status_code == 200
         assert "APG Control" in page.text
+        assert "Agent privacy gateway" in page.text
+        assert ">Privacy gateway<" not in page.text
         assert "frame-ancestors 'none'" in page.headers["content-security-policy"]
         app_js = client.get("/ui/assets/app.js")
         assert app_js.status_code == 200
@@ -85,21 +87,14 @@ def test_webui_assets_and_admin_api_require_no_authentication(tmp_path) -> None:
         assert brand_icon.status_code == 200
         assert brand_icon.headers["content-type"] == "image/png"
         assert brand_icon.content.startswith(b"\x89PNG\r\n\x1a\n")
-        for agent_icon in ("claude-code.svg", "opencode.svg", "codex.svg"):
-            icon = client.get(f"/ui/assets/{agent_icon}")
-            assert icon.status_code == 200
-            assert icon.headers["content-type"] == "image/svg+xml"
-            assert icon.text.startswith("<svg")
+        for removed_agent_icon in ("claude-code.svg", "opencode.svg", "codex.svg"):
+            assert client.get(f"/ui/assets/{removed_agent_icon}").status_code == 404
         assert "@license lucide v1.27.0 - ISC" in lucide_js.text
         assert "Privacy operations overview" in i18n_js.text
         assert "Detectors" in i18n_js.text
         assert "apg:localechange" in i18n_js.text
         assert "APG built-in safety guard" in i18n_js.text
-        assert "ANTHROPIC_BASE_URL" in app_js.text
-        assert "export ANTHROPIC_MODEL=deepseek-v4-pro[1m]" in app_js.text
-        assert "export ANTHROPIC_DEFAULT_SONNET_MODEL=deepseek-v4-pro[1m]" in app_js.text
-        assert "export CLAUDE_CODE_SUBAGENT_MODEL=deepseek-v4-flash" in app_js.text
-        assert "claude --setting-sources project,local" not in app_js.text
+        assert "ANTHROPIC_BASE_URL" not in app_js.text
         assert client.get("/ui/assets/unknown.js").status_code == 404
 
         assert client.get("/api/admin/overview").status_code == 200
@@ -140,39 +135,18 @@ def test_webui_assets_and_admin_api_require_no_authentication(tmp_path) -> None:
         assert '"agent-key"' not in page.text
         assert "data-copy-connection" in page.text
         assert "copy-claude-command" not in page.text
-        assert 'class="agent-quickstart"' in page.text
-        assert "Agent 快捷接入" in page.text
-        assert 'data-copy-agent-setup="claude"' in page.text
-        assert 'data-copy-agent-setup="opencode"' in page.text
-        assert 'data-copy-agent-setup="codex-config"' in page.text
-        assert 'data-copy-agent-setup="codex-key"' in page.text
-        assert 'data-copy-agent-setup="aider"' not in page.text
-        assert 'data-lucide="bot"' in page.text
-        assert 'src="/ui/assets/claude-code.svg"' in page.text
-        assert 'src="/ui/assets/opencode.svg"' in page.text
-        assert 'src="/ui/assets/codex.svg"' in page.text
-        assert page.text.count('data-lucide="info"') >= 3
-        assert 'data-agent-guide="claude"' in page.text
-        assert 'data-agent-guide="opencode"' in page.text
-        assert 'data-agent-guide="codex"' in page.text
-        assert 'id="agent-guide-modal"' in page.text
-        assert "agent-setup-tags" not in page.text
-        assert "function openAgentGuide(kind)" in app_js.text
-        assert "agent-guide-meta" not in app_js.text
-        assert "~/.config/opencode/opencode.json" in app_js.text
-        assert "~/.codex/config.toml" in app_js.text
-        assert "查看 Claude Code 详细使用方法" in i18n_js.text
-        assert "View detailed Claude Code setup" in i18n_js.text
-        assert "<strong>Codex</strong>" in page.text
-        assert "Codex CLI" not in page.text
-        assert "<strong>Aider</strong>" not in page.text
-        assert "copyAgentSetup" in app_js.text
-        assert "function agentSetupText(kind)" in app_js.text
-        assert "ANTHROPIC_AUTH_TOKEN" in app_js.text
-        assert "@ai-sdk/openai-compatible" in app_js.text
-        assert 'wire_api = "responses"' in app_js.text
-        assert 'kind === "aider"' not in app_js.text
-        assert "Copied content includes the current local API key." in i18n_js.text
+        assert "请在 Agent 中自行选择模型" in page.text
+        assert "Choose the model in your Agent" in i18n_js.text
+        assert "agent-quickstart" not in page.text
+        assert "data-copy-agent-setup" not in page.text
+        assert "data-agent-guide" not in page.text
+        assert "agent-guide-modal" not in page.text
+        assert "copyAgentSetup" not in app_js.text
+        assert "agentSetupText" not in app_js.text
+        assert "openAgentGuide" not in app_js.text
+        assert "ANTHROPIC_AUTH_TOKEN" not in app_js.text
+        assert "@ai-sdk/openai-compatible" not in app_js.text
+        assert 'wire_api = "responses"' not in app_js.text
         assert "配置上游模型" in page.text
         assert 'id="privacy-control"' in page.text
         assert 'id="privacy-control-enabled"' in page.text
@@ -231,6 +205,35 @@ def test_webui_assets_and_admin_api_require_no_authentication(tmp_path) -> None:
         assert '<button class="nav-item" type="button" data-view="protected">' in page.text
         assert '<i class="nav-icon" data-lucide="lock"></i><span>受保护值</span>' in page.text
         assert 'data-lucide="sliders-horizontal"' in page.text
+        assert '<button class="nav-item" type="button" data-view="local-models">' in page.text
+        assert 'data-lucide="hard-drive-download"' in page.text
+        assert 'id="view-local-models"' in page.text
+        assert 'id="manual-model-form"' in page.text
+        assert 'id="prepare-all-models"' in page.text
+        assert 'id="repair-model-runtime"' not in page.text
+        assert '<option value="auto">自动识别</option>' in page.text
+        assert '<option value="auto">自动选择</option>' in page.text
+        assert "添加并准备" in page.text
+        assert 'id="local-runtime-details"' in page.text
+        assert '"local-models": loadLocalModels' in app_js.text
+        assert 'api("/local-models/prepare"' in app_js.text
+        assert 'state.capabilities.includes("local_models_v2")' in app_js.text
+        assert "APG 需要重启或更新" in app_js.text
+        assert 'prepare: true' in app_js.text
+        assert '["inspect", "runtime", "download", "verify"]' in app_js.text
+        assert "function renderLocalModels()" in app_js.text
+        assert "function availableLocalModels()" in app_js.text
+        assert 'model.status === "ready"' in app_js.text
+        assert 'id="model-selection"' in app_js.text
+        assert 'id="model-name"' not in app_js.text
+        assert 'id="model-adapter"' not in app_js.text
+        assert 'id="model-device"' not in app_js.text
+        assert "请先准备并选择一个可用的本地模型" in app_js.text
+        assert "Only models successfully prepared and verified" in i18n_js.text
+        assert 'data-local-model-target=' in app_js.text
+        assert "scrollIntoView" in app_js.text
+        assert "Local model management" in i18n_js.text
+        assert ".local-model-card {" in styles.text
         assert '<span class="brand-mark" aria-hidden="true"><img src="/ui/assets/apg-icon.png" alt=""></span>' in page.text
         assert '<span class="brand-mark" aria-hidden="true">A</span>' not in page.text
         detector_icons = {
@@ -243,6 +246,17 @@ def test_webui_assets_and_admin_api_require_no_authentication(tmp_path) -> None:
         for detector_type, detector_icon in detector_icons.items():
             assert f'{detector_type}: "{detector_icon}"' in app_js.text
         assert "moduleTypeIcon" in app_js.text
+        assert "function findingModuleNames(finding)" in app_js.text
+        assert 'diagnostics.filter((item) => item.id !== "apg_core")' in app_js.text
+        assert "function showDetectionTooltip(mark, group, pinned)" in app_js.text
+        assert 'mark.addEventListener("pointerenter"' in app_js.text
+        assert 'mark.addEventListener("click"' in app_js.text
+        assert 'mark.setAttribute("aria-label", `检测模块：' in app_js.text
+        assert ".detection-tooltip {" in styles.text
+        assert ".highlight-detail span:not(.detail-index)" in styles.text
+        assert ".diagnostic-row > span:not(.diagnostic-order)" in styles.text
+        assert ".detail-index, .diagnostic-order {" in styles.text
+        assert "Hover or click a highlight to see its module" in i18n_js.text
         assert '<span>${escapeHtml(type)}</span>' in app_js.text
         assert '${escapeHtml(type)} · ${escapeHtml(module.id)}' not in app_js.text
         assert "module-meta" not in app_js.text
@@ -939,14 +953,14 @@ def test_detector_control_hot_reload_and_persistence(tmp_path) -> None:
             "/api/admin/detector-configurations/builtin.comprehensive",
             headers=_admin_headers(),
         ).json()
-        assert next(module for module in preset["modules"] if module["id"] == "entropy")["enabled"] is True
+        assert next(module for module in preset["modules"] if module["id"] == "entropy")["enabled"] is False
         toggled = client.put(
             "/api/admin/detector-configurations/builtin.comprehensive/modules/entropy/enabled",
             headers=_admin_headers(),
-            json={"enabled": False},
+            json={"enabled": True},
         )
         assert toggled.status_code == 200
-        assert next(module for module in toggled.json()["modules"] if module["id"] == "entropy")["enabled"] is False
+        assert next(module for module in toggled.json()["modules"] if module["id"] == "entropy")["enabled"] is True
         invalid_toggle = client.put(
             "/api/admin/detector-configurations/builtin.comprehensive/modules/entropy/enabled",
             headers=_admin_headers(),
@@ -956,7 +970,7 @@ def test_detector_control_hot_reload_and_persistence(tmp_path) -> None:
         reset_toggle = client.put(
             "/api/admin/detector-configurations/builtin.comprehensive/modules/entropy/enabled",
             headers=_admin_headers(),
-            json={"enabled": True},
+            json={"enabled": False},
         )
         assert reset_toggle.status_code == 200
 

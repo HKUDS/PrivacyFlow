@@ -6,6 +6,7 @@ const PAGE_META = {
   audit: ["SAFE AUDIT TRAIL", "审计记录", "上行替换与本地还原"],
   protected: ["LOCAL MAPPING REGISTRY", "受保护值", "本地映射生命周期与撤销"],
   detectors: ["DETECTION PIPELINE", "检测器配置", "按检测内容组织的本地模块流水线"],
+  "local-models": ["LOCAL MODEL RUNTIME", "本地模型管理", "添加模型后由 APG 自动准备、下载并验证"],
 };
 const UPSTREAM_PROTOCOL_LABELS = {
   openai_chat_completions: "OpenAI Chat Completions",
@@ -37,14 +38,21 @@ const state = {
   moduleDraft: null,
   moduleDraftSourceName: "",
   moduleDrag: null,
-  agentGuide: "",
+  detectionTooltip: null,
+  detectionTooltipMark: null,
+  detectionTooltipPinned: false,
+  localModels: null,
+  capabilities: [],
+  buildId: "",
+  localModelJobTimer: null,
+  localModelTarget: "",
   confirmAction: null,
 };
 
 const $ = (selector, root = document) => root.querySelector(selector);
 const $$ = (selector, root = document) => [...root.querySelectorAll(selector)];
 const escapeHtml = (value) => String(value ?? "").replace(/[&<>'"]/g, (char) => ({"&":"&amp;","<":"&lt;",">":"&gt;","'":"&#39;",'"':"&quot;"}[char]));
-const DYNAMIC_ICONS = new Set(["arrow-right", "ban", "brain-circuit", "check-circle-2", "copy", "eye", "eye-off", "folder-tree", "gauge", "grip-vertical", "pencil", "plus", "power", "regex-reference", "search", "server-cog", "trash-2"]);
+const DYNAMIC_ICONS = new Set(["arrow-right", "ban", "brain-circuit", "check-circle-2", "copy", "download", "eye", "eye-off", "folder-tree", "gauge", "grip-vertical", "hard-drive", "package-check", "pencil", "plus", "power", "regex-reference", "rotate-cw", "search", "server-cog", "trash-2", "wrench"]);
 
 document.addEventListener("DOMContentLoaded", init);
 
@@ -57,11 +65,18 @@ function init() {
   connect();
   window.addEventListener("apg:localechange", () => {
     syncVisibilityButtons();
-    if ($("#agent-guide-modal")?.open && state.agentGuide) openAgentGuide(state.agentGuide);
     showView(state.view, false);
     state.loaded.clear();
     loadView(state.view, true);
   });
+  document.addEventListener("click", (event) => {
+    if (state.detectionTooltip && !event.target.closest(".text-highlight")) closeDetectionTooltip();
+  });
+  document.addEventListener("keydown", (event) => {
+    if (event.key === "Escape") closeDetectionTooltip();
+  });
+  window.addEventListener("resize", closeDetectionTooltip);
+  window.addEventListener("scroll", closeDetectionTooltip, true);
 }
 
 function iconMarkup(name) {
@@ -91,7 +106,11 @@ function setIconButton(button, name, label) {
 function bindNavigation() {
   document.addEventListener("click", (event) => {
     const trigger = event.target.closest("[data-view]");
-    if (trigger) showView(trigger.dataset.view);
+    if (trigger) {
+      state.localModelTarget = trigger.dataset.localModelTarget || "";
+      showView(trigger.dataset.view);
+      if (state.localModelTarget) requestAnimationFrame(focusLocalModelTarget);
+    }
     if (event.target.closest("[data-close-modal]")) event.target.closest("dialog")?.close();
   });
   window.addEventListener("hashchange", () => {
@@ -104,9 +123,6 @@ function bindActions() {
   $("#refresh-button").addEventListener("click", () => loadView(state.view, true));
   $("#privacy-control-enabled").addEventListener("change", updatePrivacyControl);
   $$('[data-copy-connection]').forEach((button) => button.addEventListener("click", () => copyConnectionValue(button.dataset.copyConnection)));
-  $$("[data-copy-agent-setup]").forEach((button) => button.addEventListener("click", () => copyAgentSetup(button.dataset.copyAgentSetup)));
-  $$("[data-agent-guide]").forEach((button) => button.addEventListener("click", () => openAgentGuide(button.dataset.agentGuide)));
-  $("#agent-guide-modal").addEventListener("close", () => { state.agentGuide = ""; });
   $("#toggle-agent-key").addEventListener("click", toggleAgentKeyVisibility);
   $("#generate-agent-key").addEventListener("click", () => {
     confirmAction(
@@ -165,15 +181,27 @@ function bindActions() {
   $("#add-module").addEventListener("click", () => openModuleEditor(null));
   $("#configuration-form").addEventListener("submit", createDetectorConfiguration);
   $("#module-form").addEventListener("submit", applyModuleDraft);
-  $("#module-type").addEventListener("change", (event) => {
+  $("#module-type").addEventListener("change", async (event) => {
     state.moduleDraft.type = event.target.value;
     state.moduleDraft.config = defaultModuleConfig(event.target.value);
+    if (event.target.value === "local_model") {
+      $("#module-error").textContent = "";
+      try {
+        await refreshLocalModelCatalog();
+      } catch (error) {
+        state.localModels = {models: []};
+        $("#module-error").textContent = error.message;
+      }
+    }
     renderModuleSpecificFields();
   });
   for (const id of ["configuration-name", "configuration-description", "configuration-timeout"]) {
     $("#" + id).addEventListener("input", updateConfigurationFields);
   }
   $("#run-detection").addEventListener("click", runDetection);
+  $("#manual-model-form").addEventListener("submit", addManualLocalModel);
+  $("#prepare-all-models").addEventListener("click", () => prepareLocalModels([], ["inspect", "runtime", "download", "verify"]));
+  $("#local-model-list").addEventListener("click", handleLocalModelAction);
   $("#confirm-action").addEventListener("click", async () => {
     const action = state.confirmAction;
     $("#confirm-modal").close();
@@ -214,7 +242,7 @@ function showView(view, updateHash = true) {
 }
 
 async function loadView(view, force = false) {
-  const loaders = {overview: loadOverview, audit: loadAudit, protected: loadProtected, detectors: loadDetectors};
+  const loaders = {overview: loadOverview, audit: loadAudit, protected: loadProtected, detectors: loadDetectors, "local-models": loadLocalModels};
   if (!force && state.loaded.has(view)) return;
   $("#refresh-button").classList.add("is-loading");
   try { await loaders[view](); state.loaded.add(view); }
@@ -229,11 +257,395 @@ async function api(path, options = {}) {
   let body = null;
   try { body = await response.json(); } catch (_) { body = {}; }
   if (!response.ok) {
-    const error = new Error(typeof body.detail === "string" ? body.detail : "请求失败");
+    const detail = body.detail;
+    const error = new Error(typeof detail === "string" ? detail : detail?.message || "请求失败");
     error.status = response.status;
+    error.code = detail?.code;
     throw error;
   }
   return body;
+}
+
+async function loadLocalModels() {
+  await refreshLocalModelCatalog();
+  renderLocalModels();
+  if (state.localModels.active_job) watchLocalModelJob(state.localModels.active_job);
+}
+
+async function refreshLocalModelCatalog() {
+  if (!state.capabilities.includes("local_models_v2")) {
+    state.localModels = {unsupported: true, setup_allowed: false, models: []};
+    return;
+  }
+  try {
+    state.localModels = await api("/local-models");
+  } catch (error) {
+    if (error.status === 404) {
+      state.localModels = {unsupported: true, setup_allowed: false, models: []};
+      return;
+    }
+    throw error;
+  }
+}
+
+function availableLocalModels() {
+  return (state.localModels?.models || []).filter((model) =>
+    model.status === "ready"
+    && ["transformers_token_classification", "gliner"].includes(model.resolved_adapter)
+    && Boolean(model.resolved_device)
+  );
+}
+
+function renderLocalModels() {
+  const data = state.localModels;
+  if (!data) return;
+  const unsupported = Boolean(data.unsupported);
+  const allowed = Boolean(data.setup_allowed);
+  const notice = $("#local-model-setup-notice");
+  notice.classList.toggle("is-hidden", allowed && !unsupported);
+  notice.innerHTML = allowed && !unsupported ? "" : unsupported
+    ? `${iconMarkup("rotate-cw")}<div><strong>${escapeHtml(uiText("APG 需要重启或更新"))}</strong><span>${escapeHtml(uiText("当前后端不支持新版本地模型管理，请重启 APG 或更新到相同版本。"))}</span></div>`
+    : `${iconMarkup("ban")}<div><strong>${escapeHtml(uiText("本地模型设置已停用"))}</strong><span>${escapeHtml(uiText("安装和下载只允许从绑定到 loopback 的 APG 服务本机执行。"))}</span></div>`;
+  if (!allowed || unsupported) renderIcons(notice);
+  for (const id of ["local-model-entry", "local-model-list-title", "local-runtime-details"]) {
+    const element = document.getElementById(id);
+    if (element) element.closest("section")?.classList.toggle("is-hidden", unsupported);
+  }
+  $("#local-model-entry").classList.toggle("is-hidden", unsupported);
+  $(".local-model-list-section").classList.toggle("is-hidden", unsupported);
+  $("#local-runtime-details").classList.toggle("is-hidden", unsupported);
+  if (unsupported) return;
+
+  const environment = data.environment || {};
+  const packages = environment.packages || {};
+  const runtimeItems = [
+    [uiText("受管 Runtime"), environment.runtime_ready ? environment.runtime_version : uiText("未准备"), environment.runtime_ready ? uiText("可用") : uiText("按需创建"), environment.runtime_ready],
+    ["PyTorch", packages.torch?.version || uiText("未安装"), packages.torch?.installed ? uiText("已安装") : uiText("缺少依赖"), packages.torch?.installed],
+    ["Transformers", packages.transformers?.version || uiText("未安装"), packages.transformers?.installed ? uiText("已安装") : uiText("缺少依赖"), packages.transformers?.installed],
+    ["GLiNER", packages.gliner?.version || uiText("未安装"), packages.gliner?.installed ? uiText("已安装") : uiText("缺少依赖"), packages.gliner?.installed],
+    [uiText("模型缓存"), formatBytes(environment.disk_free), uiText("可用空间"), Number(environment.disk_free) > 0],
+  ];
+  $("#local-runtime-grid").innerHTML = runtimeItems.map(([label, value, note, ready]) => `
+    <article class="local-runtime-card ${ready ? "is-ready" : ""}">
+      <span>${escapeHtml(label)}</span>
+      <strong>${escapeHtml(value)}</strong>
+      <small>${escapeHtml(note)}</small>
+    </article>
+  `).join("");
+  $("#local-device-grid").innerHTML = (data.devices || []).map((device) => `
+    <article class="local-device-card ${device.available ? "is-ready" : ""}">
+      <span class="local-device-icon">${iconMarkup(device.id === "cpu" ? "server-cog" : device.id === "mps" ? "brain-circuit" : "hard-drive")}</span>
+      <div><strong>${escapeHtml(device.label)}</strong><small>${escapeHtml(device.available ? uiText("可用") : localDeviceReason(device.reason))}</small></div>
+      <span class="badge ${device.available ? "green" : "neutral"}">${escapeHtml(uiText(device.available ? "可用" : "不可用"))}</span>
+    </article>
+  `).join("");
+  renderIcons($("#local-device-grid"));
+
+  const models = data.models || [];
+  $("#local-model-empty").classList.toggle("is-hidden", models.length > 0);
+  $("#local-model-list").innerHTML = models.map(renderLocalModelCard).join("");
+  renderIcons($("#local-model-list"));
+  focusLocalModelTarget();
+  const pending = models.filter((model) => !model.orphaned && model.status !== "ready");
+  $("#prepare-all-models").classList.toggle("is-hidden", pending.length < 2);
+  $("#prepare-all-models").disabled = !allowed || Boolean(data.active_job);
+  $$("input, select, button", $("#manual-model-form")).forEach((element) => { element.disabled = !allowed; });
+  renderLocalModelJob(data.active_job);
+}
+
+function renderLocalModelCard(model) {
+  const status = localModelStatus(model.status);
+  const references = model.references || [];
+  const referenceText = references.length
+    ? unique(references.map((reference) => reference.configuration_name)).map((name) => uiText(name)).join(uiText("、"))
+    : model.orphaned ? uiText("未关联配置") : uiText("手动添加");
+  const error = model.last_error?.message ? `<p class="local-model-error">${escapeHtml(localModelErrorMessage(model.last_error.code, model.last_error.message))}</p>` : "";
+  const disabled = !state.localModels.setup_allowed;
+  const cacheDisabled = disabled || !model.cache_managed || model.active_in_use;
+  const displaySize = model.cache_size || model.expected_size;
+  const sizeLabel = model.cache_size ? uiText("实际大小") : uiText("预计大小");
+  const primaryAction = localModelPrimaryAction(model, disabled);
+  const runtimeFault = ["RUNTIME_MISSING", "RUNTIME_CREATE_FAILED", "RUNTIME_UPDATE_FAILED", "COMMAND_FAILED"].includes(model.last_error?.code);
+  return `
+    <article class="local-model-card" id="local-model-${escapeHtml(model.id)}">
+      <div class="local-model-card-heading">
+        <span class="local-model-card-icon" aria-hidden="true">${iconMarkup("brain-circuit")}</span>
+        <div>
+          <strong>${escapeHtml(model.display_name)}</strong>
+          <span class="mono">${escapeHtml(model.source)}</span>
+        </div>
+        <span class="badge ${status.className}">${escapeHtml(status.label)}</span>
+      </div>
+      <div class="local-model-facts">
+        <span><small>${escapeHtml(sizeLabel)}</small><strong>${escapeHtml(displaySize ? formatBytes(displaySize) : uiText("未知"))}</strong></span>
+        <span><small>${escapeHtml(uiText("实际设备"))}</small><strong>${escapeHtml((model.resolved_device || uiText("尚未选择")).toUpperCase())}</strong></span>
+        <span class="local-model-reference"><small>${escapeHtml(uiText("使用位置"))}</small><strong>${escapeHtml(referenceText)}</strong></span>
+      </div>
+      ${error}
+      <details class="local-model-advanced">
+        <summary>${escapeHtml(uiText("高级详情"))}</summary>
+        <div class="local-model-advanced-grid">
+          <span><small>Repository ID</small><strong class="mono">${escapeHtml(model.source)}</strong></span>
+          <span><small>Adapter</small><strong>${escapeHtml(model.resolved_adapter || uiText("尚未识别"))}</strong></span>
+          <span><small>${escapeHtml(uiText("提交版本"))}</small><strong class="mono">${escapeHtml(model.resolved_revision ? model.resolved_revision.slice(0, 12) : "-")}</strong></span>
+          <span><small>${escapeHtml(uiText("许可证"))}</small><strong>${escapeHtml(model.license || "-")}</strong></span>
+          <span class="wide"><small>${escapeHtml(uiText("缓存位置"))}</small><strong class="mono">${escapeHtml(model.cache_location || uiText("尚未下载"))}</strong></span>
+        </div>
+        <div class="local-model-preferences">
+          <label><span>${escapeHtml(uiText("模型类型"))}</span><select data-model-adapter="${escapeHtml(model.id)}"><option value="auto" ${model.adapter_preference === "auto" ? "selected" : ""}>${escapeHtml(uiText("自动识别"))}</option><option value="transformers_token_classification" ${model.adapter_preference === "transformers_token_classification" ? "selected" : ""}>Transformers Token Classification</option><option value="gliner" ${model.adapter_preference === "gliner" ? "selected" : ""}>GLiNER</option></select></label>
+          <label><span>${escapeHtml(uiText("计算设备"))}</span><select data-model-device="${escapeHtml(model.id)}"><option value="auto" ${model.device_preference === "auto" ? "selected" : ""}>${escapeHtml(uiText("自动选择"))}</option><option value="cpu" ${model.device_preference === "cpu" ? "selected" : ""}>CPU</option><option value="mps" ${model.device_preference === "mps" ? "selected" : ""}>Apple MPS</option><option value="cuda" ${model.device_preference === "cuda" ? "selected" : ""}>NVIDIA CUDA</option></select></label>
+          <button class="secondary-button" type="button" data-local-model-action="save-preferences" data-model-id="${escapeHtml(model.id)}" ${disabled ? "disabled" : ""}>${escapeHtml(uiText("保存设置"))}</button>
+        </div>
+      </details>
+      <div class="local-model-actions">
+        ${primaryAction}
+        ${runtimeFault ? `<button class="secondary-button labeled-icon-button" type="button" data-local-model-action="runtime" data-model-id="${escapeHtml(model.id)}" ${disabled ? "disabled" : ""}>${iconMarkup("wrench")}<span>${escapeHtml(uiText("修复运行环境"))}</span></button>` : ""}
+        ${model.status === "ready" && model.source_type !== "local" ? `<button class="secondary-button icon-action-button" type="button" data-local-model-action="download" data-model-id="${escapeHtml(model.id)}" aria-label="${escapeHtml(uiText("重新下载模型"))}" title="${escapeHtml(uiText("重新下载模型"))}" ${disabled ? "disabled" : ""}>${iconMarkup("download")}</button>` : ""}
+        ${model.status === "ready" || model.last_error?.code === "MODEL_VERIFICATION_FAILED" ? `<button class="secondary-button icon-action-button" type="button" data-local-model-action="verify" data-model-id="${escapeHtml(model.id)}" aria-label="${escapeHtml(uiText("重新验证模型"))}" title="${escapeHtml(uiText("重新验证模型"))}" ${disabled ? "disabled" : ""}>${iconMarkup("rotate-cw")}</button>` : ""}
+        ${model.cache_managed ? `<button class="secondary-button danger-text icon-action-button" type="button" data-local-model-action="cache" data-model-id="${escapeHtml(model.id)}" aria-label="${escapeHtml(uiText("清理模型缓存"))}" title="${escapeHtml(uiText(model.active_in_use ? "当前启用配置正在使用该模型" : "清理模型缓存"))}" ${cacheDisabled ? "disabled" : ""}>${iconMarkup("trash-2")}</button>` : ""}
+        ${model.manual ? `<button class="secondary-button danger-text icon-action-button" type="button" data-local-model-action="delete" data-model-id="${escapeHtml(model.id)}" aria-label="${escapeHtml(uiText("移除手动模型"))}" title="${escapeHtml(uiText("移除手动模型"))}" ${disabled ? "disabled" : ""}>${iconMarkup("ban")}</button>` : ""}
+      </div>
+    </article>
+  `;
+}
+
+function localModelPrimaryAction(model, disabled) {
+  if (model.status === "ready") return "";
+  if (model.status === "needs_input") {
+    return `<button class="primary-button labeled-icon-button" type="button" data-local-model-action="open-settings" data-model-id="${escapeHtml(model.id)}" ${disabled ? "disabled" : ""}>${iconMarkup("wrench")}<span>${escapeHtml(uiText("选择模型类型"))}</span></button>`;
+  }
+  const label = model.status === "failed" ? uiText("重试") : uiText("准备");
+  return `<button class="primary-button labeled-icon-button" type="button" data-local-model-action="prepare" data-model-id="${escapeHtml(model.id)}" ${disabled ? "disabled" : ""}>${iconMarkup("package-check")}<span>${escapeHtml(label)}</span></button>`;
+}
+
+function localModelStatus(value) {
+  return ({
+    not_prepared: {label: uiText("未准备"), className: "neutral"},
+    inspecting: {label: uiText("检查中"), className: "blue"},
+    preparing_runtime: {label: uiText("准备运行环境"), className: "blue"},
+    downloading: {label: uiText("下载中"), className: "blue"},
+    verifying: {label: uiText("验证中"), className: "blue"},
+    ready: {label: uiText("可用"), className: "green"},
+    needs_input: {label: uiText("需要选择模型类型"), className: "amber"},
+    failed: {label: uiText("失败"), className: "red"},
+  })[value] || {label: uiText(value || "未准备"), className: "neutral"};
+}
+
+function focusLocalModelTarget() {
+  if (!state.localModelTarget) return;
+  const target = document.getElementById(`local-model-${state.localModelTarget}`);
+  if (!target) return;
+  state.localModelTarget = "";
+  target.scrollIntoView({behavior: "smooth", block: "center"});
+}
+
+function localDeviceReason(value) {
+  return ({
+    mps_not_supported: uiText("当前设备不支持 Apple MPS"),
+    cuda_not_detected: uiText("未检测到 CUDA"),
+    device_probe_failed: uiText("设备检测失败"),
+  })[value] || uiText("当前不可用");
+}
+
+function localModelErrorMessage(code, fallback) {
+  const message = ({
+    LOCAL_MODEL_SETUP_LOCAL_ONLY: "安装和下载只能从 APG 服务本机执行。",
+    INVALID_MODEL_SOURCE: "请输入有效的 Hugging Face 仓库 ID 或本地模型目录。",
+    INVALID_SOURCE_TYPE: "请选择有效的模型来源。",
+    INVALID_ADAPTER: "请选择受支持的模型运行方式。",
+    INVALID_DEVICE: "请选择受支持的计算设备。",
+    MODEL_TYPE_REQUIRED: "无法可靠识别模型类型，请在高级设置中明确选择。",
+    MODEL_TYPE_INCOMPATIBLE: "选择的模型类型与模型元数据不匹配。",
+    MODEL_INSPECTION_FAILED: "无法读取 Hugging Face 模型元数据，请检查地址与网络。",
+    MODEL_CONFIG_MISSING: "模型目录缺少 config.json。",
+    MODEL_CONFIG_INVALID: "模型目录中的 config.json 无效。",
+    MODEL_WEIGHTS_MISSING: "模型目录中没有可用的权重文件。",
+    REMOTE_CODE_UNSUPPORTED: "该模型需要执行远程自定义代码，APG 不支持。",
+    DEVICE_UNAVAILABLE: "明确选择的计算设备当前不可用。",
+    RUNTIME_MISSING: "模型运行环境尚未准备。",
+    RUNTIME_CREATE_FAILED: "无法创建受管模型运行环境。",
+    RUNTIME_UPDATE_FAILED: "更新受管模型运行环境失败，原有 Runtime 未受影响。",
+    MODEL_VERIFICATION_FAILED: "模型加载或最小推理验证失败。",
+    MODEL_NOT_READY: "模型尚未准备完成。",
+    LOCAL_MODEL_MISSING: "指定的本地模型目录不存在。",
+    LOCAL_PATH_NOT_MANAGED: "APG 不会删除用户自己的本地模型目录。",
+    MODEL_IN_ACTIVE_USE: "当前启用配置正在使用该模型，不能清理缓存。",
+    MODEL_NOT_DOWNLOADED: "请先下载或定位模型，再执行验证。",
+    DEPENDENCIES_MISSING: "请先安装该模型所需的运行依赖。",
+    DISK_SPACE_LOW: "模型缓存至少需要 512 MiB 可用磁盘空间。",
+    CUDA_NOT_DETECTED: "未检测到可用的 NVIDIA CUDA 驱动。",
+    CUDA_VERSION_UNSUPPORTED: "当前 CUDA 驱动不在 APG 自动安装支持范围内。",
+    CUDA_UNSUPPORTED_PLATFORM: "macOS 不支持 NVIDIA CUDA，请选择 CPU 或 Apple MPS。",
+    JOB_IN_PROGRESS: "已有本地模型任务正在运行，请等待它完成。",
+    NO_MODELS: "当前没有可准备的本地模型。",
+    COMMAND_TIMEOUT: "本地模型操作超时。",
+    COMMAND_START_FAILED: "无法启动本地模型操作。",
+    COMMAND_FAILED: "依赖安装、模型下载或验证失败。",
+    DOWNLOAD_RESULT_INVALID: "模型下载结果无效。",
+    DOWNLOAD_PATH_INVALID: "下载结果不在 APG 管理的模型缓存中。",
+  })[code] || fallback || "本地模型操作失败";
+  return uiText(message);
+}
+
+function formatBytes(value) {
+  const bytes = Number(value || 0);
+  if (!bytes) return "0 B";
+  const units = ["B", "KB", "MB", "GB", "TB"];
+  const index = Math.min(units.length - 1, Math.floor(Math.log(bytes) / Math.log(1024)));
+  return `${new Intl.NumberFormat(displayLocale(), {maximumFractionDigits: index ? 1 : 0}).format(bytes / (1024 ** index))} ${units[index]}`;
+}
+
+async function addManualLocalModel(event) {
+  event.preventDefault();
+  const button = $("button[type=submit]", event.currentTarget);
+  button.disabled = true;
+  $("#manual-model-error").textContent = "";
+  try {
+    const result = await api("/local-models", {
+      method: "POST",
+      body: JSON.stringify({
+        source_type: "auto",
+        source: $("#manual-model-source").value.trim(),
+        adapter: $("#manual-model-adapter").value,
+        device: $("#manual-model-device").value,
+        prepare: true,
+      }),
+    });
+    $("#manual-model-source").value = "";
+    await loadLocalModels();
+    if (result.job) {
+      state.localModels.active_job = result.job;
+      renderLocalModelJob(result.job);
+      watchLocalModelJob(result.job);
+    }
+    toast(uiText("模型已添加，正在准备"));
+  } catch (error) {
+    $("#manual-model-error").textContent = error.status === 404
+      ? uiText("APG 需要重启或更新")
+      : localModelErrorMessage(error.code, error.message);
+  } finally {
+    button.disabled = !state.localModels?.setup_allowed;
+  }
+}
+
+async function handleLocalModelAction(event) {
+  const button = event.target.closest("[data-local-model-action]");
+  if (!button) return;
+  const modelId = button.dataset.modelId;
+  const action = button.dataset.localModelAction;
+  if (action === "prepare") return prepareLocalModels([modelId], ["inspect", "runtime", "download", "verify"]);
+  if (action === "runtime") return prepareLocalModels([modelId], ["runtime"], true);
+  if (action === "download") return prepareLocalModels([modelId], ["download"], true);
+  if (action === "verify") return prepareLocalModels([modelId], ["verify"]);
+  if (action === "open-settings") {
+    const card = button.closest(".local-model-card");
+    const details = $(".local-model-advanced", card);
+    details.open = true;
+    $(`[data-model-adapter="${CSS.escape(modelId)}"]`, card)?.focus();
+    return;
+  }
+  if (action === "save-preferences") return saveLocalModelPreferences(modelId, button.closest(".local-model-card"));
+  if (action === "cache") {
+    return confirmAction("清理模型缓存", "将删除 APG 管理的模型文件，但不会删除检测器配置。", () => deleteLocalModelCache(modelId));
+  }
+  if (action === "delete") {
+    return confirmAction("移除手动模型", "该模型将从管理清单中移除，已下载的共享缓存不会自动删除。", () => deleteManualLocalModel(modelId));
+  }
+}
+
+async function saveLocalModelPreferences(modelId, card) {
+  const model = (state.localModels.models || []).find((item) => item.id === modelId);
+  if (!model) return;
+  const adapter = $(`[data-model-adapter="${CSS.escape(modelId)}"]`, card).value;
+  const device = $(`[data-model-device="${CSS.escape(modelId)}"]`, card).value;
+  try {
+    await api("/local-models", {
+      method: "POST",
+      body: JSON.stringify({
+        source_type: model.source_type,
+        source: model.source,
+        adapter,
+        device,
+      }),
+    });
+    await loadLocalModels();
+    toast(uiText("模型设置已保存"));
+  } catch (error) {
+    toast(localModelErrorMessage(error.code, error.message), true);
+  }
+}
+
+async function prepareLocalModels(modelIds, stages, force = false) {
+  try {
+    const job = await api("/local-models/prepare", {
+      method: "POST",
+      body: JSON.stringify({model_ids: modelIds, stages, force}),
+    });
+    state.localModels.active_job = job;
+    renderLocalModelJob(job);
+    watchLocalModelJob(job);
+  } catch (error) {
+    toast(localModelErrorMessage(error.code, error.message), true);
+  }
+}
+
+async function deleteLocalModelCache(modelId) {
+  await api(`/local-models/${encodeURIComponent(modelId)}/cache`, {method: "DELETE"});
+  await loadLocalModels();
+  toast("模型缓存已清理");
+}
+
+async function deleteManualLocalModel(modelId) {
+  await api(`/local-models/${encodeURIComponent(modelId)}`, {method: "DELETE"});
+  await loadLocalModels();
+  toast("手动模型已移除");
+}
+
+function watchLocalModelJob(job) {
+  clearTimeout(state.localModelJobTimer);
+  if (!job || !["queued", "running"].includes(job.status)) return;
+  state.localModelJobTimer = setTimeout(async () => {
+    try {
+      const next = await api(`/local-model-jobs/${encodeURIComponent(job.id)}`);
+      state.localModels.active_job = next;
+      renderLocalModelJob(next);
+      if (["queued", "running"].includes(next.status)) watchLocalModelJob(next);
+      else {
+        await loadLocalModels();
+        toast(next.status === "succeeded" ? "本地模型准备完成" : localModelErrorMessage(next.error_code, next.message || "本地模型准备失败"), next.status !== "succeeded");
+      }
+    } catch (error) {
+      handleError(error);
+    }
+  }, 900);
+}
+
+function renderLocalModelJob(job) {
+  const target = $("#local-model-job");
+  target.classList.toggle("is-hidden", !job);
+  if (!job) {
+    target.innerHTML = "";
+    return;
+  }
+  const stages = {
+    queued: uiText("等待开始"),
+    inspect: uiText("检查模型"),
+    runtime: uiText("准备运行环境"),
+    download: uiText("下载模型"),
+    verify: uiText("验证模型"),
+    completed: uiText("准备完成"),
+    needs_input: uiText("需要用户选择"),
+    failed: uiText("准备失败"),
+  };
+  const downloaded = Number(job.bytes_downloaded || 0);
+  const total = Number(job.total_bytes || 0);
+  const transfer = downloaded
+    ? `${formatBytes(downloaded)}${total ? ` / ${formatBytes(total)}` : ""}${job.speed_bps ? ` · ${formatBytes(job.speed_bps)}/s` : ""}`
+    : "";
+  target.innerHTML = `
+    <div><strong>${escapeHtml(stages[job.stage] || job.stage)}</strong><span>${escapeHtml(job.message || transfer || `${job.progress || 0}%`)}</span></div>
+    <progress max="100" value="${Number(job.progress || 0)}">${Number(job.progress || 0)}%</progress>
+  `;
 }
 
 async function loadOverview() {
@@ -244,6 +656,8 @@ async function loadOverview() {
     api("/privacy-control"),
   ]);
   state.connection = connection;
+  state.capabilities = Array.isArray(data.capabilities) ? data.capabilities : [];
+  state.buildId = data.build_id || "";
   state.upstream = upstream;
   state.privacyControl = privacyControl;
   renderConnection();
@@ -449,9 +863,6 @@ function renderConnection() {
     const target = targets[button.dataset.copyConnection];
     button.disabled = !target.value;
   });
-  $$("[data-copy-agent-setup]").forEach((button) => {
-    button.disabled = !state.connection.api_key || !state.connection.protocols[button.dataset.agentProtocol];
-  });
 }
 
 function toggleAgentKeyVisibility() {
@@ -496,139 +907,6 @@ async function copyConnectionValue(kind) {
   if (!input.value) return;
   await copyText(input.value);
   toast(kind === "api-key" ? "API Key 已复制" : "Base URL 已复制");
-}
-
-async function copyAgentSetup(kind) {
-  const setup = agentSetupText(kind);
-  if (!setup) return;
-  await copyText(setup);
-  const labels = {
-    claude: "Claude Code 环境变量已复制",
-    opencode: "OpenCode 配置已复制",
-    "codex-config": "Codex 配置已复制",
-    "codex-key": "Codex 密钥变量已复制",
-  };
-  toast(labels[kind] || "接入配置已复制");
-}
-
-function agentSetupText(kind) {
-  if (!state.connection?.api_key) return "";
-  const key = state.connection.api_key;
-  const openaiBaseUrl = location.origin + (state.connection.protocols?.openai?.base_path || "");
-  const anthropicBaseUrl = location.origin + (state.connection.protocols?.anthropic?.base_path || "");
-  if (kind === "claude" && state.connection.protocols?.anthropic) {
-    return [
-      `export ANTHROPIC_BASE_URL=${shellQuote(anthropicBaseUrl)}`,
-      `export ANTHROPIC_API_KEY=${shellQuote(key)}`,
-      `export ANTHROPIC_AUTH_TOKEN=${shellQuote(key)}`,
-      "export ANTHROPIC_MODEL=deepseek-v4-pro[1m]",
-      "export ANTHROPIC_DEFAULT_OPUS_MODEL=deepseek-v4-pro[1m]",
-      "export ANTHROPIC_DEFAULT_SONNET_MODEL=deepseek-v4-pro[1m]",
-      "export ANTHROPIC_DEFAULT_HAIKU_MODEL=deepseek-v4-flash",
-      "export CLAUDE_CODE_SUBAGENT_MODEL=deepseek-v4-flash",
-      "export CLAUDE_CODE_EFFORT_LEVEL=max",
-    ].join("\n");
-  }
-  if (kind === "opencode" && state.connection.protocols?.openai) {
-    return JSON.stringify({
-      $schema: "https://opencode.ai/config.json",
-      model: "apg/deepseek-v4-flash",
-      provider: {
-        apg: {
-          npm: "@ai-sdk/openai-compatible",
-          name: "APG",
-          options: {baseURL: openaiBaseUrl, apiKey: key},
-          models: {
-            "deepseek-v4-flash": {
-              name: "DeepSeek through APG",
-              tool_call: true,
-            },
-          },
-        },
-      },
-    }, null, 2);
-  }
-  if (kind === "codex-config" && state.connection.protocols?.openai) {
-    return [
-      'model = "deepseek-v4-pro[1m]"',
-      'model_provider = "apg"',
-      "",
-      "[model_providers.apg]",
-      'name = "APG"',
-      `base_url = ${JSON.stringify(openaiBaseUrl)}`,
-      'env_key = "APG_API_KEY"',
-      'wire_api = "responses"',
-    ].join("\n");
-  }
-  if (kind === "codex-key" && state.connection.protocols?.openai) {
-    return `export APG_API_KEY=${shellQuote(key)}`;
-  }
-  return "";
-}
-
-function openAgentGuide(kind) {
-  const guides = {
-    claude: {
-      name: "Claude Code",
-      summary: "通过 APG 的 Anthropic Messages 接口运行 Claude Code。环境变量只影响当前终端会话。",
-      steps: [
-        ["准备 APG", "确认上游模型配置和 APG 总开关均已启用。"],
-        ["复制环境变量", "点击 Claude Code 卡片上的复制按钮，将生成的全部环境变量粘贴到准备运行 Claude Code 的同一个终端。"],
-        ["启动 Claude Code", "在该终端进入项目目录，然后启动 Claude Code。", "cd /path/to/project\nclaude"],
-        ["确认连接", "发送一条测试消息；请求应出现在 APG 的审计记录中。"],
-      ],
-      note: "关闭终端后这些环境变量会失效；如需长期使用，可将它们保存到受信任的本机 Shell 配置中。",
-    },
-    opencode: {
-      name: "OpenCode",
-      summary: "通过 APG 的 OpenAI Chat Completions 接口运行 OpenCode。配置可以按用户全局保存，也可以只用于单个项目。",
-      steps: [
-        ["准备 APG", "确认上游模型配置和 APG 总开关均已启用。"],
-        ["复制配置", "点击 OpenCode 卡片上的复制按钮，复制完整 JSON 配置。"],
-        ["写入配置文件", "合并到全局配置 ~/.config/opencode/opencode.json，或项目根目录的 opencode.json；不要覆盖文件中已有的其他设置。"],
-        ["启动并选择模型", "在项目目录启动 OpenCode，并使用配置中的 APG 模型。", "cd /path/to/project\nopencode"],
-        ["确认连接", "发送一条测试消息；请求应出现在 APG 的审计记录中。"],
-      ],
-      note: "复制的配置包含当前本地 API Key，请不要提交到 Git 或粘贴到不受信任的位置。",
-    },
-    codex: {
-      name: "Codex",
-      summary: "通过 APG 的 OpenAI Responses 接口运行 Codex。Codex 配置与 API Key 分开保存。",
-      steps: [
-        ["准备 APG", "确认上游模型配置和 APG 总开关均已启用。"],
-        ["复制 Codex 配置", "点击 Codex 卡片上的复制按钮，将 TOML 内容合并到 ~/.codex/config.toml。"],
-        ["设置本地 API Key", "点击钥匙按钮复制密钥变量，然后粘贴到准备运行 Codex 的终端。"],
-        ["启动 Codex", "在同一个终端进入项目目录，然后启动 Codex。", "cd /path/to/project\ncodex"],
-        ["确认连接", "发送一条测试消息；请求应出现在 APG 的审计记录中。"],
-      ],
-      note: "密钥环境变量只影响当前终端会话。Codex 通过 env_key 读取它，密钥本身不会写入 config.toml。",
-    },
-  };
-  const guide = guides[kind];
-  if (!guide) return;
-  const text = (value) => escapeHtml(uiText(value));
-  state.agentGuide = kind;
-  $("#agent-guide-title").textContent = uiText(`${guide.name} 详细使用方法`);
-  $("#agent-guide-body").innerHTML = `
-    <p class="agent-guide-summary">${text(guide.summary)}</p>
-    <ol class="agent-guide-steps">
-      ${guide.steps.map(([title, description, command], index) => `
-        <li>
-          <span class="agent-guide-step-number">${index + 1}</span>
-          <div class="agent-guide-step-content">
-            <strong>${text(title)}</strong>
-            <p>${text(description)}</p>
-            ${command ? `<pre class="agent-guide-command">${escapeHtml(command)}</pre>` : ""}
-          </div>
-        </li>
-      `).join("")}
-    </ol>
-    <p class="agent-guide-note">${text(guide.note)}</p>`;
-  if (!$("#agent-guide-modal").open) $("#agent-guide-modal").showModal();
-}
-
-function shellQuote(value) {
-  return `'${String(value).replace(/'/g, `'"'"'`)}'`;
 }
 
 async function copyText(value) {
@@ -1094,10 +1372,13 @@ function renderDetectorModules() {
     const unavailable = module.type === "local_model" && module.enabled && module.runtime_available === false;
     const status = !module.enabled ? "disabled" : unavailable ? "unavailable" : module.editable === false ? "managed" : "activated";
     const statusClass = status === "activated" ? "green" : status === "unavailable" ? "red" : "neutral";
+    const statusMarkup = status === "unavailable"
+      ? `<button class="badge ${statusClass} module-status-link" type="button" data-view="local-models" data-local-model-target="${escapeHtml(module.local_model_id || "")}" title="打开本地模型管理">${escapeHtml(moduleStatusLabel(status))}</button>`
+      : `<span class="badge ${statusClass}">${escapeHtml(moduleStatusLabel(status))}</span>`;
     const editable = !readonly && module.editable !== false;
     const dragControl = editable ? `<button class="module-drag-handle" type="button" title="拖动排序" aria-label="拖动排序 ${escapeHtml(module.name)}" aria-keyshortcuts="Alt+ArrowUp Alt+ArrowDown" aria-grabbed="false" data-module-drag="${index}">${iconMarkup("grip-vertical")}</button>` : `<span class="module-drag-spacer" aria-hidden="true"></span>`;
     const controls = editable ? `<div class="module-actions"><button type="button" title="编辑模块" aria-label="编辑 ${escapeHtml(module.name)}" data-module-edit="${index}">${iconMarkup("pencil")}</button><button type="button" title="复制模块" aria-label="复制 ${escapeHtml(module.name)}" data-module-copy="${index}">${iconMarkup("copy")}</button><button type="button" class="danger" title="删除模块" aria-label="删除 ${escapeHtml(module.name)}" data-module-delete="${index}">${iconMarkup("trash-2")}</button></div>` : "";
-    return `<div class="module-row" data-module-row="${index}">${dragControl}<span class="module-order">${index + 1}</span><div class="module-name"><span class="module-symbol module-symbol-${escapeHtml(module.type)}" aria-hidden="true" title="${escapeHtml(type)}">${iconMarkup(typeIcon)}</span><div><strong>${escapeHtml(module.name)}</strong><span>${escapeHtml(type)}</span></div></div><span class="badge ${statusClass}">${escapeHtml(moduleStatusLabel(status))}</span>${controls}<label class="toggle"><input type="checkbox" data-module-toggle="${index}" ${module.enabled ? "checked" : ""} aria-label="启用 ${escapeHtml(module.name)}"><span></span></label></div>`;
+    return `<div class="module-row" data-module-row="${index}">${dragControl}<span class="module-order">${index + 1}</span><div class="module-name"><span class="module-symbol module-symbol-${escapeHtml(module.type)}" aria-hidden="true" title="${escapeHtml(type)}">${iconMarkup(typeIcon)}</span><div><strong>${escapeHtml(module.name)}</strong><span>${escapeHtml(type)}</span></div></div>${statusMarkup}${controls}<label class="toggle"><input type="checkbox" data-module-toggle="${index}" ${module.enabled ? "checked" : ""} aria-label="启用 ${escapeHtml(module.name)}"><span></span></label></div>`;
   }).join("");
   renderIcons(target);
   $$('[data-module-toggle]', target).forEach((input) => input.addEventListener("change", () => updateModuleEnabled(Number(input.dataset.moduleToggle), input.checked)));
@@ -1354,7 +1635,7 @@ function removeModule(index) {
   });
 }
 
-function openModuleEditor(index) {
+async function openModuleEditor(index) {
   const editing = index !== null;
   state.editingModuleIndex = index;
   state.moduleDraft = index === null ? {
@@ -1372,6 +1653,14 @@ function openModuleEditor(index) {
   $("#module-name-field").classList.toggle("full-row", editing);
   $("#module-form [name=timeout_ms]").value = state.moduleDraft.timeout_ms ?? "";
   $("#module-form [name=failure_mode]").value = state.moduleDraft.failure_mode || "open";
+  if (state.moduleDraft.type === "local_model") {
+    try {
+      await refreshLocalModelCatalog();
+    } catch (error) {
+      state.localModels = {models: []};
+      $("#module-error").textContent = error.message;
+    }
+  }
   renderModuleSpecificFields();
   $("#module-modal").showModal();
 }
@@ -1380,7 +1669,7 @@ function defaultModuleConfig(type) {
   if (type === "regex") return {rules: []};
   if (type === "entropy") return {min_length: 20, min_entropy: 3.5, risk: "medium"};
   if (type === "path") return {detect_unix_home: true, detect_macos_private: true, detect_shell_config: true, detect_windows_user: true, exclude_patterns: [], path_risk: "medium"};
-  return {adapter: "transformers_token_classification", model_name: "iiiorg/piiranha-v1-detect-personal-information", threshold: 0.75, device: "cpu", aggregation_strategy: "simple", labels: ["email", "phone_number", "user_name"]};
+  return {adapter: "transformers_token_classification", model_name: "", threshold: 0.75, device: "cpu", aggregation_strategy: "simple", labels: ["email", "phone_number", "user_name"]};
 }
 
 function renderModuleSpecificFields() {
@@ -1409,15 +1698,35 @@ function renderModuleSpecificFields() {
     target.innerHTML = `<div class="check-grid"><label><input id="path-unix" type="checkbox" ${config.detect_unix_home ? "checked" : ""}> Unix / macOS Home</label><label><input id="path-private" type="checkbox" ${config.detect_macos_private ? "checked" : ""}> macOS /private</label><label><input id="path-shell" type="checkbox" ${config.detect_shell_config ? "checked" : ""}> Shell 配置目录</label><label><input id="path-windows" type="checkbox" ${config.detect_windows_user ? "checked" : ""}> Windows User 路径</label></div><div class="form-grid specific-grid"><label class="full-row"><span>排除模式（逗号分隔 glob）</span><input id="path-excludes" value="${escapeHtml(config.exclude_patterns.join(", "))}"></label>${riskField("path", "模块", config.path_risk)}</div>`;
   } else {
     const config = module.config;
-    target.innerHTML = `<div class="form-grid specific-grid"><label><span>运行方式</span><select id="model-adapter"><option value="transformers_token_classification" ${config.adapter === "transformers_token_classification" ? "selected" : ""}>Transformers Token Classification</option><option value="gliner" ${config.adapter === "gliner" ? "selected" : ""}>GLiNER</option></select></label><label><span>模型分数阈值</span><input id="model-threshold" type="number" min="0" max="1" step="0.01" value="${config.threshold}"></label><label class="full-row"><span>Hugging Face 模型地址或本地路径</span><input id="model-name" value="${escapeHtml(config.model_name)}"></label><label><span>设备</span><select id="model-device"><option value="cpu">CPU</option><option value="mps">Apple MPS</option><option value="cuda">CUDA</option><option value="cuda:0">CUDA:0</option></select></label>${config.adapter === "gliner" ? `<label class="full-row"><span>实体标签（逗号分隔）</span><input id="model-labels" value="${escapeHtml(config.labels.join(", "))}"></label>` : `<label><span>聚合方式</span><select id="model-aggregation"><option value="simple">Simple</option><option value="first">First</option><option value="average">Average</option><option value="max">Max</option></select></label>`}<div class="model-policy-note full-row">模型按需延迟加载；是否允许下载由部署策略决定。</div></div>`;
-    $("#model-device").value = config.device;
+    const models = availableLocalModels();
+    const selected = models.find((model) => model.source === config.model_name);
+    const unavailable = Boolean(config.model_name) && !selected;
+    const placeholder = unavailable
+      ? `当前配置的模型不可用：${config.model_name}`
+      : models.length ? "请选择可用模型" : "没有可用模型";
+    const options = models.map((model) => {
+      const device = String(model.resolved_device || "").toUpperCase();
+      const label = `${model.display_name || model.source}${device ? ` · ${device}` : ""}`;
+      return `<option value="${escapeHtml(model.id)}" ${model.id === selected?.id ? "selected" : ""}>${escapeHtml(label)}</option>`;
+    }).join("");
+    target.innerHTML = `<div class="form-grid specific-grid"><label class="full-row"><span>使用的本地模型</span><select id="model-selection" required ${models.length ? "" : "disabled"}><option value="" ${selected ? "" : "selected"} disabled>${escapeHtml(placeholder)}</option>${options}</select></label><label><span>模型分数阈值</span><input id="model-threshold" type="number" min="0" max="1" step="0.01" value="${config.threshold}"></label>${config.adapter === "gliner" ? `<label class="full-row"><span>实体标签（逗号分隔）</span><input id="model-labels" value="${escapeHtml(config.labels.join(", "))}"></label>` : `<label><span>聚合方式</span><select id="model-aggregation"><option value="simple">Simple</option><option value="first">First</option><option value="average">Average</option><option value="max">Max</option></select></label>`}<div class="model-policy-note full-row"><span>${escapeHtml(models.length ? "只能选择已在本地模型管理中准备并验证成功的模型。" : "请先在本地模型管理中完成模型准备，然后返回选择。")}</span><button class="secondary-button" type="button" data-view="local-models" data-close-modal>${escapeHtml("前往本地模型管理")}</button></div></div>`;
     if ($("#model-aggregation")) $("#model-aggregation").value = config.aggregation_strategy;
-    $("#model-adapter").addEventListener("change", (event) => { syncModuleSpecificFields(); state.moduleDraft.config.adapter = event.target.value; renderModuleSpecificFields(); });
+    $("#model-selection").addEventListener("change", (event) => {
+      const model = models.find((item) => item.id === event.target.value);
+      if (!model) return;
+      state.moduleDraft.config = {
+        ...state.moduleDraft.config,
+        model_name: model.source,
+        adapter: model.resolved_adapter,
+        device: model.resolved_device,
+      };
+      renderModuleSpecificFields();
+    });
   }
 }
 
 function renderRegexRule(rule, index) {
-  const name = String(rule.metadata?.display_name || rule.id);
+  const name = uiText(String(rule.metadata?.display_name || rule.id));
   return `<details class="rule-editor" data-rule-card="${index}" ${rule.pattern ? "" : "open"}><summary class="rule-editor-heading"><strong>${escapeHtml(name)}</strong><label class="inline-check"><input data-rule-field="enabled" type="checkbox" ${rule.enabled !== false ? "checked" : ""}>启用</label><button class="row-action danger icon-row-button" type="button" data-remove-rule="${index}" aria-label="删除正则规则 ${escapeHtml(name)}" title="删除正则规则">${iconMarkup("trash-2")}</button></summary><div class="form-grid"><label><span>规则名称</span><input data-rule-field="name" value="${escapeHtml(name)}"></label><label class="full-row"><span>正则表达式</span><textarea data-rule-field="pattern" rows="3">${escapeHtml(rule.pattern)}</textarea></label><label><span>数据类型</span><select data-rule-field="type">${selectOptions(["MACHINE_SECRET", "PII", "LOCAL_CONTEXT", "CREDENTIAL_FILE", "UNKNOWN_SECRET_CANDIDATE"], rule.type)}</select></label><label><span>风险等级（仅用于审计）</span><select data-rule-field="risk">${selectOptions(["critical", "high", "medium", "low"], rule.risk)}</select></label><details class="rule-advanced full-row"><summary>高级选项（选填）</summary><div class="form-grid"><label><span>Flags（逗号分隔）</span><input data-rule-field="flags" value="${escapeHtml((rule.flags || []).join(", "))}"></label><label><span>Validators（选填）</span><input data-rule-field="validators" value="${escapeHtml((rule.validators || []).join(", "))}"></label><label><span>必须通过的 Validators（选填）</span><input data-rule-field="require_validators" value="${escapeHtml((rule.require_validators || []).join(", "))}"></label><label><span>拒绝的 Validators（选填）</span><input data-rule-field="reject_validators" value="${escapeHtml((rule.reject_validators || []).join(", "))}"></label></div></details></div></details>`;
 }
 
@@ -1439,7 +1748,9 @@ function syncModuleSpecificFields() {
   } else if (module.type === "path") {
     module.config = {...module.config, detect_unix_home: $("#path-unix").checked, detect_macos_private: $("#path-private").checked, detect_shell_config: $("#path-shell").checked, detect_windows_user: $("#path-windows").checked, exclude_patterns: commaList($("#path-excludes").value), path_risk: $("#path-risk").value};
   } else {
-    module.config = {...module.config, adapter: $("#model-adapter").value, model_name: $("#model-name").value.trim(), threshold: Number($("#model-threshold").value), device: $("#model-device").value, aggregation_strategy: $("#model-aggregation")?.value || module.config.aggregation_strategy, labels: $("#model-labels") ? commaList($("#model-labels").value) : module.config.labels};
+    const model = availableLocalModels().find((item) => item.id === $("#model-selection").value);
+    if (!model) throw new Error("请先准备并选择一个可用的本地模型");
+    module.config = {...module.config, adapter: model.resolved_adapter, model_name: model.source, threshold: Number($("#model-threshold").value), device: model.resolved_device, aggregation_strategy: $("#model-aggregation")?.value || module.config.aggregation_strategy, labels: $("#model-labels") ? commaList($("#model-labels").value) : module.config.labels};
   }
 }
 
@@ -1464,7 +1775,8 @@ function applyModuleDraft(event) {
 }
 
 function renderDetectionDiagnostics(diagnostics) {
-  $("#detection-diagnostics").innerHTML = diagnostics.length ? `<div class="diagnostic-heading"><p class="section-kicker">EXECUTION TRACE</p><span>${diagnostics.length} 个步骤</span></div>${diagnostics.map((item, index) => `<div class="diagnostic-row"><span class="diagnostic-order">${index + 1}</span><strong>${escapeHtml(item.id === "apg_core" ? uiText("APG 内置安全防线") : item.id)}</strong><span>${escapeHtml(item.type)}</span><span>${item.findings} 命中</span><span>${Number(item.elapsed_ms).toFixed(2)} ms</span><b class="badge ${item.status === "ok" ? "green" : ["disabled", "unavailable"].includes(item.status) ? "neutral" : "red"}">${escapeHtml(item.status)}</b></div>`).join("")}` : "";
+  const visibleDiagnostics = diagnostics.filter((item) => item.id !== "apg_core");
+  $("#detection-diagnostics").innerHTML = visibleDiagnostics.length ? `<div class="diagnostic-heading"><p class="section-kicker">EXECUTION TRACE</p><span>${visibleDiagnostics.length} 个步骤</span></div>${visibleDiagnostics.map((item, index) => `<div class="diagnostic-row"><span class="diagnostic-order">${index + 1}</span><strong>${escapeHtml(item.id)}</strong><span>${escapeHtml(item.type)}</span><span>${item.findings} 命中</span><span>${Number(item.elapsed_ms).toFixed(2)} ms</span><b class="badge ${item.status === "ok" ? "green" : ["disabled", "unavailable"].includes(item.status) ? "neutral" : "red"}">${escapeHtml(item.status)}</b></div>`).join("")}` : "";
 }
 
 function moduleTypeLabel(type) {
@@ -1507,6 +1819,7 @@ async function runDetection() {
 }
 
 function renderHighlightedDetection(output, text, findings) {
+  closeDetectionTooltip();
   output.replaceChildren();
   if (!findings.length) {
     const empty = document.createElement("span");
@@ -1523,7 +1836,7 @@ function renderHighlightedDetection(output, text, findings) {
   const summaryText = document.createElement("strong");
   summaryText.textContent = `发现 ${groups.length} 处敏感内容`;
   const localOnly = document.createElement("span");
-  localOnly.textContent = "本地检测 · 未上传云端";
+  localOnly.textContent = "本地检测 · 悬停或点击高亮查看模块";
   summary.append(summaryText, localOnly);
 
   const source = document.createElement("pre");
@@ -1533,12 +1846,33 @@ function renderHighlightedDetection(output, text, findings) {
     if (group.start > cursor) source.append(document.createTextNode(characters.slice(cursor, group.start).join("")));
     const mark = document.createElement("mark");
     mark.className = `text-highlight risk-${group.risk}`;
-    mark.title = group.findings.map((finding) => `${finding.subtype} · ${finding.risk} · ${finding.detectors.join(" + ")}`).join("\n");
+    const moduleNames = findingGroupModuleNames(group);
+    mark.tabIndex = 0;
+    mark.setAttribute("role", "button");
+    mark.setAttribute("aria-expanded", "false");
+    mark.setAttribute("aria-label", `检测模块：${moduleNames.join("、")}`);
     mark.append(document.createTextNode(characters.slice(group.start, group.end).join("")));
     const marker = document.createElement("sup");
     marker.className = "highlight-index";
     marker.textContent = String(index + 1);
     mark.append(marker);
+    mark.addEventListener("pointerenter", () => {
+      if (!state.detectionTooltipPinned) showDetectionTooltip(mark, group, false);
+    });
+    mark.addEventListener("pointerleave", () => {
+      if (!state.detectionTooltipPinned) closeDetectionTooltip();
+    });
+    mark.addEventListener("focus", () => {
+      if (!state.detectionTooltipPinned) showDetectionTooltip(mark, group, false);
+    });
+    mark.addEventListener("blur", () => {
+      if (!state.detectionTooltipPinned) closeDetectionTooltip();
+    });
+    mark.addEventListener("click", (event) => {
+      event.stopPropagation();
+      if (state.detectionTooltipMark === mark && state.detectionTooltipPinned) closeDetectionTooltip();
+      else showDetectionTooltip(mark, group, true);
+    });
     source.append(mark);
     cursor = group.end;
   });
@@ -1554,9 +1888,9 @@ function renderHighlightedDetection(output, text, findings) {
     number.textContent = String(index + 1);
     const content = document.createElement("div");
     const title = document.createElement("strong");
-    title.textContent = unique(group.findings.map((finding) => finding.subtype)).join(" + ");
+    title.textContent = unique(group.findings.map((finding) => findingSubtypeLabel(finding.subtype))).join(" + ");
     const detectors = document.createElement("span");
-    detectors.textContent = unique(group.findings.flatMap((finding) => finding.detectors)).join(" + ");
+    detectors.textContent = findingGroupModuleNames(group).join(" + ");
     content.append(title, detectors);
     const risk = document.createElement("b");
     risk.textContent = group.risk;
@@ -1565,6 +1899,77 @@ function renderHighlightedDetection(output, text, findings) {
   });
 
   output.append(summary, source, legend);
+}
+
+function findingGroupModuleNames(group) {
+  return unique(group.findings.flatMap(findingModuleNames));
+}
+
+function findingModuleNames(finding) {
+  const modules = state.detectorDraft?.modules || [];
+  const ruleId = String(finding.metadata?.rule_id || "");
+  const names = [];
+  for (const detector of finding.detectors || []) {
+    if (detector === "rules.apg_markers" || ruleId.startsWith("apg.")) {
+      names.push(uiText("APG 内置安全防线"));
+      continue;
+    }
+    const matched = modules.filter((module) => {
+      if (detector === `rules.${module.id}` || detector === `models.${module.id}`) return true;
+      if (module.type === "regex" && ruleId) {
+        return (module.config?.rules || []).some((rule) => rule.id === ruleId);
+      }
+      if (module.type === "path" && detector === "paths") return true;
+      if (module.type === "entropy" && detector === "heuristic.entropy_context") return true;
+      return false;
+    });
+    if (matched.length) names.push(...matched.map((module) => uiText(module.name)));
+    else names.push(detector);
+  }
+  return unique(names);
+}
+
+function showDetectionTooltip(mark, group, pinned) {
+  closeDetectionTooltip();
+  const tooltip = document.createElement("div");
+  tooltip.className = "detection-tooltip";
+  tooltip.id = "detection-highlight-tooltip";
+  tooltip.setAttribute("role", "tooltip");
+  const label = document.createElement("span");
+  label.textContent = uiText("检测模块");
+  const modules = document.createElement("strong");
+  modules.textContent = findingGroupModuleNames(group).join(" + ");
+  const details = document.createElement("small");
+  details.textContent = `${unique(group.findings.map((finding) => findingSubtypeLabel(finding.subtype))).join(" + ")} · ${group.risk}`;
+  tooltip.append(label, modules, details);
+  document.body.append(tooltip);
+
+  const markBounds = mark.getBoundingClientRect();
+  const tooltipBounds = tooltip.getBoundingClientRect();
+  const margin = 12;
+  const centered = markBounds.left + markBounds.width / 2 - tooltipBounds.width / 2;
+  const left = Math.max(margin, Math.min(window.innerWidth - tooltipBounds.width - margin, centered));
+  let top = markBounds.bottom + 8;
+  if (top + tooltipBounds.height > window.innerHeight - margin) top = markBounds.top - tooltipBounds.height - 8;
+  tooltip.style.left = `${left}px`;
+  tooltip.style.top = `${Math.max(margin, top)}px`;
+
+  mark.setAttribute("aria-expanded", "true");
+  mark.setAttribute("aria-describedby", tooltip.id);
+  state.detectionTooltip = tooltip;
+  state.detectionTooltipMark = mark;
+  state.detectionTooltipPinned = pinned;
+}
+
+function closeDetectionTooltip() {
+  if (state.detectionTooltipMark) {
+    state.detectionTooltipMark.setAttribute("aria-expanded", "false");
+    state.detectionTooltipMark.removeAttribute("aria-describedby");
+  }
+  state.detectionTooltip?.remove();
+  state.detectionTooltip = null;
+  state.detectionTooltipMark = null;
+  state.detectionTooltipPinned = false;
 }
 
 function mergeFindingRanges(textLength, findings) {
@@ -1594,6 +1999,23 @@ function mergeFindingRanges(textLength, findings) {
 
 function unique(values) {
   return [...new Set(values)];
+}
+
+function findingSubtypeLabel(value) {
+  const labels = {
+    api_key: "API 密钥",
+    access_url_token: "访问链接令牌",
+    credential_username: "登录账号",
+    credential_password: "登录密码",
+    local_path: "本地路径",
+    email: "电子邮箱",
+    phone: "电话号码",
+    private_key: "私钥",
+    bearer_token: "Bearer Token",
+    database_url: "数据库连接",
+    high_entropy_token: "高熵 Token",
+  };
+  return uiText(labels[value] || value);
 }
 
 function confirmAction(title, message, action) {
@@ -1656,7 +2078,7 @@ function toast(message, error = false) {
 }
 
 function handleError(error) {
-  toast(error.message || "请求失败", true);
+  toast(localModelErrorMessage(error.code, error.message || "请求失败"), true);
 }
 
 function debounce(fn, wait) {

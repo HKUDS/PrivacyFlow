@@ -14,9 +14,13 @@ class PathDetector(Detector):
     TRAILING_PUNCTUATION = ".,;:!?]}"
 
     PATTERNS = (
-        re.compile(r"(?<!\w)/(?:Users|home)/[A-Za-z0-9._-]+/[^\s\"'<>)]*"),
-        re.compile(r"(?<!\w)/private/[^\s\"'<>)]*"),
-        re.compile(r"(?<!\w)~/(?:\.ssh|\.aws|\.config)(?:/[^\s\"'<>)]*)?"),
+        # A colon terminates POSIX paths in common grep/ripgrep output
+        # (`path:matching line`). Consuming it would turn the matched line,
+        # including a possible credential assignment, into part of the path
+        # alias and could copy protected data into that alias.
+        re.compile(r"(?<!\w)/(?:Users|home)/[A-Za-z0-9._-]+/[^\s:\"'<>)]*"),
+        re.compile(r"(?<!\w)/private/[^\s:\"'<>)]*"),
+        re.compile(r"(?<!\w)~/(?:\.ssh|\.aws|\.config)(?:/[^\s:\"'<>)]*)?"),
         re.compile(r"(?<!\w)%(?:USERPROFILE|APPDATA)%\\[^\s\"'<>)]*", re.I),
         re.compile(r"(?<!\w)[A-Za-z]:\\Users\\[A-Za-z0-9._-]+\\[^\s\"'<>)]*"),
     )

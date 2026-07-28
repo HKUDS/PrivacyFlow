@@ -1,6 +1,6 @@
 # Design
 
-APG starts with an API proxy because OpenAI-compatible clients are common, but the proxy is the only layer APG owns. The durable boundary is the local privacy runtime: recursive scanning, stateful placeholder management, sink-aware materialization, and audit logging. Tool permission, file-write arbitration, and secret-use brokerage belong to the agent harness — APG is intentionally not a tool/capability firewall.
+APG starts with an API proxy because OpenAI-compatible clients are common, but the proxy is the only layer APG owns. The durable boundary is the local privacy runtime: field-aware scanning, stateful placeholder management, sink-aware materialization, and audit logging. Tool permission, file-write arbitration, and secret-use brokerage belong to the agent harness — APG is intentionally not a tool/capability firewall.
 
 ## Stateful Mapping Store
 
@@ -18,9 +18,9 @@ Detector management is implemented as revisioned configurations rather than edit
 
 ## Hierarchical Sensitive Information Detection
 
-The detector layer is local-first and layered. Level 0 adapters extract text blocks from raw text and recursive JSON while preserving source metadata such as JSON pointers. Normalization applies NFKC, zero-width removal, bounded URL decoding, bounded HTML entity decoding, and bounded escape decoding without treating normalization as a replacement for forensic traceability.
+The detector layer is local-first and layered. Level 0 adapters extract text blocks from raw text and recursive JSON while preserving source metadata such as JSON pointers. Deterministic rules still inspect every non-protocol string, while expensive local models are limited to content-bearing prompt and response fields rather than tool schemas and protocol metadata. Per-field diagnostics are aggregated by module. Normalization applies NFKC, zero-width removal, bounded URL decoding, bounded HTML entity decoding, and bounded escape decoding without treating normalization as a replacement for forensic traceability.
 
-Level 1 deterministic detectors are the most trusted evidence source: PEM private keys, JWTs, database URLs, bearer tokens, `.env` sensitive assignments, provider-like tokens, cookies/session IDs, credit cards with Luhn validation, emails, phones, APG markers, and high-confidence local paths. Level 2 entropy/context detectors find random-looking token candidates and weigh nearby words such as `token`, `secret`, `authorization`, and `cookie`, while lowering confidence around fake/example/mock contexts.
+Level 1 deterministic detectors are the default evidence source: PEM private keys, JWTs, database URLs, bearer tokens, `.env` sensitive assignments, provider-like tokens, cookies/session IDs, IP-hosted access links, credential-pair passwords, credit cards with Luhn validation, emails, phones, APG markers, and high-confidence local paths. Level 2 entropy detection is optional and disabled in built-in templates because normal source identifiers can look random; strict or explicitly customized flows may enable it.
 
 Level 3 validators increase confidence without contacting external services. Level 4 external scanners such as detect-secrets, gitleaks, trufflehog, and Presidio are optional plugins. Level 5 small model detectors such as StarPII-like, Piiranha-like, GLiNER-PII-like, or privacy-filter-like models are also optional, lazy-loaded, local-only, CPU-capable, and failure-tolerant.
 

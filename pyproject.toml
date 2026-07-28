@@ -4,6 +4,21 @@ version = "0.1.0"
 description = "Local privacy/security gateway for cloud AI agents."
 readme = "README.md"
 requires-python = ">=3.11"
+license = "Apache-2.0"
+keywords = ["ai", "privacy", "security", "llm", "agent", "proxy"]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Environment :: Web Environment",
+  "Framework :: FastAPI",
+  "License :: OSI Approved :: Apache Software License",
+  "Operating System :: OS Independent",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+  "Programming Language :: Python :: 3.14",
+  "Topic :: Security",
+]
 dependencies = [
   "fastapi>=0.115",
   "httpx>=0.27",
@@ -12,12 +27,17 @@ dependencies = [
   "uvicorn>=0.30",
 ]
 
+[project.urls]
+Homepage = "https://github.com/zzhtx258/Agent-Privacy-Gateway"
+Documentation = "https://github.com/zzhtx258/Agent-Privacy-Gateway/tree/main/docs"
+Issues = "https://github.com/zzhtx258/Agent-Privacy-Gateway/issues"
+Source = "https://github.com/zzhtx258/Agent-Privacy-Gateway"
+
 [project.optional-dependencies]
-dev = ["pytest>=8.2"]
-models = [
-  "gliner>=0.2.17",
-  "torch>=2.2",
-  "transformers>=4.40",
+dev = [
+  "build>=1.2",
+  "pytest>=8.2",
+  "ruff>=0.9",
 ]
 
 [project.scripts]
@@ -28,8 +48,39 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [tool.pytest.ini_options]
-pythonpath = ["src"]
+pythonpath = ["src", "."]
 testpaths = ["tests", "e2e_agent_tests/tests"]
+addopts = "--strict-markers"
+markers = [
+  "integration: explicit networked tests that install optional dependencies or download models",
+]
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/gateway"]
+
+[tool.hatch.build.targets.sdist]
+include = [
+  "/CONTRIBUTING.md",
+  "/LICENSE",
+  "/README.md",
+  "/SECURITY.md",
+  "/assets",
+  "/config",
+  "/docs",
+  "/e2e_agent_tests",
+  "/examples",
+  "/pyproject.toml",
+  "/src",
+  "/tests",
+]
+
+[tool.ruff]
+target-version = "py311"
+line-length = 140
+extend-exclude = [
+  "docs/live_agent_evidence.js",
+]
+
+[tool.ruff.lint]
+select = ["E4", "E7", "E9", "F", "B"]
+ignore = ["E501"]

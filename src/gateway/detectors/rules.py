@@ -22,8 +22,9 @@ VALIDATORS = {
     "jwt_header": jwt_header_valid,
     "luhn": luhn_valid,
     "pem_pair": pem_pair_valid,
-    "phone_shape": lambda value: len(re.sub(r"\D", "", value)) >= 8,
+    "phone_shape": lambda value: _formatted_phone(value),
     "placeholder_parser_required": lambda value: bool(PLACEHOLDER_RE.fullmatch(value)),
+    "mixed_case_secret": lambda value: _mixed_case_secret(value),
 }
 
 
@@ -34,6 +35,46 @@ _SAFE_ASSIGNMENT_VALUES = re.compile(
     r"|\$(?:[A-Z_][A-Z0-9_]*|\{[A-Z_][A-Z0-9_]*\})"
     r"|your[-_][A-Z0-9_-]+[-_]here"
     r")",
+    re.I,
+)
+_SAFE_ASSIGNMENT_EXPRESSION = re.compile(
+    r"(?:"
+    r"(?:bool|str|int|float|len)\([A-Z_][A-Z0-9_]*\)"
+    r"|os\.(?:getenv|environ\.get)\((?:\"[A-Z_][A-Z0-9_]*\"|'[A-Z_][A-Z0-9_]*')\)"
+    r")(?:\\[nr])*",
+    re.I,
+)
+_SENSITIVE_ENV_NAME = re.compile(
+    r"(?:^|_)(?:API_KEY|APIKEY|TOKEN|SECRET|PASSWORD|PASSWD|PASS|CREDENTIAL|PRIVATE_KEY|DATABASE_URL)(?:_|$)",
+    re.I,
+)
+_NON_SECRET_ENV_SUFFIXES = {
+    "BUDGET",
+    "CONFIGURED",
+    "COUNT",
+    "DISABLED",
+    "ENABLED",
+    "ENDPOINT",
+    "FILE",
+    "ID",
+    "LENGTH",
+    "LIMIT",
+    "MAX",
+    "MIN",
+    "NAME",
+    "PATH",
+    "PRESENT",
+    "SET",
+    "SIZE",
+    "STATUS",
+    "TIMEOUT",
+    "TYPE",
+    "URI",
+    "URL",
+    "WINDOW",
+}
+_SHORT_SECRET_ASSIGNMENT_PREFIX = re.compile(
+    r"(?:sk-|gh[opusr]_|xox[baprs]-|eyJ|svc[_-])",
     re.I,
 )
 
@@ -85,13 +126,18 @@ class RuleBasedDetector(Detector):
         text = normalized.normalized
         for rule, pattern in self._compiled:
             for match in pattern.finditer(text):
-                value = _match_value(match)
+                if rule.id == "secret.env_assignment" and not _sensitive_env_assignment(match):
+                    continue
+                value, value_span = _match_value_and_span(rule, match)
+                if rule.id == "pii.email" and _email_is_ssh_public_key_comment(text, value_span):
+                    continue
+                if rule.id == "pii.phone" and _span_is_hex_dump_columns(text, value_span):
+                    continue
                 passed_validators = tuple(name for name in rule.validators if _validator_passes(name, value))
                 if any(name not in passed_validators for name in rule.require_validators):
                     continue
                 if any(_validator_passes(name, value) for name in rule.reject_validators):
                     continue
-                value_span = match.span("value") if "value" in match.groupdict() and match.group("value") is not None else match.span()
                 start, end = normalized.original_span(*value_span)
                 suggested_action = _source_action(rule, block.kind)
                 detector_name = _detector_name(rule, self.name)
@@ -102,7 +148,7 @@ class RuleBasedDetector(Detector):
                     normalized_start=value_span[0],
                     normalized_end=value_span[1],
                     type=rule.type,
-                    subtype=rule.subtype,
+                    subtype=_contextual_subtype(rule, text, value_span),
                     risk=rule.risk,
                     detector=detector_name,
                     validators=passed_validators,
@@ -137,11 +183,17 @@ def _regex_flags(flags: tuple[str, ...]) -> int:
     return out
 
 
-def _match_value(match: re.Match[str]) -> str:
+def _match_value_and_span(rule: DetectionRule, match: re.Match[str]) -> tuple[str, tuple[int, int]]:
     groups = match.groupdict()
     if "value" in groups and groups["value"] is not None:
-        return groups["value"]
-    return match.group(0)
+        value = groups["value"]
+        start, end = match.span("value")
+        # Keep surrounding quotes in the source so replacing a protected value
+        # cannot turn a valid shell/Python assignment into invalid syntax.
+        if rule.id == "secret.env_assignment" and len(value) >= 2 and value[0] == value[-1] and value[0] in {"'", '"'}:
+            return value[1:-1], (start + 1, end - 1)
+        return value, (start, end)
+    return match.group(0), match.span()
 
 
 def _validator_passes(name: str, value: str) -> bool:
@@ -153,7 +205,108 @@ def _credential_assignment_value(value: str) -> bool:
     candidate = value.strip()
     if len(candidate) >= 2 and candidate[0] == candidate[-1] and candidate[0] in {"'", '"'}:
         candidate = candidate[1:-1].strip()
-    return bool(candidate) and _SAFE_ASSIGNMENT_VALUES.fullmatch(candidate) is None
+    return (
+        bool(candidate)
+        and _SAFE_ASSIGNMENT_VALUES.fullmatch(candidate) is None
+        and _SAFE_ASSIGNMENT_EXPRESSION.fullmatch(candidate) is None
+        and not _code_reference_value(candidate)
+    )
+
+
+def _code_reference_value(value: str) -> bool:
+    candidate = value.rstrip(",")
+    if candidate.startswith(("f\"", "f'", "r\"", "r'", "b\"", "b'")):
+        return True
+    return (
+        re.match(r"[A-Za-z_][A-Za-z0-9_.]*[\[(]", candidate) is not None
+        or candidate.startswith("[")
+    )
+
+
+def _sensitive_env_assignment(match: re.Match[str]) -> bool:
+    name = match.groupdict().get("name")
+    if name is None:
+        return True
+    normalized = name.upper()
+    value = str(match.groupdict().get("value") or "").strip().strip("\"'")
+    # Hex/ASCII dump tools can split `OPENAI_API_KEY=...` across display
+    # rows, leaving a high-signal fragment such as `KEY=sk-...` in the ASCII
+    # gutter. Treat only known credential prefixes as sensitive for this
+    # otherwise-generic short name.
+    if normalized == "KEY" and _SHORT_SECRET_ASSIGNMENT_PREFIX.match(value):
+        return True
+    marker = _SENSITIVE_ENV_NAME.search(normalized)
+    while marker is not None:
+        suffix = normalized[marker.end() :].lstrip("_").split("_", 1)[0]
+        if not suffix or suffix not in _NON_SECRET_ENV_SUFFIXES:
+            value = str(match.groupdict().get("value") or "").strip()
+            exported = match.group(0).lstrip().lower().startswith("export")
+            code_value = value.rstrip(",)]}")
+            if not exported and name != normalized and re.fullmatch(r"[A-Za-z_][A-Za-z0-9_.]*", code_value):
+                return False
+            return True
+        marker = _SENSITIVE_ENV_NAME.search(normalized, marker.end())
+    return False
+
+
+def _mixed_case_secret(value: str) -> bool:
+    return (
+        any(char.islower() for char in value)
+        and any(char.isupper() for char in value)
+        and any(char.isdigit() for char in value)
+    )
+
+
+def _formatted_phone(value: str) -> bool:
+    digits = re.sub(r"\D", "", value)
+    return len(digits) >= 8 and any(char in value for char in "+() .-")
+
+
+def _email_is_ssh_public_key_comment(text: str, span: tuple[int, int]) -> bool:
+    line_start = text.rfind("\n", 0, span[0]) + 1
+    line_end = text.find("\n", span[1])
+    if line_end < 0:
+        line_end = len(text)
+    line = text[line_start:line_end]
+    value_start = span[0] - line_start
+    prefix = line[:value_start]
+    return bool(
+        re.match(
+            r"^[ \t]*(?:ssh-(?:rsa|dss|ed25519)|ecdsa-sha2-\S+)[ \t]+[A-Za-z0-9+/=]{20,}[ \t]+$",
+            prefix,
+            re.I,
+        )
+    )
+
+
+def _span_is_hex_dump_columns(text: str, span: tuple[int, int]) -> bool:
+    line_start = text.rfind("\n", 0, span[0]) + 1
+    line_end = text.find("\n", span[1])
+    if line_end < 0:
+        line_end = len(text)
+    line = text[line_start:line_end]
+    if re.match(r"^[0-9A-Fa-f]{8}:[ \t]", line) is None:
+        return False
+    separator = re.search(r"[ \t]{2,}(?=\S)", line[9:])
+    if separator is None:
+        return False
+    ascii_start = 9 + separator.end()
+    return span[1] - line_start <= ascii_start
+
+
+def _contextual_subtype(rule: DetectionRule, text: str, span: tuple[int, int]) -> str:
+    if rule.id == "pii.email" and _email_precedes_credential_password(text, span):
+        return "credential_username"
+    return rule.subtype
+
+
+def _email_precedes_credential_password(text: str, span: tuple[int, int]) -> bool:
+    remainder = text[span[1] :]
+    following = re.match(
+        r"[ \t]*\r?\n[ \t]*(?P<password>[A-Za-z0-9!#$%&*+./:=?@^_~-]{8,128})[ \t]*(?:\r?\n|$)",
+        remainder,
+    )
+    return bool(following and _mixed_case_secret(following.group("password")))
 
 
 def _detector_name(rule: DetectionRule, default: str) -> str:
@@ -198,7 +351,7 @@ BUILTIN_RULES: tuple[dict[str, Any], ...] = (
     },
     {
         "id": "apg.redaction_marker",
-        "pattern": r"<APG[^>]*>",
+        "pattern": r"<APG[^\r\n>]*>",
         "type": "APG_MARKER",
         "subtype": "redaction_marker",
         "risk": "high",
@@ -217,28 +370,13 @@ BUILTIN_RULES: tuple[dict[str, Any], ...] = (
         "validators": ["pem_pair"],
     },
     {
-        "id": "secret.openai_apg_test_key",
-        "pattern": r"\bsk-apgtest(?:-[A-Za-z0-9_\-]*)?\b",
-        "type": "MACHINE_SECRET",
-        "subtype": "openai_api_key",
-        "risk": "critical",
-        "suggested_action": "redact",
-    },
-    {
         "id": "secret.openai_api_key",
         "pattern": r"\bsk-(?:proj-)?[A-Za-z0-9_\-]{20,}\b",
         "type": "MACHINE_SECRET",
-        "subtype": "openai_api_key",
+        "subtype": "api_key",
         "risk": "critical",
         "suggested_action": "redact",
-    },
-    {
-        "id": "secret.github_apg_test_token",
-        "pattern": r"\bghp_apgtest[A-Za-z0-9_]*\b",
-        "type": "MACHINE_SECRET",
-        "subtype": "github_token",
-        "risk": "high",
-        "suggested_action": "redact",
+        "metadata": {"display_name": "API 密钥（sk- 格式）"},
     },
     {
         "id": "secret.github_token",
@@ -246,14 +384,6 @@ BUILTIN_RULES: tuple[dict[str, Any], ...] = (
         "type": "MACHINE_SECRET",
         "subtype": "github_token",
         "risk": "high",
-        "suggested_action": "redact",
-    },
-    {
-        "id": "secret.database_test_password",
-        "pattern": r"\bapgtest-db-pass\b",
-        "type": "MACHINE_SECRET",
-        "subtype": "database_url",
-        "risk": "critical",
         "suggested_action": "redact",
     },
     {
@@ -273,15 +403,6 @@ BUILTIN_RULES: tuple[dict[str, Any], ...] = (
         "suggested_action": "redact",
     },
     {
-        "id": "secret.jwt_prefix",
-        "pattern": r"\beyJhbGci[A-Za-z0-9_-]*\b",
-        "type": "MACHINE_SECRET",
-        "subtype": "jwt",
-        "risk": "high",
-        "suggested_action": "redact",
-        "validators": ["jwt_header"],
-    },
-    {
         "id": "secret.jwt",
         "pattern": r"\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\b",
         "type": "MACHINE_SECRET",
@@ -289,6 +410,16 @@ BUILTIN_RULES: tuple[dict[str, Any], ...] = (
         "risk": "high",
         "suggested_action": "redact",
         "validators": ["jwt_header"],
+    },
+    {
+        "id": "secret.hex_dump_jwt_fragment",
+        "pattern": r"^[0-9A-Fa-f]{8}:[ 0-9A-Fa-f]{24,}[ \t]{2,}[^\r\n]*?(?P<value>eyJhbGci[A-Za-z0-9_-]*)",
+        "type": "MACHINE_SECRET",
+        "subtype": "jwt",
+        "risk": "high",
+        "suggested_action": "redact",
+        "flags": ["MULTILINE"],
+        "metadata": {"display_name": "十六进制转储中的 JWT 片段"},
     },
     {
         "id": "secret.database_url",
@@ -302,7 +433,10 @@ BUILTIN_RULES: tuple[dict[str, Any], ...] = (
     },
     {
         "id": "secret.bearer_token",
-        "pattern": r"\bAuthorization\s*:\s*Bearer\s+[A-Za-z0-9._~+/=-]{16,}",
+        # Eight characters is sufficient once the value is anchored to an
+        # explicit Authorization: Bearer context. This also protects the
+        # visible ASCII gutter when a hex dump splits a longer token.
+        "pattern": r"\bAuthorization\s*:\s*Bearer\s+(?P<value>[A-Za-z0-9._~+/=-]{8,})",
         "type": "MACHINE_SECRET",
         "subtype": "bearer_token",
         "risk": "high",
@@ -311,7 +445,7 @@ BUILTIN_RULES: tuple[dict[str, Any], ...] = (
     },
     {
         "id": "secret.cookie",
-        "pattern": r"\b(?:cookie|sessionid|sid|connect\.sid)\s*[:=]\s*[A-Za-z0-9._~+/=-]{16,}",
+        "pattern": r"\b(?:cookie|sessionid|sid|connect\.sid)\s*[:=]\s*(?P<value>[A-Za-z0-9._~+/=-]{16,})",
         "type": "MACHINE_SECRET",
         "subtype": "cookie",
         "risk": "high",
@@ -319,8 +453,31 @@ BUILTIN_RULES: tuple[dict[str, Any], ...] = (
         "flags": ["IGNORECASE"],
     },
     {
+        "id": "secret.ip_access_url_token",
+        "pattern": r"\bhttps?://(?:\d{1,3}\.){3}\d{1,3}(?::\d{1,5})?/(?:[A-Za-z0-9._~-]+/)*(?P<value>[A-Za-z0-9_-]{16,})(?:/|[?#][^\s]*|$)",
+        "type": "MACHINE_SECRET",
+        "subtype": "access_url_token",
+        "risk": "high",
+        "suggested_action": "redact",
+        "validators": ["mixed_case_secret"],
+        "require_validators": ["mixed_case_secret"],
+    },
+    {
+        "id": "secret.credential_pair_password",
+        "pattern": r"^[ \t]*[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}[ \t]*\r?\n[ \t]*(?P<value>[A-Za-z0-9!#$%&*+./:=?@^_~-]{8,128})[ \t]*$",
+        "type": "MACHINE_SECRET",
+        "subtype": "credential_password",
+        "risk": "high",
+        "suggested_action": "redact",
+        "flags": ["MULTILINE"],
+        "validators": ["mixed_case_secret"],
+        "require_validators": ["mixed_case_secret"],
+        "preview_keep": 2,
+        "metadata": {"display_name": "登录凭据密码"},
+    },
+    {
         "id": "secret.env_assignment",
-        "pattern": r"(?<![A-Z0-9_])(?:export[ \t]+)?[A-Z0-9_]*(?:API_KEY|TOKEN|SECRET|PASSWORD|PASSWD|PASS|CREDENTIAL|PRIVATE_KEY|DATABASE_URL)[A-Z0-9_]*[ \t]*=[ \t]*(?P<value>\"(?:\\.|[^\"\\\r\n])*\"|'(?:\\.|[^'\\\r\n])*'|[^\s;]+)",
+        "pattern": r"(?<![A-Z0-9_])(?:export[ \t]+)?(?P<name>[A-Z][A-Z0-9_]*)[ \t]*=(?!=)[ \t]*(?P<value>\"(?:\\.|[^\"\\\r\n])*\"|'(?:\\.|[^'\\\r\n])*'|[^\s;]+)",
         "type": "MACHINE_SECRET",
         "subtype": "env_assignment",
         "risk": "high",
@@ -337,6 +494,7 @@ BUILTIN_RULES: tuple[dict[str, Any], ...] = (
         "risk": "medium",
         "suggested_action": "pseudonymize",
         "validators": ["email_structure"],
+        "require_validators": ["email_structure"],
         "preview_keep": 2,
     },
     {
@@ -347,6 +505,17 @@ BUILTIN_RULES: tuple[dict[str, Any], ...] = (
         "risk": "medium",
         "suggested_action": "redact",
         "validators": ["phone_shape"],
+        "require_validators": ["phone_shape"],
+        "preview_keep": 2,
+    },
+    {
+        "id": "pii.phone_labeled",
+        "pattern": r"(?:phone|telephone|tel|mobile|联系电话|电话|手机)[ \t]*[:=：]?[ \t]*(?P<value>\+?\d(?:[\d .()-]{6,}\d))",
+        "type": "PII",
+        "subtype": "phone",
+        "risk": "medium",
+        "suggested_action": "redact",
+        "flags": ["IGNORECASE"],
         "preview_keep": 2,
     },
     {

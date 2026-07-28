@@ -14,6 +14,7 @@ from typing import Any, Callable
 from gateway.detector_manager import DetectorManager
 from gateway.mapping_store import MappingRecord, MappingStore
 from gateway.materialization_engine import MaterializationEngine
+from gateway.models import Detection
 from gateway.path_alias_manager import PathAliasManager
 from gateway.placeholder_parser import PlaceholderSigner
 from gateway.policy_engine import PolicyEngine
@@ -21,6 +22,7 @@ from gateway.policy_engine import PolicyEngine
 PROTOCOL_KEYS = {"model", "tool_call_id", "tool_use_id", "call_id", "item_id", "previous_response_id"}
 PROTOCOL_ID_PARENTS = {"tool_calls", "tool_use"}
 PROTOCOL_NAME_PARENTS = {"function"}
+CONTENT_FIELD_NAMES = {"content", "input", "instructions", "prompt", "system", "text"}
 # Structured tool-call arguments and user-visible local response text are the
 # two downlink sinks where exact, valid APG placeholders may be materialized.
 # Raw values are never materialized into upstream/model-visible traffic.
@@ -439,7 +441,13 @@ class RedactionEngine:
             if isinstance(value, str):
                 if self._is_protocol_value(path):
                     return value
-                sanitized, ev = self.sanitize_text(value, session_id, scope, alias_paths=alias_paths)
+                sanitized, ev = self.sanitize_text(
+                    value,
+                    session_id,
+                    scope,
+                    alias_paths=alias_paths,
+                    source_kind=_source_kind_for_json_path(path, scope),
+                )
                 events.extend(ev)
                 return sanitized
             if isinstance(value, list):
@@ -466,8 +474,11 @@ class RedactionEngine:
         *,
         alias_paths: bool = True,
         fold_apg_markers: bool = True,
+        source_kind: str = "text",
     ) -> tuple[str, list[dict[str, Any]]]:
-        detections = self.detector_manager.scan(text)
+        detections = self.detector_manager.scan(text, kind=source_kind)
+        if scope != "response":
+            detections = self._merge_known_value_detections(text, detections, session_id)
         if not detections:
             return text, []
         out: list[str] = []
@@ -597,6 +608,68 @@ class RedactionEngine:
             cursor = det.span_end
         out.append(text[cursor:])
         return "".join(out), events
+
+    def _merge_known_value_detections(
+        self,
+        text: str,
+        detections: list[Detection],
+        session_id: str,
+    ) -> list[Detection]:
+        """Re-protect active values even when their surrounding syntax changed.
+
+        A value can legitimately be materialized into a local tool result and
+        then be included by an agent in a later model request. The second
+        occurrence may no longer have the assignment/header syntax that first
+        identified it, so detector-only rescanning is insufficient. Active
+        mappings provide session-scoped taint tracking for those exact values.
+        """
+        known: list[tuple[Detection, bool]] = [(detection, False) for detection in detections]
+        seen: set[tuple[int, int, str]] = set()
+        for record in self.mapping_store.active_records(session_id, self.workspace_id):
+            value = record.value or ""
+            if not value:
+                continue
+            start = text.find(value)
+            while start >= 0:
+                end = start + len(value)
+                key = (start, end, record.handle_id)
+                if key not in seen:
+                    seen.add(key)
+                    det_type = record.kind if record.kind in {"secret", "pii", "path"} else "secret"
+                    known.append(
+                        (
+                            Detection(
+                                span_start=start,
+                                span_end=end,
+                                type=det_type,
+                                subtype=record.subtype,
+                                risk="high" if det_type == "secret" else "medium",
+                                detector_name="known_value",
+                                suggested_action="alias" if det_type == "path" else "redact",
+                                safe_preview="",
+                            ),
+                            True,
+                        )
+                    )
+                start = text.find(value, start + 1)
+
+        # Prefer the widest match at a position. On an exact tie, reusing a
+        # known mapping is more stable than generating a detector-specific one.
+        selected: list[Detection] = []
+        cursor = 0
+        for detection, _is_known in sorted(
+            known,
+            key=lambda item: (
+                item[0].span_start,
+                -(item[0].span_end - item[0].span_start),
+                not item[1],
+            ),
+        ):
+            if detection.span_start < cursor:
+                continue
+            selected.append(detection)
+            cursor = detection.span_end
+        return selected
 
     def materialize_local_json_with_events(
         self,
@@ -886,7 +959,12 @@ class RedactionEngine:
         protected = text
         restorations: dict[str, str] = {}
         events: list[dict[str, Any]] = []
-        restore_nonce = secrets.token_hex(8).upper()
+        # This marker needs uniqueness, not secrecy. A hexadecimal nonce can
+        # itself look like a high-entropy credential and be folded during the
+        # response scan before restoration. Decimal digits keep the complete
+        # token environment-reference-shaped without creating a secret-like
+        # substring.
+        restore_nonce = f"{secrets.randbelow(1_000_000_000_000):012d}"
 
         def protect(raw: str) -> str:
             # Use an environment-reference-shaped sentinel so credential
@@ -1585,6 +1663,14 @@ class RedactionEngine:
                 summary.termination = "client_disconnected"
             if on_complete is not None:
                 on_complete(summary.to_dict())
+
+
+def _source_kind_for_json_path(path: tuple[str, ...], scope: str) -> str:
+    if "tools" in path:
+        return "tool_schema"
+    if path and path[-1] in CONTENT_FIELD_NAMES:
+        return "model_response" if scope == "response" else "prompt"
+    return "protocol_metadata"
 
 
 def _is_tool_arg_field(path: tuple[str, ...]) -> bool:

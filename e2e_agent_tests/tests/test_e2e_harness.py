@@ -15,6 +15,7 @@ from e2e_agent_tests.scripts.export_live_evidence import (
     _claude_transcript,
     _opencode_transcript,
     _operation_annotations,
+    _sanitize_export_value,
 )
 from e2e_agent_tests.scripts.run_scenario import run_scenario
 from e2e_agent_tests.scripts.setup_test_repo import setup_test_repo
@@ -28,6 +29,7 @@ from e2e_agent_tests.scripts.run_live_agents import (
     _extract_final_output,
     _extract_tool_summary,
     _extract_tool_trace,
+    _nonnegative_int,
     _positive_int,
     _run_live_matrix,
     _server_environment,
@@ -176,6 +178,51 @@ def test_live_concurrency_requires_a_positive_integer() -> None:
             _positive_int(value)
 
 
+def test_live_retries_accepts_zero_or_positive_integer() -> None:
+    assert _nonnegative_int("0") == 0
+    assert _nonnegative_int("2") == 2
+    for value in ("-1", "many"):
+        with pytest.raises(argparse.ArgumentTypeError, match="non-negative integer"):
+            _nonnegative_int(value)
+
+
+def test_live_matrix_retries_only_failed_cases(monkeypatch, tmp_path: Path) -> None:
+    attempts: dict[tuple[str, str], int] = {}
+
+    def flaky_case(agent: str, scenario: str, base: Path, timeout: float) -> dict:
+        key = (agent, scenario)
+        attempts[key] = attempts.get(key, 0) + 1
+        return {
+            "agent": agent,
+            "scenario": scenario,
+            "passed": attempts[key] >= 2,
+        }
+
+    monkeypatch.setattr(
+        "e2e_agent_tests.scripts.run_live_agents.run_live_case",
+        flaky_case,
+    )
+
+    results = _run_live_matrix(
+        ["claude"],
+        ["flaky"],
+        tmp_path,
+        timeout=12.0,
+        concurrency=1,
+        retries=1,
+    )
+
+    assert results == [
+        {
+            "agent": "claude",
+            "scenario": "flaky",
+            "passed": True,
+            "attempt_count": 2,
+        }
+    ]
+    assert attempts == {("claude", "flaky"): 2}
+
+
 def test_live_agent_final_output_excludes_tool_trajectory() -> None:
     claude = '\n'.join([
         '{"type":"assistant","tool":{"arguments":"raw-secret"}}',
@@ -189,8 +236,10 @@ def test_live_agent_final_output_excludes_tool_trajectory() -> None:
     assert _extract_final_output("opencode", opencode) == "safe final"
 
 
-def test_live_marker_check_ignores_only_the_reserved_format_example() -> None:
+def test_live_marker_check_ignores_all_reserved_format_examples() -> None:
     assert not _contains_non_example_apg_marker("format: <APG:v1:pii:...>")
+    assert not _contains_non_example_apg_marker("format: <APG:v1:secret:...>")
+    assert not _contains_non_example_apg_marker("legacy format: <APG_PII:handle>")
     assert _contains_non_example_apg_marker("format: <APG:v1:pii:....>")
     assert _contains_non_example_apg_marker("shorthand: <APG:...>")
     assert _contains_non_example_apg_marker(
@@ -201,6 +250,7 @@ def test_live_marker_check_ignores_only_the_reserved_format_example() -> None:
 def test_live_agent_commands_pin_the_isolated_workspace(monkeypatch, tmp_path: Path) -> None:
     monkeypatch.setenv("DEEPSEEK_API_KEY", "provider-key-must-not-reach-agent")
     monkeypatch.setenv("UNRELATED_SECRET", "also-must-not-reach-agent")
+    monkeypatch.setenv("APG_LIVE_MODEL", "gpt-5.6-terra")
     run_root = tmp_path / "run"
     (run_root / "apg-agent-test-repo").mkdir(parents=True)
     claude_command, claude_env = _agent_command("claude", "task", 8765, run_root)
@@ -213,8 +263,12 @@ def test_live_agent_commands_pin_the_isolated_workspace(monkeypatch, tmp_path: P
     assert "bypassPermissions" not in claude_command
     assert claude_command[claude_command.index("--permission-mode") + 1] == "dontAsk"
     assert claude_command[claude_command.index("--setting-sources") + 1] == "project,local"
+    assert claude_command[claude_command.index("--model") + 1] == "gpt-5.6-terra"
     settings = json.loads((run_root / "claude-settings.json").read_text())
     assert settings["env"]["ANTHROPIC_BASE_URL"] == "http://127.0.0.1:8765"
+    assert settings["env"]["ANTHROPIC_AUTH_TOKEN"] == "apg-local"
+    assert "ANTHROPIC_API_KEY" not in settings["env"]
+    assert "ANTHROPIC_API_KEY" not in claude_env
 
     opencode_command, opencode_env = _agent_command("opencode", "task", 8765, run_root)
     assert opencode_env["PWD"] == str(run_root / "apg-agent-test-repo")
@@ -223,6 +277,10 @@ def test_live_agent_commands_pin_the_isolated_workspace(monkeypatch, tmp_path: P
     assert opencode_env["HTTPS_PROXY"] == "http://127.0.0.1:9"
     assert "--pure" in opencode_command
     assert opencode_command[opencode_command.index("--dir") + 1] == str(run_root / "apg-agent-test-repo")
+    assert opencode_command[opencode_command.index("--model") + 1] == "apg/gpt-5.6-terra"
+    opencode_config = json.loads((run_root / "xdg-config/opencode/opencode.json").read_text())
+    assert opencode_config["model"] == "apg/gpt-5.6-terra"
+    assert list(opencode_config["provider"]["apg"]["models"]) == ["gpt-5.6-terra"]
 
 
 def test_live_server_bypasses_system_proxy_only_for_its_upstream(monkeypatch) -> None:
@@ -513,6 +571,21 @@ def test_live_evidence_exports_exact_audited_replacement_and_materialization(tmp
     assert all(item["timestamps"] == [1] for item in operations)
 
 
+def test_checked_in_live_evidence_recursively_removes_protected_values_and_local_paths() -> None:
+    sanitized = _sanitize_export_value({
+        "fixture": "Howard Zhang has sk-apgtest-evidence-value",
+        "operation": ["<APG:v1:secret:sec_123:session:123:signature>"],
+        "source": "/private/tmp/apg-live-agents/run/agent_trajectory.txt",
+    })
+
+    serialized = json.dumps(sanitized)
+    assert "Howard Zhang" not in serialized
+    assert "sk-apgtest" not in serialized
+    assert "<APG:v1" not in serialized
+    assert "/private/tmp" not in serialized
+    assert serialized.count("<synthetic-protected-value>") == 2
+
+
 def test_live_evidence_page_renders_markdown_and_inline_apg_operations() -> None:
     page = (Path(__file__).resolve().parents[2] / "docs" / "live_agent_scenarios.html").read_text()
 
@@ -549,6 +622,30 @@ def test_debug_script_validation_accepts_natural_status_format(tmp_path: Path) -
         "print('API Key: configured')\n"
         "print('Database URL is set')\n"
         "print('Debug mode: true')\n"
+    )
+    failures, details = _validate_debug_script(script)
+    assert failures == []
+    assert details["stdout_safe"] is True
+
+
+def test_debug_script_validation_accepts_status_before_label(tmp_path: Path) -> None:
+    script = tmp_path / "scripts" / "debug_config.py"
+    script.parent.mkdir()
+    script.write_text(
+        "print('[CONFIGURED] OPENAI_API_KEY')\n"
+        "print('[CONFIGURED] DATABASE_URL')\n"
+        "print('Debug mode: true')\n"
+    )
+    failures, details = _validate_debug_script(script)
+    assert failures == []
+    assert details["stdout_safe"] is True
+
+
+def test_debug_script_validation_accepts_database_label_without_url_suffix(tmp_path: Path) -> None:
+    script = tmp_path / "scripts" / "debug_config.py"
+    script.parent.mkdir()
+    script.write_text(
+        "print('API key: configured | Database: configured | Debug mode: true')\n"
     )
     failures, details = _validate_debug_script(script)
     assert failures == []

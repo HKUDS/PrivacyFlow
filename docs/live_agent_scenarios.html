@@ -1262,7 +1262,7 @@
       </div>
       <div class="flow-step">
         <b>3. APG 上行保护</b>
-        <p>凭据、PII 与本地路径在发送 DeepSeek 前替换为受保护表示。</p>
+        <p>凭据、PII 与本地路径在发送真实上游模型前替换为受保护表示。</p>
         <span class="flow-code">&lt;APG:v1:...&gt;</span>
       </div>
       <div class="flow-step">
@@ -1285,8 +1285,8 @@
         </div>
         <div class="side-section">
           <h2>统一运行设置</h2>
-          <p><strong>Agent：</strong>Claude Code 2.1.218、OpenCode 1.17.18</p>
-          <p><strong>上游：</strong>真实 DeepSeek API</p>
+          <p><strong>Agent：</strong>Claude Code 2.1.220、OpenCode 1.17.18</p>
+          <p><strong>上游：</strong>真实 OpenAI-compatible API（gpt-5.6-terra）</p>
           <p><strong>协议：</strong>Anthropic Messages / OpenAI Chat Completions</p>
           <p><strong>Harness 配置：</strong>每个 Agent 在全部场景中使用同一配置，不按任务裁剪工具。</p>
           <p><strong>Claude 实际 init：</strong>Bash、Edit、Read。</p>
@@ -1327,7 +1327,7 @@
 
     <footer class="footer">
       <span>定义来源：<code>e2e_agent_tests/scripts/run_live_agents.py</code></span>
-      <span>真实证据：无场景工具裁剪的 15×2 全量运行，Claude Code 15/15，OpenCode 15/15，2026-07-24</span>
+      <span>真实证据：无场景工具裁剪的 15×2 全量运行，Claude Code 15/15，OpenCode 15/15，2026-07-28</span>
     </footer>
   </main>
 
@@ -2058,7 +2058,7 @@
                 <p>概览在前；下面保留实际模型文本、工具输入和工具输出</p>
               </div>
               <div class="trace-grid">
-                ${trajectoryHTML("claude", "Claude Code 2.1.218", "Anthropic", item)}
+                ${trajectoryHTML("claude", "Claude Code 2.1.220", "Anthropic", item)}
                 ${trajectoryHTML("opencode", "OpenCode 1.17.18", "OpenAI", item)}
               </div>
               <p class="boundary-note">工具输入/输出中的凭据和个人信息来自合成测试 fixture，并且可能以原值出现在本地 Agent transcript 中。这正是 APG 的边界：阻止其上传云端，不负责抹除受信任本地 Agent 自己显示或保存的工具记录。</p>
@@ -2067,7 +2067,7 @@
                 <span><i class="operation-swatch materialization"></i><strong>↓ 本地已还原</strong>：保护表示仅在本地工具参数恢复</span>
                 <span><i class="operation-swatch representation"></i><strong>云端保护表示</strong>：模型实际看到的占位符或路径别名</span>
               </div>
-              ${transcriptHTML("claude", "Claude Code 2.1.218", "Anthropic", item)}
+              ${transcriptHTML("claude", "Claude Code 2.1.220", "Anthropic", item)}
               ${transcriptHTML("opencode", "OpenCode 1.17.18", "OpenAI", item)}
               <div class="note">${escapeHTML(item.note)}</div>
             </section>

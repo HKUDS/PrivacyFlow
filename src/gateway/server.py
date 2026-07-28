@@ -14,6 +14,7 @@ import httpx
 from fastapi import FastAPI, Header, HTTPException, Request, Response
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse, StreamingResponse
 
+from gateway import __version__
 from gateway.admin_service import AdminNotFoundError, AdminService
 from gateway.audit_logger import AuditLogger
 from gateway.cli.launcher import (
@@ -34,6 +35,7 @@ from gateway.detector_control import (
 )
 from gateway.detector_manager import DetectorManager
 from gateway.mapping_store import MappingRetentionConflictError, MappingStore
+from gateway.local_models import LocalModelError, LocalModelService
 from gateway.placeholder_parser import APG_PLACEHOLDER_FORMAT_EXAMPLE, PlaceholderSigner
 from gateway.policy_engine import PolicyEngine
 from gateway.redaction_engine import (
@@ -55,7 +57,8 @@ from gateway.upstream_protocol import (
     canonical_upstream_protocol,
 )
 
-ANTHROPIC_DEFAULT_UPSTREAM_MODEL = "deepseek-v4-flash"
+APG_BUILD_ID = os.environ.get("APG_BUILD_ID", f"apg-{__version__}")
+APG_CAPABILITIES = ["local_models_v2"]
 APG_UPSTREAM_SYSTEM_PROMPT = """You are receiving content through Agent Privacy Gateway (APG), a local privacy runtime.
 
 APG may replace local secrets, credentials, personal data, or private paths with opaque APG-managed placeholders before this request reaches you. You cannot access the protected values behind these local handles.
@@ -237,13 +240,28 @@ def create_app(config: GatewayConfig | None = None, upstream_client: UpstreamCli
             update_config(runtime_upstream_config)
     audit = AuditLogger(cfg.audit_log_path, store)
     detector_state_path = str(Path(cfg.database_path).with_name("detector-control.json"))
+    local_model_state_path = Path(cfg.database_path).with_name("local-models.json")
+    local_model_cache_path = Path(cfg.database_path).with_name("models")
 
     def apply_detector_manager(manager: DetectorManager) -> None:
         # Replacing the manager is atomic in CPython. In-flight requests retain
         # their current flow while new requests immediately use the new one.
         redactor.detector_manager = manager
 
-    detector_control = DetectorControlPlane(cfg.detectors_config, detector_state_path, apply_detector_manager)
+    local_models = LocalModelService(
+        local_model_state_path,
+        local_model_cache_path,
+        cfg.bind_host,
+        audit_callback=audit.log,
+    )
+    detector_control = DetectorControlPlane(
+        cfg.detectors_config,
+        detector_state_path,
+        apply_detector_manager,
+        model_path_resolver=local_models.resolve_model_path,
+        model_runner=local_models.infer,
+    )
+    local_models.set_detector_control(detector_control)
     admin = AdminService(cfg, store, audit, detector_control)
 
     def active_upstream_config() -> UpstreamConfig:
@@ -376,12 +394,14 @@ def create_app(config: GatewayConfig | None = None, upstream_client: UpstreamCli
                     await gc_task
                 except asyncio.CancelledError:
                     pass
+            local_models.close()
             store.close()
             sessions.close()
 
     app = FastAPI(title="Agent Privacy Gateway", version="0.1.0", lifespan=lifespan)
     app.state.admin_service = admin
     app.state.detector_control = detector_control
+    app.state.local_models = local_models
 
     def authenticate(auth: str | None, requested_session_id: str | None, x_api_key: str | None = None) -> str:
         if x_api_key:
@@ -417,6 +437,28 @@ def create_app(config: GatewayConfig | None = None, upstream_client: UpstreamCli
         if not isinstance(body, dict):
             raise HTTPException(status_code=400, detail="Expected a JSON object")
         return body
+
+    def local_model_setup_access(request: Request) -> tuple[bool, str | None]:
+        client_host = request.client.host if request.client is not None else ""
+        return local_models.setup_allowed(client_host)
+
+    def require_local_model_setup_access(request: Request) -> None:
+        allowed, reason = local_model_setup_access(request)
+        if not allowed:
+            raise HTTPException(
+                status_code=403,
+                detail={
+                    "code": "LOCAL_MODEL_SETUP_LOCAL_ONLY",
+                    "message": "Local model setup is only available from a loopback-bound APG server.",
+                    "reason": reason,
+                },
+            )
+
+    def local_model_error(exc: LocalModelError) -> HTTPException:
+        return HTTPException(
+            status_code=exc.status_code,
+            detail={"code": exc.code, "message": str(exc)},
+        )
 
     async def proxy_json(endpoint: str, request: Request, authorization: str | None, x_apg_session_id: str | None, x_api_key: str | None = None) -> Response:
         request_id = f"req_{uuid.uuid4().hex[:12]}"
@@ -590,14 +632,9 @@ def create_app(config: GatewayConfig | None = None, upstream_client: UpstreamCli
 
             messages.append({"role": role, "content": anthropic_text_from_content(content)})
 
-        requested_model = str(body.get("model") or ANTHROPIC_DEFAULT_UPSTREAM_MODEL)
-        upstream_model = (
-            requested_model
-            if active_upstream_protocol() == ANTHROPIC_MESSAGES or requested_model.startswith("deepseek-")
-            else ANTHROPIC_DEFAULT_UPSTREAM_MODEL
-        )
+        requested_model = str(body.get("model") or "")
         converted: dict[str, Any] = {
-            "model": upstream_model,
+            "model": requested_model,
             "_apg_requested_model": requested_model,
             "messages": messages,
             "stream": bool(body.get("stream")),
@@ -1133,11 +1170,8 @@ def create_app(config: GatewayConfig | None = None, upstream_client: UpstreamCli
             if asset_name not in {
                 "apg-icon.png",
                 "app.js",
-                "claude-code.svg",
-                "codex.svg",
                 "i18n.js",
                 "lucide.min.js",
-                "opencode.svg",
                 "styles.css",
             }:
                 raise HTTPException(status_code=404, detail="Asset not found")
@@ -1149,7 +1183,124 @@ def create_app(config: GatewayConfig | None = None, upstream_client: UpstreamCli
             x_api_key: str | None = Header(default=None),
         ) -> Response:
             authenticate_admin(authorization, x_api_key)
-            return JSONResponse(admin.overview(), headers={"Cache-Control": "no-store"})
+            overview = admin.overview()
+            overview.update({
+                "build_id": APG_BUILD_ID,
+                "capabilities": APG_CAPABILITIES,
+            })
+            return JSONResponse(overview, headers={"Cache-Control": "no-store"})
+
+        @app.get("/api/admin/local-models")
+        async def admin_local_models(
+            request: Request,
+            authorization: str | None = Header(default=None),
+            x_api_key: str | None = Header(default=None),
+        ) -> Response:
+            authenticate_admin(authorization, x_api_key)
+            allowed, reason = local_model_setup_access(request)
+            return JSONResponse(
+                await asyncio.to_thread(
+                    local_models.snapshot,
+                    setup_allowed=allowed,
+                    unavailable_reason=reason,
+                ),
+                headers={"Cache-Control": "no-store"},
+            )
+
+        @app.post("/api/admin/local-models")
+        async def admin_add_local_model(
+            request: Request,
+            authorization: str | None = Header(default=None),
+            x_api_key: str | None = Header(default=None),
+        ) -> Response:
+            authenticate_admin(authorization, x_api_key)
+            require_local_model_setup_access(request)
+            body = await admin_body(request)
+            try:
+                model = await asyncio.to_thread(local_models.add_manual_model, body)
+                if body.get("prepare") is True:
+                    job = local_models.start_prepare(model_ids=[str(model["id"])])
+                    return JSONResponse(
+                        {"model": model, "job": job},
+                        status_code=202,
+                        headers={"Cache-Control": "no-store"},
+                    )
+            except LocalModelError as exc:
+                raise local_model_error(exc) from exc
+            return JSONResponse(model, status_code=201, headers={"Cache-Control": "no-store"})
+
+        @app.delete("/api/admin/local-models/{model_id}")
+        async def admin_delete_local_model(
+            model_id: str,
+            request: Request,
+            authorization: str | None = Header(default=None),
+            x_api_key: str | None = Header(default=None),
+        ) -> Response:
+            authenticate_admin(authorization, x_api_key)
+            require_local_model_setup_access(request)
+            try:
+                await asyncio.to_thread(local_models.delete_manual_model, model_id)
+            except LocalModelError as exc:
+                raise local_model_error(exc) from exc
+            return Response(status_code=204)
+
+        @app.delete("/api/admin/local-models/{model_id}/cache")
+        async def admin_delete_local_model_cache(
+            model_id: str,
+            request: Request,
+            authorization: str | None = Header(default=None),
+            x_api_key: str | None = Header(default=None),
+        ) -> Response:
+            authenticate_admin(authorization, x_api_key)
+            require_local_model_setup_access(request)
+            try:
+                await asyncio.to_thread(local_models.delete_cache, model_id)
+            except LocalModelError as exc:
+                raise local_model_error(exc) from exc
+            return Response(status_code=204)
+
+        @app.post("/api/admin/local-models/prepare")
+        async def admin_prepare_local_models(
+            request: Request,
+            authorization: str | None = Header(default=None),
+            x_api_key: str | None = Header(default=None),
+        ) -> Response:
+            authenticate_admin(authorization, x_api_key)
+            require_local_model_setup_access(request)
+            body = await admin_body(request)
+            model_ids = body.get("model_ids", [])
+            stages = body.get("stages")
+            if not isinstance(model_ids, list) or not all(isinstance(item, str) for item in model_ids):
+                raise HTTPException(status_code=400, detail={"code": "INVALID_MODEL_IDS", "message": "model_ids must be a string array"})
+            if stages is not None and (
+                not isinstance(stages, list) or not all(isinstance(item, str) for item in stages)
+            ):
+                raise HTTPException(status_code=400, detail={"code": "INVALID_STAGES", "message": "stages must be a string array"})
+            force = body.get("force", False)
+            if not isinstance(force, bool):
+                raise HTTPException(status_code=400, detail={"code": "INVALID_FORCE", "message": "force must be a boolean"})
+            try:
+                job = local_models.start_prepare(
+                    model_ids=model_ids,
+                    stages=stages,
+                    force=force,
+                )
+            except LocalModelError as exc:
+                raise local_model_error(exc) from exc
+            return JSONResponse(job, status_code=202, headers={"Cache-Control": "no-store"})
+
+        @app.get("/api/admin/local-model-jobs/{job_id}")
+        async def admin_local_model_job(
+            job_id: str,
+            authorization: str | None = Header(default=None),
+            x_api_key: str | None = Header(default=None),
+        ) -> Response:
+            authenticate_admin(authorization, x_api_key)
+            try:
+                job = local_models.job(job_id)
+            except LocalModelError as exc:
+                raise local_model_error(exc) from exc
+            return JSONResponse(job, headers={"Cache-Control": "no-store"})
 
         @app.get("/api/admin/privacy-control")
         async def admin_privacy_control(

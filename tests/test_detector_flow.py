@@ -71,7 +71,7 @@ def test_rule_override_add_and_disable() -> None:
         }
     )
     subtypes = {finding.subtype for finding in manager.scan_text("sk-proj-abcdefghijklmnopqrstuvwxyz123456 CUST-1234")}
-    assert "openai_api_key" not in subtypes
+    assert "api_key" not in subtypes
     assert "customer_id" in subtypes
 
 
@@ -89,7 +89,22 @@ def test_hf_token_classification_adapter_with_mock(monkeypatch) -> None:
 
         return run
 
-    monkeypatch.setitem(sys.modules, "transformers", types.SimpleNamespace(pipeline=fake_pipeline))
+    class FakeLoader:
+        @classmethod
+        def from_pretrained(cls, name, **kwargs):
+            assert name == "local/pii"
+            assert kwargs["trust_remote_code"] is False
+            return object()
+
+    monkeypatch.setitem(
+        sys.modules,
+        "transformers",
+        types.SimpleNamespace(
+            AutoModelForTokenClassification=FakeLoader,
+            AutoTokenizer=FakeLoader,
+            pipeline=fake_pipeline,
+        ),
+    )
     manager = HierarchicalDetectorManager(
         detectors_config={
             "flow": {

@@ -27,6 +27,9 @@ BUILTIN_EXTERNALS: dict[str, type[Detector]] = {
     "trufflehog": TruffleHogPlugin,
 }
 
+NON_CONTENT_SOURCE_KINDS = {"tool_schema", "protocol_metadata"}
+MODEL_MODULE_TYPES = {"local_model", "hf_token_classification", "gliner", "model_injected"}
+
 
 @dataclass(frozen=True)
 class ModuleDiagnostic:
@@ -108,6 +111,8 @@ class DetectorFlow:
         start = time.perf_counter()
         if not module.enabled:
             return [], ModuleDiagnostic(module.id, module.type, False, status="disabled")
+        if block.kind in NON_CONTENT_SOURCE_KINDS and module.type in MODEL_MODULE_TYPES:
+            return [], ModuleDiagnostic(module.id, module.type, True, status="skipped", error="non_content_field")
         if module.config_error:
             if not module.fail_open:
                 raise RuntimeError(module.config_error)
@@ -194,7 +199,14 @@ def _builtin_preset_modules(preset: str) -> list[dict[str, Any]]:
         {"id": "paths", "type": "path_detector"},
     ]
     if preset != "fast":
-        modules.append({"id": "entropy", "type": "entropy_context", "min_length": 20, "min_entropy": 3.5, "timeout_ms": 100})
+        modules.append({
+            "id": "entropy",
+            "type": "entropy_context",
+            "enabled": preset in {"strict", "model_enhanced"},
+            "min_length": 20,
+            "min_entropy": 3.5,
+            "timeout_ms": 100,
+        })
     if preset == "model_enhanced":
         modules.extend(
             [
@@ -261,6 +273,9 @@ def _detector_from_config(module_id: str, module_type: str, module: dict[str, An
         )
     if module_type == "local_model":
         adapter = str(module.get("adapter", "transformers_token_classification"))
+        configured_device = str(module.get("device", "cpu")).lower()
+        model_resolver = root_config.get("model_path_resolver")
+        model_runner = root_config.get("model_runner")
         if adapter == "gliner":
             return GLiNERDetector(
                 module_id=module_id,
@@ -268,6 +283,9 @@ def _detector_from_config(module_id: str, module_type: str, module: dict[str, An
                 labels=[str(label) for label in module.get("labels", [])],
                 threshold=float(module.get("threshold", 0.5)),
                 allow_download=bool(root_config.get("allow_model_download", False)),
+                device=configured_device,
+                model_resolver=model_resolver if callable(model_resolver) else None,
+                model_runner=model_runner if callable(model_runner) else None,
             )
         if adapter != "transformers_token_classification":
             raise ValueError("unknown_local_model_adapter")
@@ -278,6 +296,9 @@ def _detector_from_config(module_id: str, module_type: str, module: dict[str, An
             device=_model_device(module.get("device", "cpu")),
             allow_download=bool(root_config.get("allow_model_download", False)),
             aggregation_strategy=str(module.get("aggregation_strategy", "simple")),
+            model_resolver=model_resolver if callable(model_resolver) else None,
+            model_runner=model_runner if callable(model_runner) else None,
+            configured_device=configured_device,
         )
     if module_type == "hf_token_classification":
         return HFTokenClassificationDetector(
@@ -287,6 +308,9 @@ def _detector_from_config(module_id: str, module_type: str, module: dict[str, An
             device=module.get("device", -1),
             allow_download=bool(root_config.get("allow_model_download", False)),
             aggregation_strategy=str(module.get("aggregation_strategy", "simple")),
+            model_resolver=root_config.get("model_path_resolver") if callable(root_config.get("model_path_resolver")) else None,
+            model_runner=root_config.get("model_runner") if callable(root_config.get("model_runner")) else None,
+            configured_device=str(module.get("device", "cpu")).lower(),
         )
     if module_type == "gliner":
         return GLiNERDetector(
@@ -295,6 +319,9 @@ def _detector_from_config(module_id: str, module_type: str, module: dict[str, An
             labels=[str(label) for label in module.get("labels", [])],
             threshold=float(module.get("threshold", 0.5)),
             allow_download=bool(root_config.get("allow_model_download", False)),
+            device=str(module.get("device", "cpu")).lower(),
+            model_resolver=root_config.get("model_path_resolver") if callable(root_config.get("model_path_resolver")) else None,
+            model_runner=root_config.get("model_runner") if callable(root_config.get("model_runner")) else None,
         )
     if module_type == "external_tool":
         name = str(module.get("tool", module_id))

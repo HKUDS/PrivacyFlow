@@ -5,6 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="color-scheme" content="light">
   <title>APG Control</title>
+  <link rel="icon" type="image/png" href="/ui/assets/apg-icon.png">
   <link rel="stylesheet" href="/ui/assets/styles.css">
 </head>
 <body>
@@ -14,7 +15,7 @@
         <span class="brand-mark" aria-hidden="true"><img src="/ui/assets/apg-icon.png" alt=""></span>
         <div>
           <strong>APG Control</strong>
-          <span>Privacy gateway</span>
+          <span>Agent privacy gateway</span>
         </div>
       </div>
 
@@ -30,6 +31,9 @@
         </button>
         <button class="nav-item" type="button" data-view="detectors">
           <i class="nav-icon" data-lucide="sliders-horizontal"></i><span>检测器配置</span>
+        </button>
+        <button class="nav-item" type="button" data-view="local-models">
+          <i class="nav-icon" data-lucide="hard-drive-download"></i><span>本地模型管理</span>
         </button>
       </nav>
 
@@ -113,7 +117,11 @@
 
           <section class="agent-access" aria-labelledby="agent-access-title">
             <div class="agent-access-heading">
-              <div><p class="section-kicker">AGENT CONNECTION</p><h2 id="agent-access-title">Agent 接入</h2></div>
+              <div>
+                <p class="section-kicker">AGENT CONNECTION</p>
+                <h2 id="agent-access-title">Agent 接入</h2>
+                <p class="agent-access-note">请在 Agent 中自行选择模型，并将请求地址与 API Key 替换为以下 APG 接入信息。</p>
+              </div>
             </div>
             <div class="agent-access-fields">
               <label class="connection-field"><span>OpenAI Base URL</span><span class="copy-control"><input class="mono" id="agent-openai-base-url" readonly autocomplete="off" spellcheck="false"><button type="button" data-copy-connection="openai-base-url" aria-label="复制 OpenAI Base URL" title="复制 OpenAI Base URL"><i data-lucide="copy"></i></button></span></label>
@@ -121,53 +129,6 @@
               <label class="connection-field"><span>API Key</span><span class="copy-control"><input class="mono" id="agent-api-key" type="password" readonly autocomplete="off" spellcheck="false"><span class="copy-control-actions"><button class="key-visibility-button" type="button" id="toggle-agent-key" aria-label="显示 API Key" aria-pressed="false" title="显示 API Key"></button><button type="button" id="generate-agent-key" aria-label="生成随机 API Key" title="生成随机 API Key"><i data-lucide="dices"></i></button><button type="button" data-copy-connection="api-key" aria-label="复制 API Key" title="复制 API Key"><i data-lucide="copy"></i></button></span></span></label>
             </div>
           </section>
-
-          <details class="agent-quickstart">
-            <summary>
-              <span class="agent-quickstart-icon" aria-hidden="true"><i data-lucide="bot"></i></span>
-              <span class="agent-quickstart-title"><strong>Agent 快捷接入</strong><small>展开查看常见 Agent 的接入步骤和快捷复制</small></span>
-              <i class="agent-quickstart-chevron" data-lucide="chevron-down"></i>
-            </summary>
-            <div class="agent-quickstart-body">
-              <p class="agent-quickstart-warning"><i data-lucide="shield-check"></i><span>复制内容会包含当前本地 API Key，请只粘贴到可信的本机配置或终端。</span></p>
-              <div class="agent-setup-grid">
-                <article class="agent-setup-card">
-                  <div class="agent-setup-heading">
-                    <span class="agent-setup-icon"><img src="/ui/assets/claude-code.svg" alt=""></span>
-                    <div><strong>Claude Code</strong><small>Anthropic Messages</small></div>
-                    <div class="agent-setup-actions">
-                      <button class="icon-action-button agent-setup-info" type="button" data-agent-guide="claude" aria-label="查看 Claude Code 详细使用方法" title="查看 Claude Code 详细使用方法"><i data-lucide="info"></i></button>
-                      <button class="icon-action-button agent-setup-copy" type="button" data-copy-agent-setup="claude" data-agent-protocol="anthropic" aria-label="复制 Claude Code 环境变量" title="复制 Claude Code 环境变量" disabled><i data-lucide="copy"></i></button>
-                    </div>
-                  </div>
-                  <p>复制环境变量，在终端粘贴后运行 Claude Code。</p>
-                </article>
-                <article class="agent-setup-card">
-                  <div class="agent-setup-heading">
-                    <span class="agent-setup-icon"><img src="/ui/assets/opencode.svg" alt=""></span>
-                    <div><strong>OpenCode</strong><small>OpenAI Chat Completions</small></div>
-                    <div class="agent-setup-actions">
-                      <button class="icon-action-button agent-setup-info" type="button" data-agent-guide="opencode" aria-label="查看 OpenCode 详细使用方法" title="查看 OpenCode 详细使用方法"><i data-lucide="info"></i></button>
-                      <button class="icon-action-button agent-setup-copy" type="button" data-copy-agent-setup="opencode" data-agent-protocol="openai" aria-label="复制 OpenCode 配置" title="复制 OpenCode 配置" disabled><i data-lucide="copy"></i></button>
-                    </div>
-                  </div>
-                  <p>复制 JSON 并合并到 opencode.json，然后选择 APG 模型。</p>
-                </article>
-                <article class="agent-setup-card">
-                  <div class="agent-setup-heading">
-                    <span class="agent-setup-icon"><img src="/ui/assets/codex.svg" alt=""></span>
-                    <div><strong>Codex</strong><small>OpenAI Responses</small></div>
-                    <div class="agent-setup-actions">
-                      <button class="icon-action-button agent-setup-info" type="button" data-agent-guide="codex" aria-label="查看 Codex 详细使用方法" title="查看 Codex 详细使用方法"><i data-lucide="info"></i></button>
-                      <button class="icon-action-button agent-setup-copy" type="button" data-copy-agent-setup="codex-config" data-agent-protocol="openai" aria-label="复制 Codex 配置" title="复制 Codex 配置" disabled><i data-lucide="copy"></i></button>
-                      <button class="icon-action-button agent-setup-copy" type="button" data-copy-agent-setup="codex-key" data-agent-protocol="openai" aria-label="复制 Codex 密钥变量" title="复制 Codex 密钥变量" disabled><i data-lucide="key-round"></i></button>
-                    </div>
-                  </div>
-                  <p>将配置加入 ~/.codex/config.toml，再复制密钥变量后启动 Codex。</p>
-                </article>
-              </div>
-            </div>
-          </details>
 
           <div class="metric-grid" id="overview-metrics">
             <article class="metric-card skeleton"></article>
@@ -309,6 +270,51 @@
             <div class="diagnostic-list" id="detection-diagnostics"></div>
           </section>
         </section>
+
+        <section class="view" id="view-local-models" aria-labelledby="page-title">
+          <div class="local-model-setup-notice is-hidden" id="local-model-setup-notice" role="status"></div>
+
+          <section class="local-model-entry" id="local-model-entry" aria-labelledby="local-model-entry-title">
+            <div class="local-model-entry-copy">
+              <p class="section-kicker">ADD &amp; PREPARE</p>
+              <h2 id="local-model-entry-title">添加本地模型</h2>
+              <p>输入 Hugging Face 地址、仓库 ID 或本地模型目录，APG 会自动识别并完成准备。</p>
+            </div>
+            <form id="manual-model-form" class="manual-model-form">
+              <label class="manual-model-source"><span>模型地址或本地目录</span><input id="manual-model-source" autocomplete="off" spellcheck="false" placeholder="owner/model 或 /path/to/model" required></label>
+              <button class="primary-button labeled-icon-button" type="submit"><i data-lucide="package-check"></i><span>添加并准备</span></button>
+              <details class="manual-model-advanced">
+                <summary>高级设置（选填）</summary>
+                <div>
+                  <label><span>模型类型</span><select id="manual-model-adapter"><option value="auto">自动识别</option><option value="transformers_token_classification">Transformers Token Classification</option><option value="gliner">GLiNER</option></select></label>
+                  <label><span>计算设备</span><select id="manual-model-device"><option value="auto">自动选择</option><option value="cpu">CPU</option><option value="mps">Apple MPS</option><option value="cuda">NVIDIA CUDA</option></select></label>
+                </div>
+              </details>
+              <p class="form-error" id="manual-model-error" role="alert"></p>
+            </form>
+          </section>
+
+          <section class="local-model-list-section" aria-labelledby="local-model-list-title">
+            <div class="section-heading">
+              <div><p class="section-kicker">LOCAL MODELS</p><h2 id="local-model-list-title">本地模型</h2></div>
+              <button class="secondary-button labeled-icon-button is-hidden" type="button" id="prepare-all-models"><i data-lucide="package-check"></i><span>准备全部</span></button>
+            </div>
+            <div class="local-model-job is-hidden" id="local-model-job" role="status" aria-live="polite"></div>
+            <div class="local-model-list" id="local-model-list"></div>
+            <div class="empty-state is-hidden" id="local-model-empty"><strong>还没有本地模型</strong><span>输入模型地址后，APG 会自动准备运行环境、下载并验证模型。</span></div>
+          </section>
+
+          <details class="local-runtime-section" id="local-runtime-details">
+            <summary>
+              <span><strong>高级信息</strong><small>受管 Runtime、依赖版本与可用计算设备</small></span>
+              <i data-lucide="chevron-down"></i>
+            </summary>
+            <div class="local-runtime-content">
+              <div class="local-runtime-grid" id="local-runtime-grid"></div>
+              <div class="local-device-grid" id="local-device-grid"></div>
+            </div>
+          </details>
+        </section>
       </main>
     </section>
   </div>
@@ -316,11 +322,6 @@
   <dialog class="modal" id="detail-modal">
     <div class="modal-header"><div><p class="section-kicker" id="modal-kicker">DETAIL</p><h2 id="modal-title">详情</h2></div><button class="icon-button" type="button" data-close-modal aria-label="关闭弹窗" title="关闭弹窗"><i data-lucide="x"></i></button></div>
     <div class="modal-body" id="modal-body"></div>
-  </dialog>
-
-  <dialog class="modal agent-guide-modal" id="agent-guide-modal">
-    <div class="modal-header"><div><p class="section-kicker">AGENT SETUP</p><h2 id="agent-guide-title">详细使用方法</h2></div><button class="icon-button" type="button" data-close-modal aria-label="关闭弹窗" title="关闭弹窗"><i data-lucide="x"></i></button></div>
-    <div class="modal-body" id="agent-guide-body"></div>
   </dialog>
 
   <dialog class="modal configuration-modal" id="configuration-modal">

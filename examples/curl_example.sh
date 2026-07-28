@@ -9,7 +9,7 @@ curl http://localhost:8765/v1/chat/completions \
     "messages": [
       {
         "role": "user",
-        "content": "Please help debug /Users/howard/private/project and do not leak sk-proj-abcdefghijklmnopqrstuvwxyz123456."
+        "content": "Please help debug /Users/alice/private/project and do not leak sk-example-abcdefghijklmnopqrstuvwxyz123456."
       }
     ]
   }'

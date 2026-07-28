@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import hashlib
 from collections.abc import Iterable
-from typing import Any
+from typing import Any, Callable
 
 from gateway.detectors.base import Detector
 from gateway.detectors.findings import Finding, SourceBlock, safe_preview
@@ -19,6 +19,9 @@ class HFTokenClassificationDetector(Detector):
         device: int | str = -1,
         allow_download: bool = False,
         aggregation_strategy: str = "simple",
+        model_resolver: Callable[[str, str, str], str | None] | None = None,
+        model_runner: Callable[..., list[dict[str, Any]]] | None = None,
+        configured_device: str = "cpu",
     ) -> None:
         self.name = f"models.{module_id}"
         self.model_name = model_name
@@ -26,6 +29,9 @@ class HFTokenClassificationDetector(Detector):
         self.device = device
         self.allow_download = allow_download
         self.aggregation_strategy = aggregation_strategy
+        self.model_resolver = model_resolver
+        self.model_runner = model_runner
+        self.configured_device = configured_device
         self._pipeline: Any | None = None
         self._available = False
         self._cache: dict[str, list[Finding]] = {}
@@ -34,8 +40,18 @@ class HFTokenClassificationDetector(Detector):
         key = hashlib.sha256(f"{self.name}:{normalized.normalized}".encode("utf-8")).hexdigest()
         if key in self._cache:
             return self._cache[key]
-        pipe = self._load()
-        raw_entities = pipe(normalized.normalized)
+        if self.model_runner is not None:
+            raw_entities = self.model_runner(
+                "transformers_token_classification",
+                self.model_name,
+                self.configured_device,
+                normalized.normalized,
+                threshold=self.threshold,
+                aggregation_strategy=self.aggregation_strategy,
+            )
+        else:
+            pipe = self._load()
+            raw_entities = pipe(normalized.normalized)
         findings = [self._to_finding(block, normalized, entity) for entity in raw_entities if float(entity.get("score", 0.0)) >= self.threshold]
         findings = [finding for finding in findings if finding is not None]
         self._cache[key] = findings
@@ -44,17 +60,28 @@ class HFTokenClassificationDetector(Detector):
     def _load(self) -> Any:
         if self._pipeline is not None:
             return self._pipeline
-        from transformers import pipeline
+        from transformers import AutoModelForTokenClassification, AutoTokenizer, pipeline
 
+        resolved_model = (
+            self.model_resolver(self.model_name, "transformers_token_classification", self.configured_device)
+            if self.model_resolver
+            else None
+        )
+        load_name = resolved_model or self.model_name
+        local_only = bool(resolved_model) or not self.allow_download
+        load_options = {
+            "local_files_only": local_only,
+            "trust_remote_code": False,
+        }
+        tokenizer = AutoTokenizer.from_pretrained(load_name, **load_options)
+        model = AutoModelForTokenClassification.from_pretrained(load_name, **load_options)
         kwargs: dict[str, Any] = {
             "task": "token-classification",
-            "model": self.model_name,
+            "model": model,
+            "tokenizer": tokenizer,
             "aggregation_strategy": self.aggregation_strategy,
             "device": self.device,
         }
-        if not self.allow_download:
-            kwargs["model_kwargs"] = {"local_files_only": True}
-            kwargs["tokenizer_kwargs"] = {"local_files_only": True}
         self._pipeline = pipeline(**kwargs)
         self._available = True
         return self._pipeline
@@ -91,12 +118,18 @@ class GLiNERDetector(Detector):
         labels: list[str],
         threshold: float = 0.5,
         allow_download: bool = False,
+        device: str = "cpu",
+        model_resolver: Callable[[str, str, str], str | None] | None = None,
+        model_runner: Callable[..., list[dict[str, Any]]] | None = None,
     ) -> None:
         self.name = f"models.{module_id}"
         self.model_name = model_name
         self.labels = labels
         self.threshold = threshold
         self.allow_download = allow_download
+        self.device = device
+        self.model_resolver = model_resolver
+        self.model_runner = model_runner
         self._model: Any | None = None
         self._cache: dict[str, list[Finding]] = {}
 
@@ -104,8 +137,18 @@ class GLiNERDetector(Detector):
         key = hashlib.sha256(f"{self.name}:{normalized.normalized}:{','.join(self.labels)}".encode("utf-8")).hexdigest()
         if key in self._cache:
             return self._cache[key]
-        model = self._load()
-        raw_entities = model.predict_entities(normalized.normalized, self.labels, threshold=self.threshold)
+        if self.model_runner is not None:
+            raw_entities = self.model_runner(
+                "gliner",
+                self.model_name,
+                self.device,
+                normalized.normalized,
+                labels=self.labels,
+                threshold=self.threshold,
+            )
+        else:
+            model = self._load()
+            raw_entities = model.predict_entities(normalized.normalized, self.labels, threshold=self.threshold)
         findings = [self._to_finding(block, normalized, entity) for entity in raw_entities]
         findings = [finding for finding in findings if finding is not None]
         self._cache[key] = findings
@@ -116,7 +159,17 @@ class GLiNERDetector(Detector):
             return self._model
         from gliner import GLiNER
 
-        self._model = GLiNER.from_pretrained(self.model_name, local_files_only=not self.allow_download)
+        resolved_model = (
+            self.model_resolver(self.model_name, "gliner", self.device)
+            if self.model_resolver
+            else None
+        )
+        self._model = GLiNER.from_pretrained(
+            resolved_model or self.model_name,
+            local_files_only=bool(resolved_model) or not self.allow_download,
+        )
+        if self.device != "cpu" and hasattr(self._model, "to"):
+            self._model.to(self.device)
         return self._model
 
     def _to_finding(self, block: SourceBlock, normalized: NormalizedText, entity: dict[str, Any]) -> Finding | None:

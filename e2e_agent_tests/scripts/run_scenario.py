@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import re
 import threading
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -11,7 +10,7 @@ from typing import Any
 import yaml
 
 from e2e_agent_tests.scripts.check_leaks import scan_paths
-from e2e_agent_tests.scripts.common import CANARY_STRINGS, HarnessPaths, ScenarioScore, append_jsonl, file_snapshot, read_jsonl, reset_path, sha256_file
+from e2e_agent_tests.scripts.common import HarnessPaths, ScenarioScore, append_jsonl, file_snapshot, read_jsonl, reset_path, sha256_file
 from e2e_agent_tests.scripts.mock_gateway import E2EMockGateway
 from e2e_agent_tests.scripts.setup_test_repo import setup_test_repo
 

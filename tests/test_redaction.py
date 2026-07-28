@@ -1,6 +1,11 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
+
+from gateway.detector_manager import DetectorManager
+from gateway.detectors.rules import builtin_rules
+from gateway.redaction_engine import RedactionEngine
 
 
 def test_api_key_redacted_before_upstream(redactor) -> None:
@@ -9,7 +14,7 @@ def test_api_key_redacted_before_upstream(redactor) -> None:
     text = json.dumps(sanitized)
     assert "sk-proj-" not in text
     assert "<APG:v1:secret:" in text
-    assert events[0]["subtype"] == "openai_api_key"
+    assert events[0]["subtype"] == "api_key"
 
 
 def test_env_assignment_preserves_key_and_redacts_only_value(redactor) -> None:
@@ -20,18 +25,19 @@ def test_env_assignment_preserves_key_and_redacts_only_value(redactor) -> None:
     assert sanitized.startswith("SERVICE_TOKEN=<APG:v1:secret:")
     assert "sk-apgtest" not in sanitized
 
-    exported, _ = redactor.sanitize_text(
-        'export SERVICE_TOKEN="svc_apgtest_live_agent_2026_abcdefghijklmnopqrstuvwxyz"',
-        "sess_1",
-    )
-    assert exported.startswith("export SERVICE_TOKEN=<APG:v1:secret:")
+    exported_source = 'export SERVICE_TOKEN="svc_apgtest_live_agent_2026_abcdefghijklmnopqrstuvwxyz"'
+    exported, _ = redactor.sanitize_text(exported_source, "sess_1")
+    assert exported.startswith('export SERVICE_TOKEN="<APG:v1:secret:')
+    assert exported.endswith('>"')
     assert "svc_apgtest" not in exported
+    assert redactor.materialize_local_text(exported, "sess_1") == exported_source
 
     read_output, _ = redactor.sanitize_text(
         '    42\u2192export SERVICE_TOKEN="svc_apgtest_live_agent_2026_abcdefghijklmnopqrstuvwxyz"',
         "sess_1",
     )
-    assert read_output.startswith("    42\u2192export SERVICE_TOKEN=<APG:v1:secret:")
+    assert read_output.startswith('    42\u2192export SERVICE_TOKEN="<APG:v1:secret:')
+    assert read_output.endswith('>"')
     assert "svc_apgtest" not in read_output
 
 
@@ -50,6 +56,56 @@ def test_env_assignment_preserves_status_and_inline_log_context(redactor) -> Non
     assert log_line.startswith("SERVICE_TOKEN=<APG:v1:secret:")
     assert log_line.endswith("; retry=true; status=401")
     assert "svc_apgtest_edge_" not in log_line
+
+
+def test_hex_dump_ascii_gutter_protects_split_credential_prefixes(redactor) -> None:
+    source = (
+        "00000020: 2e63 6f6d 2f76 312f 7265 7370 6f6e 7365  .com/v1/response\n"
+        "00000080: 4b45 593d 736b 2d61 7067 7465 7374 2d33  KEY=sk-apgtest-3\n"
+        "00000030: 4175 7468 6f72 697a 6174 696f 6e3a 2042  Authorization: B\n"
+        "00000040: 6561 7265 7220 6579 4a68 6263 4763 694f  earer eyJhbGciO\n"
+    )
+
+    sanitized, events = redactor.sanitize_text(source, "sess_hex_dump")
+
+    assert "sk-apgtest" not in sanitized
+    assert "eyJhbGci" not in sanitized
+    assert {event["subtype"] for event in events} == {"env_assignment", "jwt"}
+
+
+def test_grep_path_delimiter_does_not_copy_secret_into_path_alias_or_audit_preview(redactor) -> None:
+    secret = "svc_apgtest_live_agent_2026_abcdefghijklmnopqrstuvwxyz"
+    source = f"/private/tmp/project/.env:SERVICE_TOKEN={secret}"
+
+    sanitized, events = redactor.sanitize_text(source, "sess_grep")
+
+    assert secret not in sanitized
+    assert "SERVICE_TOKEN=<APG:v1:secret:" in sanitized
+    assert all(secret not in str(event) for event in events)
+    assert {event["subtype"] for event in events} == {"local_path", "env_assignment"}
+
+
+def test_env_assignment_does_not_replace_safe_python_status_expressions(redactor) -> None:
+    for source in (
+        "api_key_ok = bool(OPENAI_API_KEY)",
+        'OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")',
+        r"api_key_ok = bool(OPENAI_API_KEY)\n",
+    ):
+        sanitized, events = redactor.sanitize_text(source, "sess_1")
+        assert sanitized == source
+        assert events == []
+
+
+def test_materialized_secret_is_reprotected_without_original_assignment_context(redactor) -> None:
+    raw = "svc_apgtest_edge_inline_55555555555555555555"
+    first, _ = redactor.sanitize_text(f"SERVICE_TOKEN={raw}", "sess_1")
+    materialized = redactor.materialize_local_text(first, "sess_1")
+
+    sanitized, events = redactor.sanitize_text(f"| observed value | `{materialized.split('=', 1)[1]}` |", "sess_1")
+
+    assert raw not in sanitized
+    assert "<APG:v1:secret:" in sanitized
+    assert any(event["detector"] == "known_value" for event in events)
 
 
 def test_email_pseudonymized_consistently(redactor) -> None:
@@ -71,6 +127,22 @@ def test_local_path_alias_preserves_trailing_sentence_punctuation(redactor) -> N
     assert sanitized.endswith(".")
     restored = redactor.materialize_local_text(sanitized, "sess_1")
     assert restored == f"Read {raw_path}."
+
+
+def test_realistic_shell_fixtures_remain_usable_after_round_trip(redactor) -> None:
+    fixture_dir = Path(__file__).parent / "fixtures"
+    benign = (fixture_dir / "detector_shell_benign.txt").read_text(encoding="utf-8")
+    sensitive = (fixture_dir / "detector_shell_sensitive.txt").read_text(encoding="utf-8")
+
+    benign_result, benign_events = redactor.sanitize_text(benign, "sess_shell_benign")
+    assert benign_result == benign
+    assert benign_events == []
+
+    sanitized, events = redactor.sanitize_text(sensitive, "sess_shell_sensitive")
+    assert len(events) == 7
+    assert "SyntheticPass649" not in sanitized
+    assert 'ANTHROPIC_AUTH_TOKEN="<APG:v1:secret:' in sanitized
+    assert redactor.materialize_local_text(sanitized, "sess_shell_sensitive") == sensitive
 
 
 def test_same_basename_paths_get_distinct_aliases(redactor) -> None:
@@ -167,3 +239,61 @@ def test_recursive_json_fields_are_scanned(redactor) -> None:
     text = json.dumps(sanitized)
     assert "howard@example.com" not in text
     assert "sk-proj-" not in text
+
+
+def test_local_model_only_scans_content_fields_while_rules_cover_tool_schema(components) -> None:
+    store, signer, policy = components
+    model_inputs: list[str] = []
+
+    def model_runner(_adapter, _model_name, _device, text, **_options):
+        model_inputs.append(text)
+        return []
+
+    manager = DetectorManager(
+        detectors_config={
+            "flow": {
+                "id": "content_aware",
+                "modules": [
+                    {
+                        "id": "rules",
+                        "type": "regex_rules",
+                        "rules": [rule.__dict__ for rule in builtin_rules()],
+                    },
+                    {
+                        "id": "personal_model",
+                        "type": "local_model",
+                        "model_name": "example/pii",
+                        "adapter": "transformers_token_classification",
+                    },
+                ],
+            },
+            "model_runner": model_runner,
+        }
+    )
+    redactor = RedactionEngine(manager, store, signer, policy, "ws")
+    body = {
+        "model": "example-model",
+        "metadata": {"trace": "sk-proj-abcdefghijklmnopqrstuvwxyz123456"},
+        "tools": [
+            {
+                "type": "function",
+                "function": {
+                    "name": "read",
+                    "description": "Never expose sk-proj-abcdefghijklmnopqrstuvwxyz123456",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {"path": {"type": "string", "description": "Local path"}},
+                    },
+                },
+            }
+        ],
+        "messages": [{"role": "user", "content": "Hello Alice"}],
+    }
+
+    sanitized, _ = redactor.sanitize_json(body, "sess_content_aware")
+
+    assert model_inputs == ["Hello Alice"]
+    assert "sk-proj-" not in json.dumps(sanitized)
+    diagnostics = manager.diagnostics()
+    assert [item["id"] for item in diagnostics] == ["rules", "personal_model"]
+    assert diagnostics[-1]["status"] == "ok"

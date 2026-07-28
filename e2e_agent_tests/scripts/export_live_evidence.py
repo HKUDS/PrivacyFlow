@@ -8,6 +8,7 @@ from datetime import date
 from pathlib import Path
 from typing import Any
 
+from e2e_agent_tests.scripts.common import CANARY_STRINGS
 from e2e_agent_tests.scripts.setup_test_repo import FILES
 
 
@@ -32,6 +33,33 @@ SCENARIO_FILES: dict[str, list[str]] = {
 APG_PLACEHOLDER_RE = re.compile(
     r"<APG:v1:[^:>]+:(?P<handle>[^:>]+):[^:>]+:(?P<issued_at>\d+):[^>]+>"
 )
+GENERIC_APG_PLACEHOLDER_RE = re.compile(r"<APG:[^>\r\n]+>")
+LOCAL_ARTIFACT_PATH_RE = re.compile(
+    r"/private/(?:tmp|var)/[^\s\"'<>]+"
+)
+TOKEN_LIKE_RE = re.compile(
+    r"(?i)\b(?:sk|gh[porus])[-_][A-Za-z0-9_-]{16,}\b"
+)
+SYNTHETIC_EVIDENCE_VALUES = (*CANARY_STRINGS, "Howard Zhang")
+
+
+def _sanitize_export_value(value: Any) -> Any:
+    """Recursively remove protected values and machine-local paths from checked-in evidence."""
+
+    if isinstance(value, dict):
+        return {str(key): _sanitize_export_value(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_sanitize_export_value(item) for item in value]
+    if not isinstance(value, str):
+        return value
+
+    sanitized = value
+    for protected_value in sorted(SYNTHETIC_EVIDENCE_VALUES, key=len, reverse=True):
+        sanitized = sanitized.replace(protected_value, "<synthetic-protected-value>")
+    sanitized = GENERIC_APG_PLACEHOLDER_RE.sub("<APG:placeholder>", sanitized)
+    sanitized = TOKEN_LIKE_RE.sub("<token-like-value>", sanitized)
+    sanitized = LOCAL_ARTIFACT_PATH_RE.sub("<local-artifact-path>", sanitized)
+    return sanitized
 
 
 def _display_value(value: Any) -> str:
@@ -359,8 +387,11 @@ def main() -> None:
     }
     output = Path(args.output)
     output.parent.mkdir(parents=True, exist_ok=True)
+    sanitized_payload = _sanitize_export_value(payload)
     output.write_text(
-        "window.APG_LIVE_EVIDENCE = " + json.dumps(payload, ensure_ascii=False, indent=2) + ";\n",
+        "window.APG_LIVE_EVIDENCE = "
+        + json.dumps(sanitized_payload, ensure_ascii=False, indent=2)
+        + ";\n",
         encoding="utf-8",
     )
 

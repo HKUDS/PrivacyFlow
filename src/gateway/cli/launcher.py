@@ -271,7 +271,7 @@ def normalize_upstream_base_url(base_url: str) -> str:
     try:
         parsed = urlparse(normalized)
         hostname = parsed.hostname
-        parsed.port
+        _ = parsed.port
     except ValueError as exc:
         raise LauncherConfigError("The upstream Base URL is malformed.") from exc
     if parsed.scheme not in {"http", "https"} or not hostname or any(char.isspace() for char in hostname):
