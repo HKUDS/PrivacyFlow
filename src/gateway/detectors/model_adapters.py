@@ -74,7 +74,6 @@ class HFTokenClassificationDetector(Detector):
             normalized_end=end,
             type="PII",
             subtype=_normalize_label(label),
-            confidence=float(entity.get("score", 0.5)),
             risk="medium",
             detector=self.name,
             suggested_action="pseudonymize",
@@ -126,7 +125,6 @@ class GLiNERDetector(Detector):
         if not isinstance(start, int) or not isinstance(end, int) or end <= start:
             return None
         label = str(entity.get("label") or "pii").lower()
-        score = float(entity.get("score", self.threshold))
         original_start, original_end = normalized.original_span(start, end)
         return Finding.make(
             source_block_id=block.id,
@@ -136,7 +134,6 @@ class GLiNERDetector(Detector):
             normalized_end=end,
             type="PII",
             subtype=_normalize_label(label),
-            confidence=score,
             risk="medium",
             detector=self.name,
             suggested_action="pseudonymize",

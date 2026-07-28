@@ -20,10 +20,9 @@ from gateway.cli.launcher import (
     LauncherConfigError,
     activate_launcher_upstream_profile,
     delete_launcher_upstream_profile,
+    generate_local_api_key,
     load_launcher_upstream_profiles,
-    normalize_upstream_base_url,
-    normalize_upstream_profile_name,
-    normalize_upstream_protocol,
+    save_launcher_local_api_key,
     save_launcher_upstream_profile,
 )
 from gateway.config import GatewayConfig, UpstreamConfig, load_config
@@ -192,12 +191,21 @@ def create_app(config: GatewayConfig | None = None, upstream_client: UpstreamCli
     upstream = upstream_client or UpstreamClient(cfg.upstream)
     runtime_upstream_config = cfg.upstream
     launcher_config_path_raw = os.getenv("APG_LAUNCHER_CONFIG_PATH", "").strip()
-    launcher_config_path = Path(launcher_config_path_raw) if launcher_config_path_raw else None
-    if launcher_config_path is not None:
-        runtime_upstream_profiles, active_upstream_profile_id = load_launcher_upstream_profiles(
-            launcher_config_path
-        )
-    elif cfg.upstream.base_url or cfg.upstream.api_key:
+    launcher_config_path = (
+        Path(launcher_config_path_raw)
+        if launcher_config_path_raw
+        else Path(cfg.database_path).with_name("launcher.json")
+    )
+    if launcher_config_path_raw or launcher_config_path.exists():
+        loaded_profiles, active_upstream_profile_id = load_launcher_upstream_profiles(launcher_config_path)
+        runtime_upstream_profiles = [
+            {**profile, "persisted": True}
+            for profile in loaded_profiles
+        ]
+    else:
+        active_upstream_profile_id = ""
+        runtime_upstream_profiles = []
+    if not runtime_upstream_profiles and (cfg.upstream.base_url or cfg.upstream.api_key):
         active_upstream_profile_id = "runtime_default"
         runtime_upstream_profiles = [
             {
@@ -206,11 +214,27 @@ def create_app(config: GatewayConfig | None = None, upstream_client: UpstreamCli
                 "protocol": canonical_upstream_protocol(cfg.upstream.protocol),
                 "base_url": cfg.upstream.base_url,
                 "api_key": cfg.upstream.api_key,
+                "persisted": False,
             }
         ]
-    else:
-        active_upstream_profile_id = ""
-        runtime_upstream_profiles = []
+    persisted_active_profile = next(
+        (
+            profile
+            for profile in runtime_upstream_profiles
+            if profile.get("persisted") and profile["id"] == active_upstream_profile_id
+        ),
+        None,
+    )
+    if persisted_active_profile is not None:
+        runtime_upstream_config = replace(
+            runtime_upstream_config,
+            protocol=str(persisted_active_profile["protocol"]),
+            base_url=str(persisted_active_profile["base_url"]),
+            api_key=str(persisted_active_profile["api_key"]),
+        )
+        update_config = getattr(upstream, "update_config", None)
+        if callable(update_config):
+            update_config(runtime_upstream_config)
     audit = AuditLogger(cfg.audit_log_path, store)
     detector_state_path = str(Path(cfg.database_path).with_name("detector-control.json"))
 
@@ -245,6 +269,7 @@ def create_app(config: GatewayConfig | None = None, upstream_client: UpstreamCli
             "base_url": str(profile.get("base_url", "")),
             "has_api_key": bool(str(profile.get("api_key", "")).strip()),
             "active": str(profile.get("id", "")) == active_upstream_profile_id,
+            "persisted": bool(profile.get("persisted", False)),
         }
 
     def upstream_configuration_info() -> dict[str, Any]:
@@ -256,7 +281,7 @@ def create_app(config: GatewayConfig | None = None, upstream_client: UpstreamCli
             "protocol": protocol,
             "active_profile_id": active_upstream_profile_id,
             "profiles": [public_upstream_profile(profile) for profile in runtime_upstream_profiles],
-            "persistent": launcher_config_path is not None,
+            "persistent": True,
         }
 
     def upstream_is_configured() -> bool:
@@ -266,6 +291,30 @@ def create_app(config: GatewayConfig | None = None, upstream_client: UpstreamCli
             and active.base_url.strip()
             and active.api_key.strip()
         )
+
+    def privacy_control_status() -> dict[str, Any]:
+        detector_available = detector_control.active_configuration_available()
+        upstream_available = upstream_is_configured() and bool(active_upstream_profile_id)
+        available = detector_available and upstream_available
+        enabled = detector_control.apg_enabled()
+        if not upstream_available:
+            unavailable_reason = "no_upstream_configuration"
+        elif not detector_available:
+            unavailable_reason = "no_detector_configuration"
+        else:
+            unavailable_reason = None
+        active_configuration = detector_control.active_configuration() if detector_available else None
+        return {
+            "enabled": enabled,
+            "effective": enabled and available,
+            "available": available,
+            "unavailable_reason": unavailable_reason,
+            "active_detector_configuration_id": active_configuration["id"] if active_configuration else "",
+            "active_detector_configuration_name": active_configuration["name"] if active_configuration else "",
+        }
+
+    def apg_effective_enabled() -> bool:
+        return detector_control.apg_enabled() and detector_control.active_configuration_available()
 
     def upstream_not_configured_response(*, anthropic: bool = False) -> JSONResponse:
         message = "Configure the upstream Base URL and API key in the APG WebUI before sending Agent requests."
@@ -372,6 +421,7 @@ def create_app(config: GatewayConfig | None = None, upstream_client: UpstreamCli
     async def proxy_json(endpoint: str, request: Request, authorization: str | None, x_apg_session_id: str | None, x_api_key: str | None = None) -> Response:
         request_id = f"req_{uuid.uuid4().hex[:12]}"
         session_id = authenticate(authorization, x_apg_session_id, x_api_key)
+        privacy_enabled = apg_effective_enabled()
         if not upstream_is_configured():
             return upstream_not_configured_response()
         if not upstream_protocol_supported(endpoint):
@@ -380,27 +430,36 @@ def create_app(config: GatewayConfig | None = None, upstream_client: UpstreamCli
             body: Any = await request.json()
         except Exception as exc:
             raise HTTPException(status_code=400, detail="Invalid JSON") from exc
-        sanitized, request_events = redactor.sanitize_json(body, session_id)
-        if isinstance(sanitized, dict):
-            sanitized = _inject_apg_responses_instructions(sanitized) if endpoint == "/v1/responses" else _inject_apg_system_prompt(sanitized)
-        audit.log(
-            {
-                "request_id": request_id,
-                "session_id": session_id,
-                "workspace_id": cfg.workspace_id,
-                "endpoint": endpoint,
-                "phase": "request",
-                "detections": request_events,
-                "detector_diagnostics": redactor.detector_manager.diagnostics(),
-                "before_chars": len(str(body)),
-                "after_chars": len(str(sanitized)),
-            }
-        )
+        if privacy_enabled:
+            sanitized, request_events = redactor.sanitize_json(body, session_id)
+            if isinstance(sanitized, dict):
+                sanitized = _inject_apg_responses_instructions(sanitized) if endpoint == "/v1/responses" else _inject_apg_system_prompt(sanitized)
+            audit.log(
+                {
+                    "request_id": request_id,
+                    "session_id": session_id,
+                    "workspace_id": cfg.workspace_id,
+                    "endpoint": endpoint,
+                    "phase": "request",
+                    "detections": request_events,
+                    "detector_diagnostics": redactor.detector_manager.diagnostics(),
+                    "before_chars": len(str(body)),
+                    "after_chars": len(str(sanitized)),
+                }
+            )
+        else:
+            sanitized = body
         if isinstance(sanitized, dict) and sanitized.get("stream") is True:
             try:
                 status, headers, stream_body = await upstream.stream_request("POST", endpoint, sanitized)
             except httpx.HTTPError as exc:
                 return _upstream_error_response(exc, audit, request_id, session_id, cfg.workspace_id, endpoint)
+            if not privacy_enabled:
+                return StreamingResponse(
+                    stream_body,
+                    status_code=status,
+                    media_type=headers.get("content-type", "text/event-stream"),
+                )
             audit.log(
                 {
                     "request_id": request_id,
@@ -435,6 +494,8 @@ def create_app(config: GatewayConfig | None = None, upstream_client: UpstreamCli
             status, headers, upstream_body = await upstream.request_json("POST", endpoint, sanitized)
         except httpx.HTTPError as exc:
             return _upstream_error_response(exc, audit, request_id, session_id, cfg.workspace_id, endpoint)
+        if not privacy_enabled:
+            return JSONResponse(upstream_body, status_code=status, headers=headers)
         try:
             scanned_body, response_events = response_scanner.scan_response_json(upstream_body, session_id)
         except ToolArgumentsJSONError as exc:
@@ -607,6 +668,7 @@ def create_app(config: GatewayConfig | None = None, upstream_client: UpstreamCli
         session_id: str,
         model: str,
         *,
+        privacy_enabled: bool = True,
         on_complete: Any | None = None,
     ) -> AsyncIterator[bytes]:
         message_id = f"msg_{uuid.uuid4().hex[:24]}"
@@ -684,10 +746,14 @@ def create_app(config: GatewayConfig | None = None, upstream_client: UpstreamCli
                             },
                         )
                         text_started = True
-                        text_scanner = BalancedStreamScanner(redactor, session_id)
-                    assert text_scanner is not None
-                    safe_text, events = text_scanner.feed(text)
-                    summary.record(events)
+                        if privacy_enabled:
+                            text_scanner = BalancedStreamScanner(redactor, session_id)
+                    if privacy_enabled:
+                        assert text_scanner is not None
+                        safe_text, events = text_scanner.feed(text)
+                        summary.record(events)
+                    else:
+                        safe_text = text
                     if safe_text:
                         yield sse_event(
                             "content_block_delta",
@@ -716,18 +782,19 @@ def create_app(config: GatewayConfig | None = None, upstream_client: UpstreamCli
                     tool["name"] = append_fragment(tool["name"], function.get("name"))
                     tool["arguments"] = append_fragment(tool["arguments"], function.get("arguments"))
 
-            if text_started and text_scanner is not None:
-                safe_text, events = text_scanner.flush()
-                summary.record(events)
-                if safe_text:
-                    yield sse_event(
-                        "content_block_delta",
-                        {
-                            "type": "content_block_delta",
-                            "index": 0,
-                            "delta": {"type": "text_delta", "text": safe_text},
-                        },
-                    )
+            if text_started:
+                if privacy_enabled and text_scanner is not None:
+                    safe_text, events = text_scanner.flush()
+                    summary.record(events)
+                    if safe_text:
+                        yield sse_event(
+                            "content_block_delta",
+                            {
+                                "type": "content_block_delta",
+                                "index": 0,
+                                "delta": {"type": "text_delta", "text": safe_text},
+                            },
+                        )
                 yield sse_event("content_block_stop", {"type": "content_block_stop", "index": 0})
 
             next_index = 1 if text_started else 0
@@ -739,11 +806,14 @@ def create_app(config: GatewayConfig | None = None, upstream_client: UpstreamCli
                 tool = tools[call_pos]
                 index = next_index
                 next_index += 1
-                args, events = redactor.materialize_local_tool_arguments_json_with_events(
-                    tool["arguments"],
-                    session_id,
-                    tool_name=tool["name"],
-                )
+                if privacy_enabled:
+                    args, events = redactor.materialize_local_tool_arguments_json_with_events(
+                        tool["arguments"],
+                        session_id,
+                        tool_name=tool["name"],
+                    )
+                else:
+                    args, events = tool["arguments"], []
                 prepared_tools.append((index, tool, args))
                 materialization_events.extend(events)
             summary.record(materialization_events)
@@ -807,6 +877,7 @@ def create_app(config: GatewayConfig | None = None, upstream_client: UpstreamCli
     async def anthropic_messages(request: Request, authorization: str | None, x_apg_session_id: str | None, x_api_key: str | None = None) -> Response:
         request_id = f"req_{uuid.uuid4().hex[:12]}"
         session_id = authenticate(authorization, x_apg_session_id, x_api_key)
+        privacy_enabled = apg_effective_enabled()
         if not upstream_is_configured():
             return upstream_not_configured_response(anthropic=True)
         if not upstream_protocol_supported("/v1/messages"):
@@ -817,47 +888,54 @@ def create_app(config: GatewayConfig | None = None, upstream_client: UpstreamCli
             raise HTTPException(status_code=400, detail="Invalid JSON") from exc
         if not isinstance(body, dict):
             raise HTTPException(status_code=400, detail="Invalid Anthropic messages payload")
-        sanitized, request_events = redactor.sanitize_json(body, session_id)
+        if privacy_enabled:
+            sanitized, request_events = redactor.sanitize_json(body, session_id)
+        else:
+            sanitized, request_events = body, []
         native_anthropic = active_upstream_protocol() == ANTHROPIC_MESSAGES
         if native_anthropic:
-            upstream_payload = _inject_apg_anthropic_system(sanitized)
+            upstream_payload = _inject_apg_anthropic_system(sanitized) if privacy_enabled else sanitized
             response_model = str(upstream_payload.get("model", ""))
             upstream_path = "/v1/messages"
         else:
-            upstream_payload = _inject_apg_system_prompt(anthropic_to_openai(sanitized))
+            upstream_payload = anthropic_to_openai(sanitized)
+            if privacy_enabled:
+                upstream_payload = _inject_apg_system_prompt(upstream_payload)
             response_model = str(upstream_payload.pop("_apg_requested_model", upstream_payload.get("model", "")))
             upstream_path = "/v1/chat/completions"
         endpoint = "/v1/messages"
-        audit.log(
-            {
-                "request_id": request_id,
-                "session_id": session_id,
-                "workspace_id": cfg.workspace_id,
-                "endpoint": endpoint,
-                "phase": "request",
-                "detections": request_events,
-                "detector_diagnostics": redactor.detector_manager.diagnostics(),
-                "before_chars": len(str(body)),
-                "after_chars": len(str(sanitized)),
-            }
-        )
-        if upstream_payload.get("stream"):
-            try:
-                status, headers, stream_body = await upstream.stream_request("POST", upstream_path, upstream_payload)
-            except httpx.HTTPError as exc:
-                return _upstream_error_response(exc, audit, request_id, session_id, cfg.workspace_id, endpoint)
+        if privacy_enabled:
             audit.log(
                 {
                     "request_id": request_id,
                     "session_id": session_id,
                     "workspace_id": cfg.workspace_id,
                     "endpoint": endpoint,
-                    "phase": "response",
-                    "status": status,
-                    "stream": True,
-                    "detections": [],
+                    "phase": "request",
+                    "detections": request_events,
+                    "detector_diagnostics": redactor.detector_manager.diagnostics(),
+                    "before_chars": len(str(body)),
+                    "after_chars": len(str(sanitized)),
                 }
             )
+        if upstream_payload.get("stream"):
+            try:
+                status, headers, stream_body = await upstream.stream_request("POST", upstream_path, upstream_payload)
+            except httpx.HTTPError as exc:
+                return _upstream_error_response(exc, audit, request_id, session_id, cfg.workspace_id, endpoint)
+            if privacy_enabled:
+                audit.log(
+                    {
+                        "request_id": request_id,
+                        "session_id": session_id,
+                        "workspace_id": cfg.workspace_id,
+                        "endpoint": endpoint,
+                        "phase": "response",
+                        "status": status,
+                        "stream": True,
+                        "detections": [],
+                    }
+                )
             def log_stream_complete(summary: dict[str, Any]) -> None:
                 audit.log(
                     {
@@ -870,20 +948,24 @@ def create_app(config: GatewayConfig | None = None, upstream_client: UpstreamCli
                     }
                 )
 
-            local_stream = (
-                redactor.scan_anthropic_stream(
-                    stream_body,
-                    session_id,
-                    on_complete=log_stream_complete,
+            if native_anthropic:
+                local_stream = (
+                    redactor.scan_anthropic_stream(
+                        stream_body,
+                        session_id,
+                        on_complete=log_stream_complete,
+                    )
+                    if privacy_enabled
+                    else stream_body
                 )
-                if native_anthropic
-                else openai_stream_to_anthropic(
+            else:
+                local_stream = openai_stream_to_anthropic(
                     stream_body,
                     session_id,
                     response_model,
-                    on_complete=log_stream_complete,
+                    privacy_enabled=privacy_enabled,
+                    on_complete=log_stream_complete if privacy_enabled else None,
                 )
-            )
             return StreamingResponse(
                 local_stream,
                 status_code=status,
@@ -893,30 +975,34 @@ def create_app(config: GatewayConfig | None = None, upstream_client: UpstreamCli
             status, headers, upstream_body = await upstream.request_json("POST", upstream_path, upstream_payload)
         except httpx.HTTPError as exc:
             return _upstream_error_response(exc, audit, request_id, session_id, cfg.workspace_id, endpoint)
-        try:
-            scanned_body, response_events = response_scanner.scan_response_json(upstream_body, session_id)
-        except ToolArgumentsJSONError as exc:
-            return _tool_arguments_error_response(
-                exc,
-                audit,
-                request_id,
-                session_id,
-                cfg.workspace_id,
-                endpoint,
-                anthropic=True,
-            )
+        if privacy_enabled:
+            try:
+                scanned_body, response_events = response_scanner.scan_response_json(upstream_body, session_id)
+            except ToolArgumentsJSONError as exc:
+                return _tool_arguments_error_response(
+                    exc,
+                    audit,
+                    request_id,
+                    session_id,
+                    cfg.workspace_id,
+                    endpoint,
+                    anthropic=True,
+                )
+        else:
+            scanned_body, response_events = upstream_body, []
         if status >= 400:
-            audit.log(
-                {
-                    "request_id": request_id,
-                    "session_id": session_id,
-                    "workspace_id": cfg.workspace_id,
-                    "endpoint": endpoint,
-                    "phase": "response",
-                    "status": status,
-                    "detections": response_events,
-                }
-            )
+            if privacy_enabled:
+                audit.log(
+                    {
+                        "request_id": request_id,
+                        "session_id": session_id,
+                        "workspace_id": cfg.workspace_id,
+                        "endpoint": endpoint,
+                        "phase": "response",
+                        "status": status,
+                        "detections": response_events,
+                    }
+                )
             if native_anthropic:
                 return JSONResponse(scanned_body, status_code=status, headers=headers)
             error = scanned_body.get("error") if isinstance(scanned_body, dict) else {}
@@ -938,17 +1024,18 @@ def create_app(config: GatewayConfig | None = None, upstream_client: UpstreamCli
             if native_anthropic
             else openai_message_to_anthropic(scanned_body, response_model)
         )
-        audit.log(
-            {
-                "request_id": request_id,
-                "session_id": session_id,
-                "workspace_id": cfg.workspace_id,
-                "endpoint": endpoint,
-                "phase": "response",
-                "status": status,
-                "detections": response_events,
-            }
-        )
+        if privacy_enabled:
+            audit.log(
+                {
+                    "request_id": request_id,
+                    "session_id": session_id,
+                    "workspace_id": cfg.workspace_id,
+                    "endpoint": endpoint,
+                    "phase": "response",
+                    "status": status,
+                    "detections": response_events,
+                }
+            )
         return JSONResponse(anthropic_body, status_code=status, headers=headers)
 
     @app.get("/v1/models")
@@ -978,6 +1065,17 @@ def create_app(config: GatewayConfig | None = None, upstream_client: UpstreamCli
         if not isinstance(body, dict) or not isinstance(body.get("text"), str):
             raise HTTPException(status_code=400, detail="Expected JSON body with string field 'text'")
         text = body["text"]
+        if not apg_effective_enabled():
+            response: dict[str, Any] = {
+                "session_id": session_id,
+                "enabled": False,
+                "preset": None,
+                "findings": [],
+                "diagnostics": [],
+            }
+            if body.get("return_sanitized", True):
+                response["sanitized_text"] = text
+            return JSONResponse(response)
         kind = str(body.get("kind", "text"))
         redactor.detector_manager.reset_diagnostics()
         findings = redactor.detector_manager.scan_findings(text, kind=kind)
@@ -1032,7 +1130,16 @@ def create_app(config: GatewayConfig | None = None, upstream_client: UpstreamCli
 
         @app.get("/ui/assets/{asset_name}", include_in_schema=False)
         async def webui_asset(asset_name: str) -> Response:
-            if asset_name not in {"app.js", "i18n.js", "lucide.min.js", "styles.css"}:
+            if asset_name not in {
+                "apg-icon.png",
+                "app.js",
+                "claude-code.svg",
+                "codex.svg",
+                "i18n.js",
+                "lucide.min.js",
+                "opencode.svg",
+                "styles.css",
+            }:
                 raise HTTPException(status_code=404, detail="Asset not found")
             return FileResponse(webui_dir / asset_name, headers={"Cache-Control": "no-cache", "X-Content-Type-Options": "nosniff"})
 
@@ -1044,12 +1151,69 @@ def create_app(config: GatewayConfig | None = None, upstream_client: UpstreamCli
             authenticate_admin(authorization, x_api_key)
             return JSONResponse(admin.overview(), headers={"Cache-Control": "no-store"})
 
+        @app.get("/api/admin/privacy-control")
+        async def admin_privacy_control(
+            authorization: str | None = Header(default=None),
+            x_api_key: str | None = Header(default=None),
+        ) -> Response:
+            authenticate_admin(authorization, x_api_key)
+            return JSONResponse(privacy_control_status(), headers={"Cache-Control": "no-store"})
+
+        @app.put("/api/admin/privacy-control")
+        async def update_admin_privacy_control(
+            request: Request,
+            authorization: str | None = Header(default=None),
+            x_api_key: str | None = Header(default=None),
+        ) -> Response:
+            authenticate_admin(authorization, x_api_key)
+            body = await admin_body(request)
+            enabled = body.get("enabled")
+            if not isinstance(enabled, bool):
+                raise HTTPException(status_code=400, detail="Expected boolean field 'enabled'")
+            status = privacy_control_status()
+            if enabled and not status["available"]:
+                raise HTTPException(status_code=409, detail="APG cannot be enabled without an active usable configuration")
+            detector_control.set_apg_enabled(enabled)
+            audit.log(
+                {
+                    "phase": "admin_action",
+                    "action": "enable_apg" if enabled else "disable_apg",
+                    "configuration_id": status["active_detector_configuration_id"],
+                    "result_code": "OK",
+                }
+            )
+            return JSONResponse(privacy_control_status(), headers={"Cache-Control": "no-store"})
+
         @app.get("/api/admin/connection")
         async def admin_connection(
             authorization: str | None = Header(default=None),
             x_api_key: str | None = Header(default=None),
         ) -> Response:
             authenticate_admin(authorization, x_api_key)
+            return JSONResponse(admin.connection_info(), headers={"Cache-Control": "no-store"})
+
+        @app.post("/api/admin/connection/api-key")
+        async def regenerate_admin_connection_api_key(
+            authorization: str | None = Header(default=None),
+            x_api_key: str | None = Header(default=None),
+        ) -> Response:
+            authenticate_admin(authorization, x_api_key)
+            generated = generate_local_api_key()
+            try:
+                save_launcher_local_api_key(launcher_config_path, generated)
+            except LauncherConfigError as exc:
+                raise HTTPException(status_code=400, detail=str(exc)) from exc
+            cfg.local_api_keys.clear()
+            cfg.local_api_keys.add(generated)
+            audit.log(
+                {
+                    "phase": "admin_action",
+                    "workspace_id": cfg.workspace_id,
+                    "action": "rotate_agent_api_key",
+                    "available_key_count": 1,
+                    "result_code": "OK",
+                }
+            )
             return JSONResponse(admin.connection_info(), headers={"Cache-Control": "no-store"})
 
         @app.get("/api/admin/upstream-configuration")
@@ -1085,39 +1249,25 @@ def create_app(config: GatewayConfig | None = None, upstream_client: UpstreamCli
             if not isinstance(api_key, str):
                 raise HTTPException(status_code=400, detail="Expected a string upstream API key")
             try:
-                if launcher_config_path is not None:
-                    profile = await asyncio.to_thread(
-                        save_launcher_upstream_profile,
-                        launcher_config_path,
-                        profile_id=profile_id,
-                        name=name,
-                        protocol=protocol,
-                        base_url=base_url,
-                        api_key=api_key,
-                    )
-                else:
-                    normalized_protocol = normalize_upstream_protocol(protocol)
-                    normalized_base_url = normalize_upstream_base_url(base_url)
-                    normalized_name = normalize_upstream_profile_name(name)
-                    existing = next(
-                        (item for item in runtime_upstream_profiles if item["id"] == profile_id),
-                        None,
-                    )
-                    normalized_api_key = api_key.strip() or str((existing or {}).get("api_key", "")).strip()
-                    if not normalized_api_key or len(normalized_api_key) > 4096:
-                        raise LauncherConfigError("The upstream API key must contain between 1 and 4096 characters.")
-                    if any(ord(char) < 32 or ord(char) == 127 for char in normalized_api_key):
-                        raise LauncherConfigError("The upstream API key contains unsupported control characters.")
-                    resolved_id = str(existing["id"]) if existing is not None else f"up_{uuid.uuid4().hex[:16]}"
-                    profile = {
-                        "id": resolved_id,
-                        "name": normalized_name,
-                        "protocol": normalized_protocol,
-                        "base_url": normalized_base_url,
-                        "api_key": normalized_api_key,
-                    }
+                existing_runtime_profile = next(
+                    (item for item in runtime_upstream_profiles if item["id"] == profile_id),
+                    None,
+                )
+                effective_api_key = api_key.strip() or str(
+                    (existing_runtime_profile or {}).get("api_key", "")
+                ).strip()
+                profile = await asyncio.to_thread(
+                    save_launcher_upstream_profile,
+                    launcher_config_path,
+                    profile_id=profile_id,
+                    name=name,
+                    protocol=protocol,
+                    base_url=base_url,
+                    api_key=effective_api_key,
+                )
+                profile = {**profile, "persisted": True}
                 runtime_upstream_profiles = [
-                    profile if item["id"] == profile["id"] else item
+                    profile if item["id"] in {profile_id, profile["id"]} else item
                     for item in runtime_upstream_profiles
                 ]
                 if not any(item["id"] == profile["id"] for item in runtime_upstream_profiles):
@@ -1159,19 +1309,11 @@ def create_app(config: GatewayConfig | None = None, upstream_client: UpstreamCli
             nonlocal active_upstream_profile_id
             authenticate_admin(authorization, x_api_key)
             try:
-                if launcher_config_path is not None:
-                    profile = await asyncio.to_thread(
-                        activate_launcher_upstream_profile,
-                        launcher_config_path,
-                        profile_id,
-                    )
-                else:
-                    profile = next(
-                        (item for item in runtime_upstream_profiles if item["id"] == profile_id),
-                        None,
-                    )
-                    if profile is None:
-                        raise LauncherConfigError("The upstream profile does not exist.")
+                profile = await asyncio.to_thread(
+                    activate_launcher_upstream_profile,
+                    launcher_config_path,
+                    profile_id,
+                )
                 active_upstream_profile_id = profile_id
                 update_upstream_configuration(
                     str(profile["protocol"]),
@@ -1199,26 +1341,11 @@ def create_app(config: GatewayConfig | None = None, upstream_client: UpstreamCli
             nonlocal active_upstream_profile_id, runtime_upstream_profiles
             authenticate_admin(authorization, x_api_key)
             try:
-                if launcher_config_path is not None:
-                    next_active = await asyncio.to_thread(
-                        delete_launcher_upstream_profile,
-                        launcher_config_path,
-                        profile_id,
-                    )
-                else:
-                    if not any(item["id"] == profile_id for item in runtime_upstream_profiles):
-                        raise LauncherConfigError("The upstream profile does not exist.")
-                    runtime_upstream_profiles = [
-                        item for item in runtime_upstream_profiles if item["id"] != profile_id
-                    ]
-                    next_active = next(
-                        (
-                            item
-                            for item in runtime_upstream_profiles
-                            if item["id"] == active_upstream_profile_id
-                        ),
-                        runtime_upstream_profiles[0] if runtime_upstream_profiles else None,
-                    )
+                next_active = await asyncio.to_thread(
+                    delete_launcher_upstream_profile,
+                    launcher_config_path,
+                    profile_id,
+                )
                 runtime_upstream_profiles = [
                     item for item in runtime_upstream_profiles if item["id"] != profile_id
                 ]
@@ -1511,6 +1638,37 @@ def create_app(config: GatewayConfig | None = None, upstream_client: UpstreamCli
                     "configuration_id": result["id"],
                     "revision": result["revision"],
                     "module_count": len(result["modules"]),
+                    "result_code": "OK",
+                }
+            )
+            return JSONResponse(result, headers={"Cache-Control": "no-store"})
+
+        @app.put("/api/admin/detector-configurations/{configuration_id}/modules/{module_id}/enabled")
+        async def admin_set_template_detector_module_enabled(
+            configuration_id: str,
+            module_id: str,
+            request: Request,
+            authorization: str | None = Header(default=None),
+            x_api_key: str | None = Header(default=None),
+        ) -> Response:
+            authenticate_admin(authorization, x_api_key)
+            body = await admin_body(request)
+            enabled = body.get("enabled")
+            if not isinstance(enabled, bool):
+                raise HTTPException(status_code=400, detail="Expected boolean module enabled state")
+            try:
+                result = detector_control.set_template_module_enabled(configuration_id, module_id, enabled)
+            except DetectorConfigurationNotFound as exc:
+                raise HTTPException(status_code=404, detail=str(exc)) from exc
+            except DetectorControlError as exc:
+                raise HTTPException(status_code=400, detail=str(exc)) from exc
+            audit.log(
+                {
+                    "phase": "admin_action",
+                    "action": "toggle_preset_detector_module",
+                    "configuration_id": configuration_id,
+                    "module_id": module_id,
+                    "enabled": enabled,
                     "result_code": "OK",
                 }
             )

@@ -38,7 +38,6 @@ def test_every_detector_module_silently_ignores_only_the_example() -> None:
                             "pattern": "pii",
                             "type": "PII",
                             "subtype": "custom_inner_text",
-                            "confidence": 1.0,
                             "risk": "high",
                             "suggested_action": "pseudonymize",
                         }

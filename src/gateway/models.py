@@ -9,7 +9,6 @@ class Detection:
     span_end: int
     type: str
     subtype: str
-    confidence: float
     risk: str
     detector_name: str
     suggested_action: str

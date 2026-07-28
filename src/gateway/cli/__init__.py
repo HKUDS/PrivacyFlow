@@ -3,6 +3,7 @@ from gateway.cli.launcher import (
     activate_launcher_upstream_profile,
     apply_launcher_environment,
     delete_launcher_upstream_profile,
+    generate_local_api_key,
     load_launcher_upstream_profiles,
     main,
     normalize_upstream_base_url,
@@ -11,6 +12,7 @@ from gateway.cli.launcher import (
     prepare_launcher_config,
     save_launcher_upstream_api_key,
     save_launcher_upstream_configuration,
+    save_launcher_local_api_key,
     save_launcher_upstream_profile,
 )
 
@@ -19,6 +21,7 @@ __all__ = [
     "activate_launcher_upstream_profile",
     "apply_launcher_environment",
     "delete_launcher_upstream_profile",
+    "generate_local_api_key",
     "load_launcher_upstream_profiles",
     "main",
     "normalize_upstream_base_url",
@@ -27,5 +30,6 @@ __all__ = [
     "prepare_launcher_config",
     "save_launcher_upstream_api_key",
     "save_launcher_upstream_configuration",
+    "save_launcher_local_api_key",
     "save_launcher_upstream_profile",
 ]

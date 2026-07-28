@@ -32,7 +32,6 @@ detectors:
               pattern: "\\\\bTICKET-[0-9]{6}\\\\b"
               type: LOCAL_CONTEXT
               subtype: ticket
-              confidence: 0.8
               risk: medium
               suggested_action: redact
 """,

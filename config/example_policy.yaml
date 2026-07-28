@@ -36,7 +36,6 @@ detectors:
           pattern: "\\bTICKET-[0-9]{6}\\b"
           type: LOCAL_CONTEXT
           subtype: internal_ticket
-          confidence: 0.85
           risk: medium
           suggested_action: redact
       disable: []
@@ -53,7 +52,6 @@ detectors:
               pattern: "\\bpartner_live_[A-Za-z0-9]{12,}\\b"
               type: MACHINE_SECRET
               subtype: partner_token
-              confidence: 0.9
               risk: high
               suggested_action: redact
         - id: entropy
@@ -61,4 +59,5 @@ detectors:
           enabled: true
           min_length: 20
           min_entropy: 3.5
+          risk: medium
           timeout_ms: 100

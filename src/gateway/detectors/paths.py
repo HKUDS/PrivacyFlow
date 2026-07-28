@@ -20,8 +20,6 @@ class PathDetector(Detector):
         re.compile(r"(?<!\w)%(?:USERPROFILE|APPDATA)%\\[^\s\"'<>)]*", re.I),
         re.compile(r"(?<!\w)[A-Za-z]:\\Users\\[A-Za-z0-9._-]+\\[^\s\"'<>)]*"),
     )
-    KNOWN_CREDENTIAL_NAMES = (".env", "id_rsa", "id_ed25519", "credentials.json", "kubeconfig", ".npmrc", ".pypirc")
-
     def __init__(
         self,
         *,
@@ -29,21 +27,13 @@ class PathDetector(Detector):
         detect_macos_private: bool = True,
         detect_shell_config: bool = True,
         detect_windows_user: bool = True,
-        credential_names: list[str] | tuple[str, ...] | None = None,
         exclude_patterns: list[str] | tuple[str, ...] | None = None,
         path_risk: str = "medium",
-        credential_risk: str = "high",
-        path_action: str = "warn",
-        credential_action: str = "redact",
     ) -> None:
         enabled = (detect_unix_home, detect_macos_private, detect_shell_config, detect_windows_user, detect_windows_user)
         self.patterns = tuple(pattern for pattern, include in zip(self.PATTERNS, enabled, strict=True) if include)
-        self.credential_names = tuple(credential_names) if credential_names is not None else self.KNOWN_CREDENTIAL_NAMES
         self.exclude_patterns = tuple(exclude_patterns or ())
         self.path_risk = path_risk
-        self.credential_risk = credential_risk
-        self.path_action = path_action
-        self.credential_action = credential_action
 
     def detect(self, block: SourceBlock, normalized: NormalizedText) -> Iterable[Finding]:
         for pattern in self.patterns:
@@ -53,7 +43,6 @@ class PathDetector(Detector):
                     continue
                 if any(fnmatch.fnmatch(value, pattern) for pattern in self.exclude_patterns):
                     continue
-                subtype = "credential_file" if any(name in value for name in self.credential_names) else "local_path"
                 normalized_end = match.start() + len(value)
                 start, end = normalized.original_span(match.start(), normalized_end)
                 yield Finding.make(
@@ -62,13 +51,12 @@ class PathDetector(Detector):
                     original_end=end,
                     normalized_start=match.start(),
                     normalized_end=normalized_end,
-                    type="CREDENTIAL_FILE" if subtype == "credential_file" else "LOCAL_CONTEXT",
-                    subtype=subtype,
-                    confidence=0.9,
-                    risk=self.credential_risk if subtype == "credential_file" else self.path_risk,  # type: ignore[arg-type]
+                    type="LOCAL_CONTEXT",
+                    subtype="local_path",
+                    risk=self.path_risk,  # type: ignore[arg-type]
                     detector=self.name,
                     validators=("local_path_shape",),
-                    suggested_action=self.credential_action if subtype == "credential_file" else self.path_action,  # type: ignore[arg-type]
+                    suggested_action="alias",
                     safe_preview=_path_preview(value),
                 )
 

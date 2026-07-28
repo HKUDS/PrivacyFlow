@@ -35,7 +35,6 @@ def test_custom_preset_from_zero_detects_rule() -> None:
                                     "pattern": r"\bpartner_live_[A-Za-z0-9]{12,}\b",
                                     "type": "MACHINE_SECRET",
                                     "subtype": "partner_token",
-                                    "confidence": 0.9,
                                     "risk": "high",
                                     "suggested_action": "redact",
                                 }
@@ -63,7 +62,6 @@ def test_rule_override_add_and_disable() -> None:
                             "pattern": r"\bCUST-[0-9]{4}\b",
                             "type": "LOCAL_CONTEXT",
                             "subtype": "customer_id",
-                            "confidence": 0.8,
                             "risk": "medium",
                             "suggested_action": "redact",
                         }

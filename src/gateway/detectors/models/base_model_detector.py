@@ -60,7 +60,6 @@ class BaseModelDetector(Detector):
         start: int,
         end: int,
         label: str,
-        confidence: float,
         metadata: dict[str, Any] | None = None,
     ) -> Finding:
         original_start, original_end = normalized.original_span(start, end)
@@ -72,7 +71,6 @@ class BaseModelDetector(Detector):
             normalized_end=end,
             type="PII",
             subtype=label.lower(),
-            confidence=confidence,
             risk="medium",
             detector=self.name,
             suggested_action="pseudonymize",

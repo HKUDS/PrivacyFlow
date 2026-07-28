@@ -92,8 +92,9 @@ def _stream_request(client: TestClient, path: str, body: dict, headers: dict[str
 
 def test_balanced_scanner_handles_every_placeholder_and_secret_split(redactor) -> None:
     session_id = "sess_stream"
+    local_value = "howard@example.com"
     secret = "sk-proj-abcdefghijklmnopqrstuvwxyz0"
-    placeholder, _ = redactor.sanitize_text(secret, session_id)
+    placeholder, _ = redactor.sanitize_text(local_value, session_id)
     assert placeholder.startswith("<APG:v1:")
 
     for value in (placeholder, secret):
@@ -105,7 +106,7 @@ def test_balanced_scanner_handles_every_placeholder_and_secret_split(redactor) -
             output = first + second + tail
             assert "<APG" not in output
             if value == placeholder:
-                assert secret in output
+                assert local_value in output
                 assert PROTECTED_VALUE not in output
             else:
                 assert secret not in output
@@ -160,7 +161,6 @@ def test_custom_detector_uses_strict_buffer_and_caps_text_block(tmp_path) -> Non
                             "pattern": "CUSTOM_[A-Z]+",
                             "type": "MACHINE_SECRET",
                             "subtype": "custom",
-                            "confidence": 1.0,
                             "risk": "high",
                             "suggested_action": "redact",
                         }

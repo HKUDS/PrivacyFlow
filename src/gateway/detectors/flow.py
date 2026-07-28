@@ -250,24 +250,14 @@ def _detector_from_config(module_id: str, module_type: str, module: dict[str, An
             detect_macos_private=bool(module.get("detect_macos_private", True)),
             detect_shell_config=bool(module.get("detect_shell_config", True)),
             detect_windows_user=bool(module.get("detect_windows_user", True)),
-            credential_names=module.get("credential_names"),
             exclude_patterns=module.get("exclude_patterns"),
             path_risk=str(module.get("path_risk", "medium")),
-            credential_risk=str(module.get("credential_risk", "high")),
-            path_action=str(module.get("path_action", "warn")),
-            credential_action=str(module.get("credential_action", "redact")),
         )
     if module_type == "entropy_context":
         return EntropyContextDetector(
             min_length=int(module.get("min_length", 20)),
             min_entropy=float(module.get("min_entropy", 3.5)),
-            context_window=int(module.get("context_window", 80)),
-            sensitive_words=module.get("sensitive_words"),
-            false_positive_hints=module.get("false_positive_hints"),
-            sensitive_risk=str(module.get("sensitive_risk", "high")),
-            contextless_risk=str(module.get("contextless_risk", "medium")),
-            sensitive_action=str(module.get("sensitive_action", "redact")),
-            contextless_action=str(module.get("contextless_action", "warn")),
+            risk=str(module.get("risk", "medium")),
         )
     if module_type == "local_model":
         adapter = str(module.get("adapter", "transformers_token_classification"))

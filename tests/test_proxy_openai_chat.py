@@ -78,7 +78,6 @@ def test_custom_detector_rule_forwards_sanitized_request(tmp_path) -> None:
                             "pattern": r"\bpartner_live_[A-Za-z0-9]{12,}\b",
                             "type": "MACHINE_SECRET",
                             "subtype": "partner_token",
-                            "confidence": 0.9,
                             "risk": "high",
                             "suggested_action": "redact",
                         }

@@ -4,9 +4,6 @@ from collections import defaultdict
 
 from gateway.detectors.findings import Finding, merge_findings
 
-RISK_ORDER = {"low": 0, "medium": 1, "high": 2, "critical": 3}
-
-
 class FindingAggregator:
     def aggregate(self, findings: list[Finding]) -> list[Finding]:
         grouped: dict[str, list[Finding]] = defaultdict(list)
@@ -34,26 +31,21 @@ class FindingAggregator:
 
 
 def score_finding(finding: Finding) -> Finding:
-    confidence = finding.confidence
     risk = finding.risk
     suggested_action = finding.suggested_action
 
     if finding.subtype in {"private_key", "openai_api_key", "github_token", "slack_token", "credit_card"}:
         risk = "critical"
-        confidence = max(confidence, 0.95)
         suggested_action = "block" if finding.subtype == "private_key" else "redact"
     elif finding.subtype == "database_url" and "database_url_password" in finding.validators:
         risk = "critical"
         suggested_action = "redact"
     elif finding.subtype == "jwt" and "rules.secrets" in finding.detectors:
-        if "heuristic.entropy_context" in finding.detectors:
-            confidence = max(confidence, 0.93)
         risk = "high" if risk != "critical" else risk
     elif finding.type == "PII" and finding.detectors and all(d.startswith("models.") for d in finding.detectors):
         risk = "medium"
         suggested_action = "pseudonymize"
     elif finding.type == "UNKNOWN_SECRET_CANDIDATE" and len(finding.detectors) >= 2:
-        confidence = min(1.0, confidence + 0.12)
         risk = _raise_risk(risk)
 
     return Finding(
@@ -65,7 +57,6 @@ def score_finding(finding: Finding) -> Finding:
         normalized_end=finding.normalized_end,
         type=finding.type,
         subtype=finding.subtype,
-        confidence=confidence,
         risk=risk,  # type: ignore[arg-type]
         detectors=finding.detectors,
         validators=finding.validators,
@@ -87,7 +78,7 @@ def _raise_risk(risk: str) -> str:
     return risk
 
 
-def _finding_priority(finding: Finding) -> tuple[int, int, float, int]:
+def _finding_priority(finding: Finding) -> tuple[int, int]:
     subtype_priority = {
         "private_key": 100,
         "openai_api_key": 95,
@@ -107,7 +98,5 @@ def _finding_priority(finding: Finding) -> tuple[int, int, float, int]:
     }.get(finding.subtype, 50)
     return (
         subtype_priority,
-        RISK_ORDER[finding.risk],
-        finding.confidence,
         finding.normalized_end - finding.normalized_start,
     )

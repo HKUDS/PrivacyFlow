@@ -2,7 +2,7 @@
 
 const API = "/api/admin";
 const PAGE_META = {
-  overview: ["LOCAL CONTROL PLANE", "隐私运行概览", "最近 24 小时的网关活动"],
+  overview: ["LOCAL CONTROL PLANE", "概览", "最近 24 小时的网关活动"],
   audit: ["SAFE AUDIT TRAIL", "审计记录", "上行替换与本地还原"],
   protected: ["LOCAL MAPPING REGISTRY", "受保护值", "本地映射生命周期与撤销"],
   detectors: ["DETECTION PIPELINE", "检测器配置", "按检测内容组织的本地模块流水线"],
@@ -12,20 +12,12 @@ const UPSTREAM_PROTOCOL_LABELS = {
   openai_responses: "OpenAI Responses",
   anthropic_messages: "Anthropic Messages",
 };
-const DETECTOR_TAG_LABELS = {
-  credentials: {zh: "凭据", en: "Credentials"},
-  secrets: {zh: "密钥", en: "Secrets"},
-  pii: {zh: "个人信息", en: "PII"},
-  identity: {zh: "身份信息", en: "Identity"},
-  paths: {zh: "路径", en: "Paths"},
-  local: {zh: "本地环境", en: "Local environment"},
-};
-
 const state = {
   view: location.hash.replace("#", "") || "overview",
   loaded: new Set(),
   connection: null,
   upstream: null,
+  privacyControl: null,
   upstreamEditing: false,
   upstreamEditingProfileId: "",
   upstreamSelectedProfileId: "",
@@ -43,13 +35,16 @@ const state = {
   detectorDraft: null,
   editingModuleIndex: null,
   moduleDraft: null,
+  moduleDraftSourceName: "",
+  moduleDrag: null,
+  agentGuide: "",
   confirmAction: null,
 };
 
 const $ = (selector, root = document) => root.querySelector(selector);
 const $$ = (selector, root = document) => [...root.querySelectorAll(selector)];
 const escapeHtml = (value) => String(value ?? "").replace(/[&<>'"]/g, (char) => ({"&":"&amp;","<":"&lt;",">":"&gt;","'":"&#39;",'"':"&quot;"}[char]));
-const DYNAMIC_ICONS = new Set(["arrow-right", "ban", "brain-circuit", "check-circle-2", "chevron-down", "chevron-up", "copy", "eye", "eye-off", "folder-tree", "gauge", "pencil", "plus", "power", "regex-reference", "search", "server-cog", "trash-2"]);
+const DYNAMIC_ICONS = new Set(["arrow-right", "ban", "brain-circuit", "check-circle-2", "copy", "eye", "eye-off", "folder-tree", "gauge", "grip-vertical", "pencil", "plus", "power", "regex-reference", "search", "server-cog", "trash-2"]);
 
 document.addEventListener("DOMContentLoaded", init);
 
@@ -62,6 +57,7 @@ function init() {
   connect();
   window.addEventListener("apg:localechange", () => {
     syncVisibilityButtons();
+    if ($("#agent-guide-modal")?.open && state.agentGuide) openAgentGuide(state.agentGuide);
     showView(state.view, false);
     state.loaded.clear();
     loadView(state.view, true);
@@ -106,9 +102,19 @@ function bindNavigation() {
 
 function bindActions() {
   $("#refresh-button").addEventListener("click", () => loadView(state.view, true));
+  $("#privacy-control-enabled").addEventListener("change", updatePrivacyControl);
   $$('[data-copy-connection]').forEach((button) => button.addEventListener("click", () => copyConnectionValue(button.dataset.copyConnection)));
-  $("#copy-claude-command").addEventListener("click", copyClaudeCodeCommand);
+  $$("[data-copy-agent-setup]").forEach((button) => button.addEventListener("click", () => copyAgentSetup(button.dataset.copyAgentSetup)));
+  $$("[data-agent-guide]").forEach((button) => button.addEventListener("click", () => openAgentGuide(button.dataset.agentGuide)));
+  $("#agent-guide-modal").addEventListener("close", () => { state.agentGuide = ""; });
   $("#toggle-agent-key").addEventListener("click", toggleAgentKeyVisibility);
+  $("#generate-agent-key").addEventListener("click", () => {
+    confirmAction(
+      "生成新的 API Key",
+      "当前 API Key 将立即失效，请更新所有 Agent 配置。",
+      regenerateAgentApiKey,
+    );
+  });
   $("#upstream-key-form").addEventListener("submit", saveUpstreamApiKey);
   $("#upstream-profile-select").addEventListener("change", (event) => {
     state.upstreamSelectedProfileId = event.target.value;
@@ -231,20 +237,23 @@ async function api(path, options = {}) {
 }
 
 async function loadOverview() {
-  const [data, connection, upstream] = await Promise.all([
+  const [data, connection, upstream, privacyControl] = await Promise.all([
     api("/overview"),
     api("/connection"),
     api("/upstream-configuration"),
+    api("/privacy-control"),
   ]);
   state.connection = connection;
   state.upstream = upstream;
+  state.privacyControl = privacyControl;
   renderConnection();
   renderUpstreamConfiguration();
+  renderPrivacyControl();
   const metrics = [
     ["请求", data.metrics.requests_24h, "最近 24 小时", "accent-blue"],
-    ["拦截", data.metrics.interceptions_24h, "敏感内容已替换或折叠", "accent-coral"],
+    ["拦截", data.metrics.interceptions_24h, "已替换或折叠", "accent-coral"],
     ["本地还原", data.metrics.materializations_24h, "仅结构化工具参数", "accent-green"],
-    ["活跃受保护值", data.metrics.active_protected_values, "保存在本地映射库", "accent-amber"],
+    ["活跃受保护值", data.metrics.active_protected_values, "本地保存", "accent-amber"],
   ];
   $("#overview-metrics").innerHTML = metrics.map(([label, value, foot, accent]) => `<article class="metric-card ${accent}"><span class="metric-label">${escapeHtml(label)}</span><strong>${formatNumber(value)}</strong><span class="metric-foot">${escapeHtml(foot)}</span></article>`).join("");
   renderTrend(data.trend);
@@ -252,10 +261,54 @@ async function loadOverview() {
   renderEventRows($("#overview-events"), data.recent, true);
   const system = data.system;
   $("#system-strip").innerHTML = [
-    ["Workspace", system.workspace], ["Upstream", system.upstream], ["检测配置", system.detector_configuration],
-    ["PII", system.pii_mode], ["Strict", system.strict_mode ? "On" : "Off"], ["管理面板", system.local_only ? "仅本机" : "远程绑定"],
+    ["工作区", system.workspace], ["上游", system.upstream], ["检测配置", system.detector_configuration],
+    ["PII", system.pii_mode], ["严格模式", system.strict_mode ? "开启" : "关闭"], ["管理面板", system.local_only ? "仅本机" : "远程绑定"],
   ].map(([label, value]) => `<span class="system-item">${escapeHtml(label)}<strong>${escapeHtml(value)}</strong></span>`).join("");
   state.loaded.add("overview");
+}
+
+function renderPrivacyControl() {
+  const control = state.privacyControl;
+  if (!control) return;
+  const available = Boolean(control.available);
+  const effective = Boolean(control.effective);
+  const input = $("#privacy-control-enabled");
+  const container = $("#privacy-control");
+  input.checked = effective;
+  input.disabled = !available;
+  container.classList.toggle("is-enabled", effective);
+  container.classList.toggle("is-bypass", available && !effective);
+  container.classList.toggle("is-unavailable", !available);
+  $("#privacy-control-status").textContent = !available ? "不可用" : effective ? "保护已开启" : "旁路模式";
+  $("#privacy-control-description").textContent = !available
+    ? control.unavailable_reason === "no_detector_configuration"
+      ? "没有可用的检测配置，APG 全局保护暂时无法启用。"
+      : "请先选择并启用可用的上游配置。"
+    : "一键开启或关闭 APG 保护。";
+  $("#privacy-control-configuration").textContent = control.active_detector_configuration_name
+    ? `当前检测配置：${control.active_detector_configuration_name}`
+    : "未选择检测配置";
+}
+
+async function refreshPrivacyControl() {
+  state.privacyControl = await api("/privacy-control");
+  renderPrivacyControl();
+}
+
+async function updatePrivacyControl(event) {
+  const input = event.currentTarget;
+  input.disabled = true;
+  try {
+    state.privacyControl = await api("/privacy-control", {
+      method: "PUT",
+      body: JSON.stringify({enabled: input.checked}),
+    });
+    renderPrivacyControl();
+    toast(state.privacyControl.effective ? "APG 全局保护已开启" : "APG 已切换为旁路模式");
+  } catch (error) {
+    await refreshPrivacyControl().catch(() => {});
+    handleError(error);
+  }
 }
 
 function renderUpstreamConfiguration() {
@@ -273,24 +326,31 @@ function renderUpstreamConfiguration() {
   const setup = $("#upstream-setup");
   setup.classList.remove("is-hidden");
   setup.classList.toggle("needs-setup", !configured);
+  setup.classList.toggle("is-editing", editing);
   $("#upstream-status").textContent = configured ? "已配置" : "需要配置";
   $("#upstream-status").classList.toggle("is-active", configured);
   $("#upstream-description").textContent = configured
-    ? "上游连接配置已生效。APG 不会通过管理接口回显已保存的密钥。"
-    : "输入模型服务商的 Base URL 和 API Key 后即可开始使用 Agent。配置只保存在本机。";
+    ? "配置已在本机保存，密钥不会回显。"
+    : "填写 Base URL 和 API Key。";
   $("#upstream-base-url").textContent = state.upstream.base_url || "待填写";
   $("#upstream-protocol-value").textContent = UPSTREAM_PROTOCOL_LABELS[state.upstream.protocol] || "待选择";
   $("#upstream-profile-select").innerHTML = profiles.length
-    ? profiles.map((profile) => `<option value="${escapeHtml(profile.id)}"${profile.id === state.upstreamSelectedProfileId ? " selected" : ""}>${escapeHtml(profile.name)}${profile.active ? "（当前）" : ""}</option>`).join("")
+    ? profiles.map((profile) => `<option value="${escapeHtml(profile.id)}"${profile.id === state.upstreamSelectedProfileId ? " selected" : ""}>${escapeHtml(uiText(`${profile.name}${profile.active ? "（当前）" : ""}`))}</option>`).join("")
     : '<option value="">暂无配置</option>';
   $("#activate-upstream-profile").disabled = !selected || selected.active;
-  $("#delete-upstream-profile").disabled = !selected;
+  $("#delete-upstream-profile").disabled = !selected || !selected.persisted;
   const editingProfile = state.upstreamEditingProfileId
     ? profiles.find((profile) => profile.id === state.upstreamEditingProfileId)
     : null;
-  $("#upstream-profile-name").value = editing ? (editingProfile?.name || "") : "";
-  $("#upstream-protocol").value = editing ? (editingProfile?.protocol || "") : "";
-  $("#upstream-base-url-input").value = editing ? (editingProfile?.base_url || "") : "";
+  const showingDefaults = editing && editingProfile && !editingProfile.persisted;
+  const nameInput = $("#upstream-profile-name");
+  const protocolInput = $("#upstream-protocol");
+  const baseUrlInput = $("#upstream-base-url-input");
+  nameInput.value = editing && !showingDefaults ? (editingProfile?.name || "") : "";
+  nameInput.placeholder = showingDefaults ? (editingProfile.name || "例如：Anthropic 生产环境") : "例如：Anthropic 生产环境";
+  protocolInput.value = editing && !showingDefaults ? (editingProfile?.protocol || "") : "";
+  baseUrlInput.value = editing && !showingDefaults ? (editingProfile?.base_url || "") : "";
+  baseUrlInput.placeholder = showingDefaults ? (editingProfile.base_url || "https://api.example.com/v1") : "https://api.example.com/v1";
   $("#upstream-key-form").classList.toggle("is-hidden", !editing);
   $("#edit-upstream-key").classList.toggle("is-hidden", !configured || editing);
   $("#cancel-upstream-key").classList.toggle("is-hidden", !configured);
@@ -339,6 +399,7 @@ async function saveUpstreamApiKey(event) {
     state.upstreamEditingProfileId = "";
     state.upstreamSelectedProfileId = state.upstream.active_profile_id || "";
     renderUpstreamConfiguration();
+    await refreshPrivacyControl();
     toast(state.upstream.persistent ? "上游连接配置已安全保存并启用" : "上游连接配置已在当前进程中启用");
   } catch (error) {
     $("#upstream-key-error").textContent = error.message || "保存失败。";
@@ -357,6 +418,7 @@ async function activateSelectedUpstreamProfile() {
   state.upstream = await api(`/upstream-configuration/${encodeURIComponent(profile.id)}/activate`, {method: "POST"});
   state.upstreamSelectedProfileId = state.upstream.active_profile_id || "";
   renderUpstreamConfiguration();
+  await refreshPrivacyControl();
   toast(`已启用上游配置：${profile.name}`);
 }
 
@@ -368,6 +430,7 @@ async function deleteSelectedUpstreamProfile() {
   state.upstreamEditing = !state.upstream.profiles?.length;
   state.upstreamEditingProfileId = "";
   renderUpstreamConfiguration();
+  await refreshPrivacyControl();
   toast(`已删除上游配置：${profile.name}`);
 }
 
@@ -386,7 +449,9 @@ function renderConnection() {
     const target = targets[button.dataset.copyConnection];
     button.disabled = !target.value;
   });
-  $("#copy-claude-command").disabled = !state.connection.api_key || !state.connection.protocols.anthropic;
+  $$("[data-copy-agent-setup]").forEach((button) => {
+    button.disabled = !state.connection.api_key || !state.connection.protocols[button.dataset.agentProtocol];
+  });
 }
 
 function toggleAgentKeyVisibility() {
@@ -394,6 +459,14 @@ function toggleAgentKeyVisibility() {
   const revealed = input.type === "password";
   input.type = revealed ? "text" : "password";
   setVisibilityButton($("#toggle-agent-key"), revealed, "显示 API Key", "隐藏 API Key");
+}
+
+async function regenerateAgentApiKey() {
+  state.connection = await api("/connection/api-key", {method: "POST"});
+  renderConnection();
+  $("#agent-api-key").type = "text";
+  syncVisibilityButtons();
+  toast("API Key 已重新生成");
 }
 
 function setVisibilityButton(button, revealed, showLabel, hideLabel) {
@@ -425,22 +498,133 @@ async function copyConnectionValue(kind) {
   toast(kind === "api-key" ? "API Key 已复制" : "Base URL 已复制");
 }
 
-async function copyClaudeCodeCommand() {
-  if (!state.connection?.api_key || !state.connection.protocols?.anthropic) return;
-  const baseUrl = location.origin + (state.connection.protocols.anthropic.base_path || "");
+async function copyAgentSetup(kind) {
+  const setup = agentSetupText(kind);
+  if (!setup) return;
+  await copyText(setup);
+  const labels = {
+    claude: "Claude Code 环境变量已复制",
+    opencode: "OpenCode 配置已复制",
+    "codex-config": "Codex 配置已复制",
+    "codex-key": "Codex 密钥变量已复制",
+  };
+  toast(labels[kind] || "接入配置已复制");
+}
+
+function agentSetupText(kind) {
+  if (!state.connection?.api_key) return "";
   const key = state.connection.api_key;
-  const command = [
-    `export ANTHROPIC_BASE_URL=${shellQuote(baseUrl)}`,
-    `export ANTHROPIC_AUTH_TOKEN=${shellQuote(key)}`,
-    "export ANTHROPIC_MODEL=deepseek-v4-pro[1m]",
-    "export ANTHROPIC_DEFAULT_OPUS_MODEL=deepseek-v4-pro[1m]",
-    "export ANTHROPIC_DEFAULT_SONNET_MODEL=deepseek-v4-pro[1m]",
-    "export ANTHROPIC_DEFAULT_HAIKU_MODEL=deepseek-v4-flash",
-    "export CLAUDE_CODE_SUBAGENT_MODEL=deepseek-v4-flash",
-    "export CLAUDE_CODE_EFFORT_LEVEL=max",
-  ].join("\n");
-  await copyText(command);
-  toast("Claude Code 接入命令已复制");
+  const openaiBaseUrl = location.origin + (state.connection.protocols?.openai?.base_path || "");
+  const anthropicBaseUrl = location.origin + (state.connection.protocols?.anthropic?.base_path || "");
+  if (kind === "claude" && state.connection.protocols?.anthropic) {
+    return [
+      `export ANTHROPIC_BASE_URL=${shellQuote(anthropicBaseUrl)}`,
+      `export ANTHROPIC_API_KEY=${shellQuote(key)}`,
+      `export ANTHROPIC_AUTH_TOKEN=${shellQuote(key)}`,
+      "export ANTHROPIC_MODEL=deepseek-v4-pro[1m]",
+      "export ANTHROPIC_DEFAULT_OPUS_MODEL=deepseek-v4-pro[1m]",
+      "export ANTHROPIC_DEFAULT_SONNET_MODEL=deepseek-v4-pro[1m]",
+      "export ANTHROPIC_DEFAULT_HAIKU_MODEL=deepseek-v4-flash",
+      "export CLAUDE_CODE_SUBAGENT_MODEL=deepseek-v4-flash",
+      "export CLAUDE_CODE_EFFORT_LEVEL=max",
+    ].join("\n");
+  }
+  if (kind === "opencode" && state.connection.protocols?.openai) {
+    return JSON.stringify({
+      $schema: "https://opencode.ai/config.json",
+      model: "apg/deepseek-v4-flash",
+      provider: {
+        apg: {
+          npm: "@ai-sdk/openai-compatible",
+          name: "APG",
+          options: {baseURL: openaiBaseUrl, apiKey: key},
+          models: {
+            "deepseek-v4-flash": {
+              name: "DeepSeek through APG",
+              tool_call: true,
+            },
+          },
+        },
+      },
+    }, null, 2);
+  }
+  if (kind === "codex-config" && state.connection.protocols?.openai) {
+    return [
+      'model = "deepseek-v4-pro[1m]"',
+      'model_provider = "apg"',
+      "",
+      "[model_providers.apg]",
+      'name = "APG"',
+      `base_url = ${JSON.stringify(openaiBaseUrl)}`,
+      'env_key = "APG_API_KEY"',
+      'wire_api = "responses"',
+    ].join("\n");
+  }
+  if (kind === "codex-key" && state.connection.protocols?.openai) {
+    return `export APG_API_KEY=${shellQuote(key)}`;
+  }
+  return "";
+}
+
+function openAgentGuide(kind) {
+  const guides = {
+    claude: {
+      name: "Claude Code",
+      summary: "通过 APG 的 Anthropic Messages 接口运行 Claude Code。环境变量只影响当前终端会话。",
+      steps: [
+        ["准备 APG", "确认上游模型配置和 APG 总开关均已启用。"],
+        ["复制环境变量", "点击 Claude Code 卡片上的复制按钮，将生成的全部环境变量粘贴到准备运行 Claude Code 的同一个终端。"],
+        ["启动 Claude Code", "在该终端进入项目目录，然后启动 Claude Code。", "cd /path/to/project\nclaude"],
+        ["确认连接", "发送一条测试消息；请求应出现在 APG 的审计记录中。"],
+      ],
+      note: "关闭终端后这些环境变量会失效；如需长期使用，可将它们保存到受信任的本机 Shell 配置中。",
+    },
+    opencode: {
+      name: "OpenCode",
+      summary: "通过 APG 的 OpenAI Chat Completions 接口运行 OpenCode。配置可以按用户全局保存，也可以只用于单个项目。",
+      steps: [
+        ["准备 APG", "确认上游模型配置和 APG 总开关均已启用。"],
+        ["复制配置", "点击 OpenCode 卡片上的复制按钮，复制完整 JSON 配置。"],
+        ["写入配置文件", "合并到全局配置 ~/.config/opencode/opencode.json，或项目根目录的 opencode.json；不要覆盖文件中已有的其他设置。"],
+        ["启动并选择模型", "在项目目录启动 OpenCode，并使用配置中的 APG 模型。", "cd /path/to/project\nopencode"],
+        ["确认连接", "发送一条测试消息；请求应出现在 APG 的审计记录中。"],
+      ],
+      note: "复制的配置包含当前本地 API Key，请不要提交到 Git 或粘贴到不受信任的位置。",
+    },
+    codex: {
+      name: "Codex",
+      summary: "通过 APG 的 OpenAI Responses 接口运行 Codex。Codex 配置与 API Key 分开保存。",
+      steps: [
+        ["准备 APG", "确认上游模型配置和 APG 总开关均已启用。"],
+        ["复制 Codex 配置", "点击 Codex 卡片上的复制按钮，将 TOML 内容合并到 ~/.codex/config.toml。"],
+        ["设置本地 API Key", "点击钥匙按钮复制密钥变量，然后粘贴到准备运行 Codex 的终端。"],
+        ["启动 Codex", "在同一个终端进入项目目录，然后启动 Codex。", "cd /path/to/project\ncodex"],
+        ["确认连接", "发送一条测试消息；请求应出现在 APG 的审计记录中。"],
+      ],
+      note: "密钥环境变量只影响当前终端会话。Codex 通过 env_key 读取它，密钥本身不会写入 config.toml。",
+    },
+  };
+  const guide = guides[kind];
+  if (!guide) return;
+  const text = (value) => escapeHtml(uiText(value));
+  state.agentGuide = kind;
+  $("#agent-guide-title").textContent = uiText(`${guide.name} 详细使用方法`);
+  $("#agent-guide-body").innerHTML = `
+    <p class="agent-guide-summary">${text(guide.summary)}</p>
+    <ol class="agent-guide-steps">
+      ${guide.steps.map(([title, description, command], index) => `
+        <li>
+          <span class="agent-guide-step-number">${index + 1}</span>
+          <div class="agent-guide-step-content">
+            <strong>${text(title)}</strong>
+            <p>${text(description)}</p>
+            ${command ? `<pre class="agent-guide-command">${escapeHtml(command)}</pre>` : ""}
+          </div>
+        </li>
+      `).join("")}
+    </ol>
+    <p class="agent-guide-note">${text(guide.note)}</p>`;
+  if (!$("#agent-guide-modal").open) $("#agent-guide-modal").showModal();
 }
 
 function shellQuote(value) {
@@ -541,7 +725,15 @@ function renderAuditOperationRows(target, operations, direction) {
     const handling = direction === "replacement"
       ? `<strong>${escapeHtml(operation.action || "替换")}</strong>${operation.detector ? `<span class="muted">${escapeHtml(operation.detector)}</span>` : ""}`
       : `<strong>${escapeHtml(operation.tool_name || "本地工具")}</strong><span class="muted">${escapeHtml(operation.sink || "-")}</span><span class="badge ${failed ? "red" : "green"}">${escapeHtml(failed ? "未还原" : "已还原")}</span><code class="audit-result-code">${escapeHtml(operation.result_code || "-")}</code>`;
-    return `<tr class="audit-operation-row ${failed ? "has-failure" : ""}"><td data-label="时间">${formatDateTime(operation.timestamp)}</td><td class="audit-map-cell" data-label="${direction === "replacement" ? "替换内容" : "还原内容"}"><div class="operation-map audit-list-map">${mapping}</div><div class="operation-metadata"><span class="mapping-id">${escapeHtml(operation.protected_value_id)}</span>${operation.value_state !== "active" ? `<span class="operation-state-inline">${escapeHtml(valueStateLabel(operation.value_state))}</span>` : ""}</div></td><td data-label="类型"><strong>${escapeHtml(operation.subtype || operation.kind || "-")}</strong><span class="badge ${escapeHtml(operation.risk || "low")}">${escapeHtml(operation.risk || "low")}</span></td><td class="audit-handling" data-label="${direction === "replacement" ? "检测与动作" : "工具与结果"}">${handling}</td><td data-label="出现"><strong>${formatNumber(operation.occurrence_count)}</strong></td><td class="audit-context" data-label="上下文"><code>${escapeHtml(operation.endpoint || "-")}</code><span>${escapeHtml(operation.session || "-")}</span><code>${escapeHtml(operation.request_id)}</code></td></tr>`;
+    const labels = {
+      time: uiText("时间"),
+      mapping: uiText(direction === "replacement" ? "替换内容" : "还原内容"),
+      type: uiText("类型"),
+      handling: uiText(direction === "replacement" ? "检测与动作" : "工具与结果"),
+      count: uiText("次数"),
+      context: uiText("上下文"),
+    };
+    return `<tr class="audit-operation-row ${failed ? "has-failure" : ""}"><td data-label="${escapeHtml(labels.time)}">${formatDateTime(operation.timestamp)}</td><td class="audit-map-cell" data-label="${escapeHtml(labels.mapping)}"><div class="operation-map audit-list-map">${mapping}</div><div class="operation-metadata"><span class="mapping-id">${escapeHtml(operation.protected_value_id)}</span>${operation.value_state !== "active" ? `<span class="operation-state-inline">${escapeHtml(valueStateLabel(operation.value_state))}</span>` : ""}</div></td><td class="audit-type" data-label="${escapeHtml(labels.type)}"><strong>${escapeHtml(operation.subtype || operation.kind || "-")}</strong><span class="badge ${escapeHtml(operation.risk || "low")}">${escapeHtml(operation.risk || "low")}</span></td><td class="audit-handling" data-label="${escapeHtml(labels.handling)}">${handling}</td><td data-label="${escapeHtml(labels.count)}"><strong>${formatNumber(operation.occurrence_count)}</strong></td><td class="audit-context" data-label="${escapeHtml(labels.context)}"><code>${escapeHtml(operation.endpoint || "-")}</code><span>${escapeHtml(operation.session || "-")}</span><code>${escapeHtml(operation.request_id)}</code></td></tr>`;
   }).join("");
   renderIcons(target);
 }
@@ -738,7 +930,8 @@ async function loadProtected() {
     const original = record.original === null
       ? `<span class="protected-original-cleared">原文已清除</span>`
       : `<code class="protected-original ${record.original === "***" ? "is-masked" : ""}">${escapeHtml(record.original)}</code>`;
-    return `<tr><td><strong>${escapeHtml(record.label)}</strong><span class="muted mono"> ${escapeHtml(record.id.slice(-6))}</span></td><td class="protected-original-cell">${original}</td><td>${escapeHtml(record.subtype)}<br><span class="muted">${escapeHtml(record.kind)}</span></td><td>${escapeHtml(record.scope)}<br><span class="muted">${escapeHtml(record.session)}</span></td><td><span class="badge ${record.display_state}">${stateLabel(record.display_state)}</span></td><td>${formatRelative(record.last_seen_at)}</td><td>${record.auto_expires ? formatRelative(record.expires_at) : "不自动过期"}</td><td>${record.display_state === "active" ? `<button class="row-action danger icon-row-button" type="button" data-revoke="${escapeHtml(record.id)}" aria-label="撤销受保护值 ${escapeHtml(record.label)}" title="撤销受保护值">${iconMarkup("ban")}</button>` : ""}</td></tr>`;
+    const labels = ["标识", "原文", "分类", "作用域", "状态", "最后使用", "到期时间", "操作"].map(uiText);
+    return `<tr><td data-label="${escapeHtml(labels[0])}"><span class="protected-cell-stack"><strong>${escapeHtml(record.label)}</strong><span class="muted mono">${escapeHtml(record.id.slice(-6))}</span></span></td><td class="protected-original-cell" data-label="${escapeHtml(labels[1])}">${original}</td><td data-label="${escapeHtml(labels[2])}"><span class="protected-cell-stack">${escapeHtml(record.subtype)}<span class="muted">${escapeHtml(record.kind)}</span></span></td><td data-label="${escapeHtml(labels[3])}"><span class="protected-cell-stack">${escapeHtml(record.scope)}<span class="muted">${escapeHtml(record.session)}</span></span></td><td data-label="${escapeHtml(labels[4])}"><span class="badge ${record.display_state}">${stateLabel(record.display_state)}</span></td><td data-label="${escapeHtml(labels[5])}">${formatRelative(record.last_seen_at)}</td><td data-label="${escapeHtml(labels[6])}">${record.auto_expires ? formatRelative(record.expires_at) : "不自动过期"}</td><td data-label="${escapeHtml(labels[7])}">${record.display_state === "active" ? `<button class="row-action danger icon-row-button" type="button" data-revoke="${escapeHtml(record.id)}" aria-label="撤销受保护值 ${escapeHtml(record.label)}" title="撤销受保护值">${iconMarkup("ban")}</button>` : ""}</td></tr>`;
   }).join("") : `<tr><td colspan="8" class="muted">没有受保护值记录</td></tr>`;
   renderIcons(target);
   $$('[data-revoke]', target).forEach((button) => button.addEventListener("click", () => {
@@ -875,8 +1068,7 @@ function renderDetectorConfiguration() {
   $("#configuration-description").value = uiText(configuration.description || "");
   $("#configuration-timeout").value = configuration.flow_timeout_ms ?? "";
   for (const id of ["configuration-name", "configuration-description", "configuration-timeout"]) $("#" + id).disabled = readonly;
-  $("#configuration-tags").innerHTML = (configuration.content_tags || []).map((tag) => `<span class="badge neutral">${escapeHtml(detectorTagLabel(tag))}</span>`).join("");
-  $("#configuration-status").innerHTML = `${configuration.is_active ? '<span class="badge green">当前启用</span>' : ""}${configuration.readonly ? '<span class="badge neutral">只读模板</span>' : `<span class="muted">Revision ${configuration.revision}</span>`}`;
+  $("#configuration-status").innerHTML = `${configuration.is_active ? '<span class="badge green">当前启用</span>' : ""}${configuration.readonly ? '<span class="configuration-readonly-note">默认预设不可编辑，请复制或新建自定义配置。模块开关仍可直接调整。</span>' : ""}`;
   $("#activate-configuration").disabled = configuration.is_active || detectorConfigurationDirty();
   setIconButton($("#activate-configuration"), configuration.is_active ? "check-circle-2" : "power", configuration.is_active ? "当前检测器配置" : "启用检测器配置");
   setIconButton($("#duplicate-configuration"), "copy", readonly ? "复制并编辑检测器配置" : "复制检测器配置");
@@ -899,17 +1091,20 @@ function renderDetectorModules() {
   target.innerHTML = modules.map((module, index) => {
     const type = moduleTypeLabel(module.type);
     const typeIcon = moduleTypeIcon(module.type);
-    const rules = module.type === "regex" ? module.config.rules.length : null;
     const unavailable = module.type === "local_model" && module.enabled && module.runtime_available === false;
-    const status = !module.enabled ? "disabled" : unavailable ? "unavailable" : module.editable === false ? "managed" : "ready";
-    const statusClass = status === "ready" ? "green" : status === "unavailable" ? "red" : "neutral";
-    const controls = readonly || module.editable === false ? "" : `<div class="module-actions"><button type="button" title="上移模块" aria-label="上移 ${escapeHtml(module.name)}" data-module-up="${index}" ${index === 0 ? "disabled" : ""}>${iconMarkup("chevron-up")}</button><button type="button" title="下移模块" aria-label="下移 ${escapeHtml(module.name)}" data-module-down="${index}" ${index === modules.length - 1 ? "disabled" : ""}>${iconMarkup("chevron-down")}</button><button type="button" title="编辑模块" aria-label="编辑 ${escapeHtml(module.name)}" data-module-edit="${index}">${iconMarkup("pencil")}</button><button type="button" title="复制模块" aria-label="复制 ${escapeHtml(module.name)}" data-module-copy="${index}">${iconMarkup("copy")}</button><button type="button" class="danger" title="删除模块" aria-label="删除 ${escapeHtml(module.name)}" data-module-delete="${index}">${iconMarkup("trash-2")}</button></div>`;
-    return `<div class="module-row"><span class="module-order">${index + 1}</span><div class="module-name"><span class="module-symbol module-symbol-${escapeHtml(module.type)}" aria-hidden="true" title="${escapeHtml(type)}">${iconMarkup(typeIcon)}</span><div><strong>${escapeHtml(module.name)}</strong><span>${escapeHtml(type)} · ${escapeHtml(module.id)}</span></div></div><span class="badge ${statusClass}">${status}</span><span class="module-meta">${rules === null ? escapeHtml(module.failure_mode) : `${rules} 条规则`}</span>${controls}<label class="toggle"><input type="checkbox" data-module-toggle="${index}" ${module.enabled ? "checked" : ""} ${readonly || module.editable === false ? "disabled" : ""} aria-label="启用 ${escapeHtml(module.name)}"><span></span></label></div>`;
+    const status = !module.enabled ? "disabled" : unavailable ? "unavailable" : module.editable === false ? "managed" : "activated";
+    const statusClass = status === "activated" ? "green" : status === "unavailable" ? "red" : "neutral";
+    const editable = !readonly && module.editable !== false;
+    const dragControl = editable ? `<button class="module-drag-handle" type="button" title="拖动排序" aria-label="拖动排序 ${escapeHtml(module.name)}" aria-keyshortcuts="Alt+ArrowUp Alt+ArrowDown" aria-grabbed="false" data-module-drag="${index}">${iconMarkup("grip-vertical")}</button>` : `<span class="module-drag-spacer" aria-hidden="true"></span>`;
+    const controls = editable ? `<div class="module-actions"><button type="button" title="编辑模块" aria-label="编辑 ${escapeHtml(module.name)}" data-module-edit="${index}">${iconMarkup("pencil")}</button><button type="button" title="复制模块" aria-label="复制 ${escapeHtml(module.name)}" data-module-copy="${index}">${iconMarkup("copy")}</button><button type="button" class="danger" title="删除模块" aria-label="删除 ${escapeHtml(module.name)}" data-module-delete="${index}">${iconMarkup("trash-2")}</button></div>` : "";
+    return `<div class="module-row" data-module-row="${index}">${dragControl}<span class="module-order">${index + 1}</span><div class="module-name"><span class="module-symbol module-symbol-${escapeHtml(module.type)}" aria-hidden="true" title="${escapeHtml(type)}">${iconMarkup(typeIcon)}</span><div><strong>${escapeHtml(module.name)}</strong><span>${escapeHtml(type)}</span></div></div><span class="badge ${statusClass}">${escapeHtml(moduleStatusLabel(status))}</span>${controls}<label class="toggle"><input type="checkbox" data-module-toggle="${index}" ${module.enabled ? "checked" : ""} aria-label="启用 ${escapeHtml(module.name)}"><span></span></label></div>`;
   }).join("");
   renderIcons(target);
   $$('[data-module-toggle]', target).forEach((input) => input.addEventListener("change", () => updateModuleEnabled(Number(input.dataset.moduleToggle), input.checked)));
-  $$('[data-module-up]', target).forEach((button) => button.addEventListener("click", () => moveModule(Number(button.dataset.moduleUp), -1)));
-  $$('[data-module-down]', target).forEach((button) => button.addEventListener("click", () => moveModule(Number(button.dataset.moduleDown), 1)));
+  $$('[data-module-drag]', target).forEach((button) => {
+    button.addEventListener("pointerdown", beginModuleDrag);
+    button.addEventListener("keydown", handleModuleDragKeydown);
+  });
   $$('[data-module-edit]', target).forEach((button) => button.addEventListener("click", () => openModuleEditor(Number(button.dataset.moduleEdit))));
   $$('[data-module-copy]', target).forEach((button) => button.addEventListener("click", () => duplicateModule(Number(button.dataset.moduleCopy))));
   $$('[data-module-delete]', target).forEach((button) => button.addEventListener("click", () => removeModule(Number(button.dataset.moduleDelete))));
@@ -1016,17 +1211,130 @@ async function refreshDetectorCatalog(selectedId) {
   if (selectedId) $("#configuration-select").value = selectedId;
 }
 
-function updateModuleEnabled(index, enabled) {
+async function updateModuleEnabled(index, enabled) {
+  if (state.detectorDraft.readonly) {
+    const configurationId = state.detectorDraft.id;
+    const moduleId = state.detectorDraft.modules[index].id;
+    try {
+      const data = await api(`/detector-configurations/${encodeURIComponent(configurationId)}/modules/${encodeURIComponent(moduleId)}/enabled`, {
+        method: "PUT",
+        body: JSON.stringify({enabled}),
+      });
+      state.detectorConfiguration = data;
+      state.detectorDraft = structuredClone(data);
+      state.loaded.delete("overview");
+      renderDetectorConfiguration();
+      toast(enabled ? "检测模块已启用" : "检测模块已停用");
+    } catch (error) {
+      await loadDetectorConfiguration(configurationId);
+      handleError(error);
+    }
+    return;
+  }
   state.detectorDraft.modules[index].enabled = enabled;
   renderDetectorConfiguration();
 }
 
 function moveModule(index, direction) {
   const target = index + direction;
-  if (target < 0 || target >= state.detectorDraft.modules.length) return;
+  if (target < 0 || target >= state.detectorDraft.modules.length) return false;
   const modules = state.detectorDraft.modules;
   [modules[index], modules[target]] = [modules[target], modules[index]];
   renderDetectorConfiguration();
+  return true;
+}
+
+function beginModuleDrag(event) {
+  if (event.pointerType === "mouse" && event.button !== 0) return;
+  const handle = event.currentTarget;
+  state.moduleDrag = {
+    handle,
+    pointerId: event.pointerId,
+    sourceIndex: Number(handle.dataset.moduleDrag),
+    targetIndex: null,
+    placement: null,
+    startX: event.clientX,
+    startY: event.clientY,
+    active: false,
+  };
+  handle.setPointerCapture?.(event.pointerId);
+  handle.addEventListener("pointermove", updateModuleDrag);
+  handle.addEventListener("pointerup", finishModuleDrag);
+  handle.addEventListener("pointercancel", cancelModuleDrag);
+}
+
+function updateModuleDrag(event) {
+  const drag = state.moduleDrag;
+  if (!drag || drag.pointerId !== event.pointerId) return;
+  if (!drag.active && Math.hypot(event.clientX - drag.startX, event.clientY - drag.startY) < 5) return;
+  drag.active = true;
+  event.preventDefault();
+  drag.handle.setAttribute("aria-grabbed", "true");
+  drag.handle.closest(".module-row")?.classList.add("is-dragging");
+  document.body.classList.add("is-module-dragging");
+  clearModuleDropTarget();
+  const row = document.elementFromPoint(event.clientX, event.clientY)?.closest("[data-module-row]");
+  if (!row || !$("#detector-modules").contains(row)) {
+    drag.targetIndex = null;
+    drag.placement = null;
+    return;
+  }
+  const targetIndex = Number(row.dataset.moduleRow);
+  if (targetIndex === drag.sourceIndex) {
+    drag.targetIndex = null;
+    drag.placement = null;
+    return;
+  }
+  const bounds = row.getBoundingClientRect();
+  drag.targetIndex = targetIndex;
+  drag.placement = event.clientY < bounds.top + bounds.height / 2 ? "before" : "after";
+  row.classList.add(drag.placement === "before" ? "is-drop-before" : "is-drop-after");
+}
+
+function finishModuleDrag(event, cancelled = false) {
+  const drag = state.moduleDrag;
+  if (!drag || drag.pointerId !== event.pointerId) return;
+  drag.handle.removeEventListener("pointermove", updateModuleDrag);
+  drag.handle.removeEventListener("pointerup", finishModuleDrag);
+  drag.handle.removeEventListener("pointercancel", cancelModuleDrag);
+  if (drag.handle.hasPointerCapture?.(event.pointerId)) drag.handle.releasePointerCapture(event.pointerId);
+  drag.handle.setAttribute("aria-grabbed", "false");
+  drag.handle.closest(".module-row")?.classList.remove("is-dragging");
+  document.body.classList.remove("is-module-dragging");
+  clearModuleDropTarget();
+  state.moduleDrag = null;
+  if (!cancelled && drag.active && drag.targetIndex !== null) {
+    reorderModule(drag.sourceIndex, drag.targetIndex, drag.placement);
+  }
+}
+
+function cancelModuleDrag(event) {
+  finishModuleDrag(event, true);
+}
+
+function clearModuleDropTarget() {
+  $$(".module-row.is-drop-before, .module-row.is-drop-after", $("#detector-modules")).forEach((row) => {
+    row.classList.remove("is-drop-before", "is-drop-after");
+  });
+}
+
+function reorderModule(sourceIndex, targetIndex, placement) {
+  const modules = state.detectorDraft.modules;
+  let insertionIndex = targetIndex + (placement === "after" ? 1 : 0);
+  const [module] = modules.splice(sourceIndex, 1);
+  if (sourceIndex < insertionIndex) insertionIndex -= 1;
+  modules.splice(insertionIndex, 0, module);
+  renderDetectorConfiguration();
+  requestAnimationFrame(() => $(`[data-module-drag="${insertionIndex}"]`)?.focus());
+}
+
+function handleModuleDragKeydown(event) {
+  if (!event.altKey || !["ArrowUp", "ArrowDown"].includes(event.key)) return;
+  event.preventDefault();
+  const index = Number(event.currentTarget.dataset.moduleDrag);
+  const direction = event.key === "ArrowUp" ? -1 : 1;
+  const target = index + direction;
+  if (moveModule(index, direction)) requestAnimationFrame(() => $(`[data-module-drag="${target}"]`)?.focus());
 }
 
 function duplicateModule(index) {
@@ -1047,17 +1355,21 @@ function removeModule(index) {
 }
 
 function openModuleEditor(index) {
+  const editing = index !== null;
   state.editingModuleIndex = index;
   state.moduleDraft = index === null ? {
     id: randomId("mod"), name: "新检测模块", type: "regex", enabled: true,
     timeout_ms: null, failure_mode: "open", editable: true, config: defaultModuleConfig("regex"),
   } : structuredClone(state.detectorDraft.modules[index]);
+  state.moduleDraftSourceName = state.moduleDraft.name;
   $("#module-form").reset();
   $("#module-error").textContent = "";
   $("#module-modal-title").textContent = index === null ? "新增检测模块" : "编辑检测模块";
-  $("#module-form [name=name]").value = state.moduleDraft.name;
+  $("#module-form [name=name]").value = uiText(state.moduleDraft.name);
   $("#module-type").value = state.moduleDraft.type;
-  $("#module-type").disabled = index !== null;
+  $("#module-type").disabled = editing;
+  $("#module-type-field").hidden = editing;
+  $("#module-name-field").classList.toggle("full-row", editing);
   $("#module-form [name=timeout_ms]").value = state.moduleDraft.timeout_ms ?? "";
   $("#module-form [name=failure_mode]").value = state.moduleDraft.failure_mode || "open";
   renderModuleSpecificFields();
@@ -1066,8 +1378,8 @@ function openModuleEditor(index) {
 
 function defaultModuleConfig(type) {
   if (type === "regex") return {rules: []};
-  if (type === "entropy") return {min_length: 20, min_entropy: 3.5, context_window: 80, sensitive_words: ["api_key", "token", "secret", "password", "credential"], false_positive_hints: ["fake", "example", "dummy", "sample"], sensitive_risk: "high", contextless_risk: "medium", sensitive_action: "redact", contextless_action: "warn"};
-  if (type === "path") return {detect_unix_home: true, detect_macos_private: true, detect_shell_config: true, detect_windows_user: true, credential_names: [".env", "id_rsa", "id_ed25519", "credentials.json", "kubeconfig"], exclude_patterns: [], path_risk: "medium", credential_risk: "high", path_action: "warn", credential_action: "redact"};
+  if (type === "entropy") return {min_length: 20, min_entropy: 3.5, risk: "medium"};
+  if (type === "path") return {detect_unix_home: true, detect_macos_private: true, detect_shell_config: true, detect_windows_user: true, exclude_patterns: [], path_risk: "medium"};
   return {adapter: "transformers_token_classification", model_name: "iiiorg/piiranha-v1-detect-personal-information", threshold: 0.75, device: "cpu", aggregation_strategy: "simple", labels: ["email", "phone_number", "user_name"]};
 }
 
@@ -1079,23 +1391,25 @@ function renderModuleSpecificFields() {
     renderIcons(target);
     $("#add-regex-rule").addEventListener("click", () => {
       syncModuleSpecificFields();
-      state.moduleDraft.config.rules.push({id: `custom.rule_${randomHex(8)}`, pattern: "", type: "MACHINE_SECRET", subtype: "custom_secret", confidence: 0.9, risk: "high", suggested_action: "redact", flags: [], validators: [], require_validators: [], reject_validators: [], preview_keep: 0, enabled: true, metadata: {source: "webui"}});
+      state.moduleDraft.config.rules.push({id: `custom.rule_${randomHex(8)}`, pattern: "", type: "MACHINE_SECRET", subtype: "custom_secret", risk: "high", flags: [], validators: [], require_validators: [], reject_validators: [], preview_keep: 0, enabled: true, metadata: {source: "webui"}});
       renderModuleSpecificFields();
     });
-    $$('[data-remove-rule]', target).forEach((button) => button.addEventListener("click", () => {
+    $$('[data-remove-rule]', target).forEach((button) => button.addEventListener("click", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
       syncModuleSpecificFields();
       state.moduleDraft.config.rules.splice(Number(button.dataset.removeRule), 1);
       renderModuleSpecificFields();
     }));
   } else if (module.type === "entropy") {
     const config = module.config;
-    target.innerHTML = `<div class="form-grid specific-grid"><label><span>最小 Token 长度</span><input id="entropy-min-length" type="number" min="8" max="512" value="${config.min_length}"></label><label><span>熵阈值</span><input id="entropy-threshold" type="number" min="0" max="8" step="0.1" value="${config.min_entropy}"></label><label><span>上下文窗口</span><input id="entropy-window" type="number" min="0" max="1024" value="${config.context_window}"></label><label class="full-row"><span>敏感上下文词（逗号分隔）</span><input id="entropy-words" value="${escapeHtml(config.sensitive_words.join(", "))}"></label><label class="full-row"><span>误报提示词（逗号分隔）</span><input id="entropy-hints" value="${escapeHtml(config.false_positive_hints.join(", "))}"></label>${riskActionFields("entropy-sensitive", "敏感上下文", config.sensitive_risk, config.sensitive_action)}${riskActionFields("entropy-contextless", "无上下文", config.contextless_risk, config.contextless_action)}</div>`;
+    target.innerHTML = `<div class="form-grid specific-grid"><label><span>最小 Token 长度</span><input id="entropy-min-length" type="number" min="8" max="512" value="${config.min_length}"></label><label><span>熵阈值</span><input id="entropy-threshold" type="number" min="0" max="8" step="0.1" value="${config.min_entropy}"></label>${riskField("entropy", "模块", config.risk || "medium")}</div>`;
   } else if (module.type === "path") {
     const config = module.config;
-    target.innerHTML = `<div class="check-grid"><label><input id="path-unix" type="checkbox" ${config.detect_unix_home ? "checked" : ""}> Unix / macOS Home</label><label><input id="path-private" type="checkbox" ${config.detect_macos_private ? "checked" : ""}> macOS /private</label><label><input id="path-shell" type="checkbox" ${config.detect_shell_config ? "checked" : ""}> Shell 配置目录</label><label><input id="path-windows" type="checkbox" ${config.detect_windows_user ? "checked" : ""}> Windows User 路径</label></div><div class="form-grid specific-grid"><label class="full-row"><span>凭据文件名（逗号分隔）</span><input id="path-credentials" value="${escapeHtml(config.credential_names.join(", "))}"></label><label class="full-row"><span>排除模式（逗号分隔 glob）</span><input id="path-excludes" value="${escapeHtml(config.exclude_patterns.join(", "))}"></label>${riskActionFields("path-normal", "普通路径", config.path_risk, config.path_action)}${riskActionFields("path-credential", "凭据文件", config.credential_risk, config.credential_action)}</div>`;
+    target.innerHTML = `<div class="check-grid"><label><input id="path-unix" type="checkbox" ${config.detect_unix_home ? "checked" : ""}> Unix / macOS Home</label><label><input id="path-private" type="checkbox" ${config.detect_macos_private ? "checked" : ""}> macOS /private</label><label><input id="path-shell" type="checkbox" ${config.detect_shell_config ? "checked" : ""}> Shell 配置目录</label><label><input id="path-windows" type="checkbox" ${config.detect_windows_user ? "checked" : ""}> Windows User 路径</label></div><div class="form-grid specific-grid"><label class="full-row"><span>排除模式（逗号分隔 glob）</span><input id="path-excludes" value="${escapeHtml(config.exclude_patterns.join(", "))}"></label>${riskField("path", "模块", config.path_risk)}</div>`;
   } else {
     const config = module.config;
-    target.innerHTML = `<div class="form-grid specific-grid"><label><span>运行方式</span><select id="model-adapter"><option value="transformers_token_classification" ${config.adapter === "transformers_token_classification" ? "selected" : ""}>Transformers Token Classification</option><option value="gliner" ${config.adapter === "gliner" ? "selected" : ""}>GLiNER</option></select></label><label><span>置信度阈值</span><input id="model-threshold" type="number" min="0" max="1" step="0.01" value="${config.threshold}"></label><label class="full-row"><span>Hugging Face 模型地址或本地路径</span><input id="model-name" value="${escapeHtml(config.model_name)}"></label><label><span>设备</span><select id="model-device"><option value="cpu">CPU</option><option value="mps">Apple MPS</option><option value="cuda">CUDA</option><option value="cuda:0">CUDA:0</option></select></label>${config.adapter === "gliner" ? `<label class="full-row"><span>实体标签（逗号分隔）</span><input id="model-labels" value="${escapeHtml(config.labels.join(", "))}"></label>` : `<label><span>聚合方式</span><select id="model-aggregation"><option value="simple">Simple</option><option value="first">First</option><option value="average">Average</option><option value="max">Max</option></select></label>`}<div class="model-policy-note full-row">模型按需延迟加载；是否允许下载由部署策略决定。</div></div>`;
+    target.innerHTML = `<div class="form-grid specific-grid"><label><span>运行方式</span><select id="model-adapter"><option value="transformers_token_classification" ${config.adapter === "transformers_token_classification" ? "selected" : ""}>Transformers Token Classification</option><option value="gliner" ${config.adapter === "gliner" ? "selected" : ""}>GLiNER</option></select></label><label><span>模型分数阈值</span><input id="model-threshold" type="number" min="0" max="1" step="0.01" value="${config.threshold}"></label><label class="full-row"><span>Hugging Face 模型地址或本地路径</span><input id="model-name" value="${escapeHtml(config.model_name)}"></label><label><span>设备</span><select id="model-device"><option value="cpu">CPU</option><option value="mps">Apple MPS</option><option value="cuda">CUDA</option><option value="cuda:0">CUDA:0</option></select></label>${config.adapter === "gliner" ? `<label class="full-row"><span>实体标签（逗号分隔）</span><input id="model-labels" value="${escapeHtml(config.labels.join(", "))}"></label>` : `<label><span>聚合方式</span><select id="model-aggregation"><option value="simple">Simple</option><option value="first">First</option><option value="average">Average</option><option value="max">Max</option></select></label>`}<div class="model-policy-note full-row">模型按需延迟加载；是否允许下载由部署策略决定。</div></div>`;
     $("#model-device").value = config.device;
     if ($("#model-aggregation")) $("#model-aggregation").value = config.aggregation_strategy;
     $("#model-adapter").addEventListener("change", (event) => { syncModuleSpecificFields(); state.moduleDraft.config.adapter = event.target.value; renderModuleSpecificFields(); });
@@ -1103,11 +1417,12 @@ function renderModuleSpecificFields() {
 }
 
 function renderRegexRule(rule, index) {
-  return `<section class="rule-editor" data-rule-card="${index}"><div class="rule-editor-heading"><strong>${escapeHtml(rule.id)}</strong><label class="inline-check"><input data-rule-field="enabled" type="checkbox" ${rule.enabled !== false ? "checked" : ""}>启用</label><button class="row-action danger icon-row-button" type="button" data-remove-rule="${index}" aria-label="删除正则规则 ${escapeHtml(rule.id)}" title="删除正则规则">${iconMarkup("trash-2")}</button></div><div class="form-grid"><label><span>规则 ID</span><input data-rule-field="id" value="${escapeHtml(rule.id)}"></label><label><span>Subtype</span><input data-rule-field="subtype" value="${escapeHtml(rule.subtype)}"></label><label class="full-row"><span>正则表达式</span><textarea data-rule-field="pattern" rows="3">${escapeHtml(rule.pattern)}</textarea></label><label><span>数据类型</span><select data-rule-field="type">${selectOptions(["MACHINE_SECRET", "PII", "LOCAL_CONTEXT", "CREDENTIAL_FILE", "UNKNOWN_SECRET_CANDIDATE"], rule.type)}</select></label><label><span>置信度</span><input data-rule-field="confidence" type="number" min="0" max="1" step="0.01" value="${rule.confidence}"></label><label><span>风险</span><select data-rule-field="risk">${selectOptions(["critical", "high", "medium", "low"], rule.risk)}</select></label><label><span>动作</span><select data-rule-field="suggested_action">${selectOptions(["redact", "block", "pseudonymize", "warn", "alias"], rule.suggested_action)}</select></label><label><span>Flags（逗号分隔）</span><input data-rule-field="flags" value="${escapeHtml((rule.flags || []).join(", "))}"></label><label><span>Validators</span><input data-rule-field="validators" value="${escapeHtml((rule.validators || []).join(", "))}"></label><label><span>必须通过的 Validators</span><input data-rule-field="require_validators" value="${escapeHtml((rule.require_validators || []).join(", "))}"></label><label><span>拒绝的 Validators</span><input data-rule-field="reject_validators" value="${escapeHtml((rule.reject_validators || []).join(", "))}"></label></div></section>`;
+  const name = String(rule.metadata?.display_name || rule.id);
+  return `<details class="rule-editor" data-rule-card="${index}" ${rule.pattern ? "" : "open"}><summary class="rule-editor-heading"><strong>${escapeHtml(name)}</strong><label class="inline-check"><input data-rule-field="enabled" type="checkbox" ${rule.enabled !== false ? "checked" : ""}>启用</label><button class="row-action danger icon-row-button" type="button" data-remove-rule="${index}" aria-label="删除正则规则 ${escapeHtml(name)}" title="删除正则规则">${iconMarkup("trash-2")}</button></summary><div class="form-grid"><label><span>规则名称</span><input data-rule-field="name" value="${escapeHtml(name)}"></label><label class="full-row"><span>正则表达式</span><textarea data-rule-field="pattern" rows="3">${escapeHtml(rule.pattern)}</textarea></label><label><span>数据类型</span><select data-rule-field="type">${selectOptions(["MACHINE_SECRET", "PII", "LOCAL_CONTEXT", "CREDENTIAL_FILE", "UNKNOWN_SECRET_CANDIDATE"], rule.type)}</select></label><label><span>风险等级（仅用于审计）</span><select data-rule-field="risk">${selectOptions(["critical", "high", "medium", "low"], rule.risk)}</select></label><details class="rule-advanced full-row"><summary>高级选项（选填）</summary><div class="form-grid"><label><span>Flags（逗号分隔）</span><input data-rule-field="flags" value="${escapeHtml((rule.flags || []).join(", "))}"></label><label><span>Validators（选填）</span><input data-rule-field="validators" value="${escapeHtml((rule.validators || []).join(", "))}"></label><label><span>必须通过的 Validators（选填）</span><input data-rule-field="require_validators" value="${escapeHtml((rule.require_validators || []).join(", "))}"></label><label><span>拒绝的 Validators（选填）</span><input data-rule-field="reject_validators" value="${escapeHtml((rule.reject_validators || []).join(", "))}"></label></div></details></div></details>`;
 }
 
-function riskActionFields(prefix, label, risk, action) {
-  return `<label><span>${label}风险</span><select id="${prefix}-risk">${selectOptions(["critical", "high", "medium", "low"], risk)}</select></label><label><span>${label}动作</span><select id="${prefix}-action">${selectOptions(["redact", "block", "pseudonymize", "warn", "alias"], action)}</select></label>`;
+function riskField(prefix, label, risk) {
+  return `<label><span>${label}风险等级（仅用于审计）</span><select id="${prefix}-risk">${selectOptions(["critical", "high", "medium", "low"], risk)}</select></label>`;
 }
 
 function syncModuleSpecificFields() {
@@ -1116,12 +1431,13 @@ function syncModuleSpecificFields() {
     module.config.rules = $$('[data-rule-card]').map((card) => {
       const field = (name) => card.querySelector(`[data-rule-field="${name}"]`);
       const previous = module.config.rules[Number(card.dataset.ruleCard)] || {};
-      return {...previous, id: field("id").value.trim(), subtype: field("subtype").value.trim(), pattern: field("pattern").value, type: field("type").value, confidence: Number(field("confidence").value), risk: field("risk").value, suggested_action: field("suggested_action").value, flags: commaList(field("flags").value), validators: commaList(field("validators").value), require_validators: commaList(field("require_validators").value), reject_validators: commaList(field("reject_validators").value), enabled: field("enabled").checked};
+      const displayName = field("name").value.trim() || previous.id;
+      return {...previous, metadata: {...(previous.metadata || {}), display_name: displayName}, pattern: field("pattern").value, type: field("type").value, risk: field("risk").value, flags: commaList(field("flags").value), validators: commaList(field("validators").value), require_validators: commaList(field("require_validators").value), reject_validators: commaList(field("reject_validators").value), enabled: field("enabled").checked};
     });
   } else if (module.type === "entropy") {
-    module.config = {...module.config, min_length: Number($("#entropy-min-length").value), min_entropy: Number($("#entropy-threshold").value), context_window: Number($("#entropy-window").value), sensitive_words: commaList($("#entropy-words").value), false_positive_hints: commaList($("#entropy-hints").value), sensitive_risk: $("#entropy-sensitive-risk").value, sensitive_action: $("#entropy-sensitive-action").value, contextless_risk: $("#entropy-contextless-risk").value, contextless_action: $("#entropy-contextless-action").value};
+    module.config = {...module.config, min_length: Number($("#entropy-min-length").value), min_entropy: Number($("#entropy-threshold").value), risk: $("#entropy-risk").value};
   } else if (module.type === "path") {
-    module.config = {...module.config, detect_unix_home: $("#path-unix").checked, detect_macos_private: $("#path-private").checked, detect_shell_config: $("#path-shell").checked, detect_windows_user: $("#path-windows").checked, credential_names: commaList($("#path-credentials").value), exclude_patterns: commaList($("#path-excludes").value), path_risk: $("#path-normal-risk").value, path_action: $("#path-normal-action").value, credential_risk: $("#path-credential-risk").value, credential_action: $("#path-credential-action").value};
+    module.config = {...module.config, detect_unix_home: $("#path-unix").checked, detect_macos_private: $("#path-private").checked, detect_shell_config: $("#path-shell").checked, detect_windows_user: $("#path-windows").checked, exclude_patterns: commaList($("#path-excludes").value), path_risk: $("#path-risk").value};
   } else {
     module.config = {...module.config, adapter: $("#model-adapter").value, model_name: $("#model-name").value.trim(), threshold: Number($("#model-threshold").value), device: $("#model-device").value, aggregation_strategy: $("#model-aggregation")?.value || module.config.aggregation_strategy, labels: $("#model-labels") ? commaList($("#model-labels").value) : module.config.labels};
   }
@@ -1133,7 +1449,10 @@ function applyModuleDraft(event) {
   $("#module-error").textContent = "";
   try {
     syncModuleSpecificFields();
-    state.moduleDraft.name = String(form.get("name") || "").trim();
+    const submittedName = String(form.get("name") || "").trim();
+    state.moduleDraft.name = submittedName === uiText(state.moduleDraftSourceName)
+      ? state.moduleDraftSourceName
+      : submittedName;
     state.moduleDraft.timeout_ms = form.get("timeout_ms") ? Number(form.get("timeout_ms")) : null;
     state.moduleDraft.failure_mode = form.get("failure_mode") || "open";
     if (!state.moduleDraft.name) throw new Error("请输入模块名称");
@@ -1239,9 +1558,9 @@ function renderHighlightedDetection(output, text, findings) {
     const detectors = document.createElement("span");
     detectors.textContent = unique(group.findings.flatMap((finding) => finding.detectors)).join(" + ");
     content.append(title, detectors);
-    const confidence = document.createElement("b");
-    confidence.textContent = `${Math.round(Math.max(...group.findings.map((finding) => finding.confidence)) * 100)}%`;
-    row.append(number, content, confidence);
+    const risk = document.createElement("b");
+    risk.textContent = group.risk;
+    row.append(number, content, risk);
     legend.append(row);
   });
 
@@ -1310,11 +1629,11 @@ function valueStateLabel(value) {
 }
 
 function stateLabel(value) { return ({active: "活跃", expired: "已过期", revoked: "已撤销"})[value] || value; }
-function uiText(value) { return window.APG_I18N?.translate(String(value ?? "")) ?? String(value ?? ""); }
-function detectorTagLabel(value) {
-  const labels = DETECTOR_TAG_LABELS[value];
-  return labels?.[window.APG_I18N?.locale === "en" ? "en" : "zh"] || value;
+function moduleStatusLabel(value) {
+  if (displayLocale() === "en-US") return value;
+  return ({activated: "已启用", disabled: "已停用", managed: "内置", unavailable: "不可用"})[value] || value;
 }
+function uiText(value) { return window.APG_I18N?.translate(String(value ?? "")) ?? String(value ?? ""); }
 function displayLocale() { return window.APG_I18N?.locale === "en" ? "en-US" : "zh-CN"; }
 function formatNumber(value) { return new Intl.NumberFormat(displayLocale()).format(Number(value || 0)); }
 function formatTime(timestamp) { return timestamp ? new Intl.DateTimeFormat(displayLocale(), {hour: "2-digit", minute: "2-digit"}).format(new Date(timestamp * 1000)) : "-"; }

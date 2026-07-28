@@ -61,7 +61,6 @@ class Finding:
     normalized_end: int
     type: FindingType
     subtype: str
-    confidence: float
     risk: Risk
     detectors: tuple[str, ...]
     validators: tuple[str, ...] = ()
@@ -80,7 +79,6 @@ class Finding:
         normalized_end: int,
         type: FindingType,
         subtype: str,
-        confidence: float,
         risk: Risk,
         detector: str,
         validators: tuple[str, ...] = (),
@@ -97,7 +95,6 @@ class Finding:
             normalized_end=normalized_end,
             type=type,
             subtype=subtype,
-            confidence=max(0.0, min(1.0, confidence)),
             risk=risk,
             detectors=(detector,),
             validators=validators,
@@ -116,7 +113,6 @@ class Finding:
             "normalized_end": self.normalized_end,
             "type": self.type,
             "subtype": self.subtype,
-            "confidence": self.confidence,
             "risk": self.risk,
             "detectors": list(self.detectors),
             "validators": list(self.validators),
@@ -138,7 +134,6 @@ def merge_findings(primary: Finding, others: list[Finding]) -> Finding:
     all_findings = [primary, *others]
     detectors = tuple(dict.fromkeys(d for f in all_findings for d in f.detectors))
     validators = tuple(dict.fromkeys(v for f in all_findings for v in f.validators))
-    confidence = min(1.0, max(f.confidence for f in all_findings) + 0.05 * (len(all_findings) - 1))
     risk_order = {"low": 0, "medium": 1, "high": 2, "critical": 3}
     risk = max((f.risk for f in all_findings), key=lambda r: risk_order[r])
     return Finding(
@@ -150,7 +145,6 @@ def merge_findings(primary: Finding, others: list[Finding]) -> Finding:
         normalized_end=max(f.normalized_end for f in all_findings),
         type=primary.type,
         subtype=primary.subtype,
-        confidence=confidence,
         risk=risk,
         detectors=detectors,
         validators=validators,

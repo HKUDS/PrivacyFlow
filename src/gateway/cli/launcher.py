@@ -67,7 +67,7 @@ def prepare_launcher_config(
         config["signing_secret"] = secrets.token_urlsafe(32)
         changed = True
     if not config.get("local_api_key"):
-        config["local_api_key"] = f"apg_local_{secrets.token_urlsafe(24)}"
+        config["local_api_key"] = generate_local_api_key()
         changed = True
     if "admin_api_key" in config:
         config.pop("admin_api_key", None)
@@ -117,6 +117,22 @@ def apply_launcher_environment(
     }
     for key, value in defaults.items():
         environment.setdefault(key, value)
+
+
+def generate_local_api_key() -> str:
+    return f"apg_local_{secrets.token_urlsafe(24)}"
+
+
+def save_launcher_local_api_key(path: Path, api_key: str) -> str:
+    normalized = api_key.strip()
+    if not normalized or len(normalized) > 4096:
+        raise LauncherConfigError("The local API key must contain between 1 and 4096 characters.")
+    if any(ord(char) < 32 or ord(char) == 127 for char in normalized):
+        raise LauncherConfigError("The local API key contains unsupported control characters.")
+    config = prepare_launcher_config(path, environ={})
+    config["local_api_key"] = normalized
+    _write_launcher_config(path, _persistent_launcher_config(config))
+    return normalized
 
 
 def save_launcher_upstream_api_key(path: Path, api_key: str) -> None:

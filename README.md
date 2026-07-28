@@ -24,7 +24,7 @@ APG uses signed placeholders, scoped mappings, session identity, configurable lo
 - Explicit OpenAI Chat Completions, OpenAI Responses, or Anthropic Messages upstream selection
 - Bilingual local management WebUI at `/ui/` with Chinese/English switching, audit, protected-value, and detector views
 - Recursive scanning of any JSON string field
-- Rule-based detectors for common API keys, JWTs, private keys, database URLs, bearer tokens, env secrets, emails, phones, credit cards, and high-confidence local paths
+- Rule-based detectors for common API keys, JWTs, private keys, database URLs, bearer tokens, env secrets, emails, phones, credit cards, and local paths
 - Signed APG placeholders using HMAC
 - SQLite mapping registry with WAL, `synchronous=NORMAL`, and busy timeout
 - Response scanning
@@ -118,7 +118,7 @@ Open the local management panel at [http://127.0.0.1:8765/ui/](http://127.0.0.1:
 The WebUI is an operational control plane for the local gateway:
 
 - **Language:** switch between Chinese and English before or after authentication; static labels, dynamic tables, detector diagnostics, forms, and dialogs update without a page reload.
-- **Overview:** multiple named upstream configurations with explicit API format, Base URL, and independent provider key; live activation and deletion; separate one-click OpenAI and Anthropic Agent Base URLs; randomly generated local Agent API-key copy; and a ready-to-paste Claude Code environment block using DeepSeek v4 Pro's `[1m]` context variant. The copied block does not launch Claude Code or select its settings sources.
+- **Overview:** multiple named upstream configurations with explicit API format, Base URL, and independent provider key; live activation and deletion; separate one-click OpenAI and Anthropic Agent Base URLs; randomly generated local Agent API-key copy; and an expandable quick-setup panel with ready-to-copy Claude Code, OpenCode, and Codex configurations using their official brand icons.
 - **Audit:** inspect separate operation-level replacement and materialization lists, with the exact transformation shown in every row and filters for risk, endpoint, or request metadata.
 - **Protected values:** inspect type, scope, state, and retention; keep mappings indefinitely by default, optionally reveal active originals with a confirmed eye control, configure idle clearing, or revoke an active mapping.
 - **Detector configurations:** select a read-only content template or a user configuration, edit and reorder typed modules, atomically activate a validated revision, and dry-run any saved configuration locally.
@@ -174,11 +174,11 @@ Machine secrets are never sent upstream. When the model needs to mention one, it
 
 ## Hierarchical Sensitive Information Detection
 
-APG now treats detection as a layered evidence pipeline, not as the final security boundary. Deterministic detectors run first for high-confidence cases such as private keys, provider-like tokens, JWTs, database URLs, bearer tokens, `.env` and shell `export` assignments, PII, local paths, APG placeholders, and redaction markers. Assignment detection works inside line-number-decorated Agent tool output while replacing only the value after `=`. Entropy/context heuristics then add candidate evidence for random-looking tokens near sensitive names.
+APG now treats detection as a layered evidence pipeline, not as the final security boundary. Rule modules run first for private keys, provider-like tokens, JWTs, database URLs, bearer tokens, `.env` and shell `export` assignments, PII, local paths, APG placeholders, and redaction markers. Assignment detection works inside line-number-decorated Agent tool output while replacing only the value after `=`. Entropy heuristics then add candidate evidence for random-looking tokens.
 
 Optional external scanners and local model detectors have plugin interfaces. They are lazy, disabled by default, and must run locally; model output contributes evidence but does not directly allow, block, redact, or materialize anything. The policy engine, materialization engine, signed-placeholder checks, and harness-owned tool/file controls remain the enforcement boundary.
 
-The unified `Finding` schema records source block, original and normalized offsets, type, subtype, confidence, risk, detectors, validators, suggested action, safe preview, and metadata. A risk scorer merges overlapping evidence and hands findings to policy-aware components.
+The unified `Finding` schema records source block, original and normalized offsets, type, subtype, risk, detectors, validators, suggested action, safe preview, and metadata. A risk scorer merges overlapping evidence and hands findings to policy-aware components.
 
 Detector execution is compiled into an ordered flow. Every enabled module runs from top to bottom, and overlapping evidence is merged after all modules complete. The WebUI provides four read-only templates that describe what is detected rather than a strength level:
 
@@ -206,7 +206,6 @@ detectors:
               pattern: "\\bpartner_live_[A-Za-z0-9]{12,}\\b"
               type: MACHINE_SECRET
               subtype: partner_token
-              confidence: 0.9
               risk: high
               suggested_action: redact
         - id: entropy

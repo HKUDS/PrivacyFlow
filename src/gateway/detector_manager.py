@@ -44,7 +44,6 @@ def _finding_to_detection(finding: Finding) -> Detection:
         span_end=finding.original_end,
         type=det_type,
         subtype=subtype,
-        confidence=finding.confidence,
         risk=finding.risk,
         detector_name="+".join(finding.detectors),
         suggested_action=action,

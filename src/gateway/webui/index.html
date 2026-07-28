@@ -11,7 +11,7 @@
   <div class="app-shell" id="app-shell" aria-busy="true">
     <aside class="sidebar">
       <div class="brand">
-        <span class="brand-mark" aria-hidden="true"><i data-lucide="shield-check"></i></span>
+        <span class="brand-mark" aria-hidden="true"><img src="/ui/assets/apg-icon.png" alt=""></span>
         <div>
           <strong>APG Control</strong>
           <span>Privacy gateway</span>
@@ -45,7 +45,7 @@
       <header class="topbar">
         <div>
           <p class="eyebrow" id="page-eyebrow">LOCAL CONTROL PLANE</p>
-          <h1 id="page-title">隐私运行概览</h1>
+          <h1 id="page-title">概览</h1>
           <p class="page-subtitle" id="page-subtitle">最近 24 小时的网关活动</p>
         </div>
         <div class="topbar-actions">
@@ -59,6 +59,25 @@
 
       <main class="main-content">
         <section class="view is-active" id="view-overview" aria-labelledby="page-title">
+          <section class="privacy-control" id="privacy-control" aria-labelledby="privacy-control-title">
+            <div class="privacy-control-copy">
+              <span class="privacy-control-icon" aria-hidden="true"><i data-lucide="shield-check"></i></span>
+              <div>
+                <p class="section-kicker">PRIVACY RUNTIME</p>
+                <h2 id="privacy-control-title">APG 总开关</h2>
+                <p id="privacy-control-description">一键开启或关闭 APG 保护。</p>
+                <small id="privacy-control-configuration"></small>
+              </div>
+            </div>
+            <div class="privacy-control-action">
+              <strong id="privacy-control-status">正在读取状态…</strong>
+              <label class="toggle">
+                <input id="privacy-control-enabled" type="checkbox" aria-label="启用 APG 全局保护" disabled>
+                <span></span>
+              </label>
+            </div>
+          </section>
+
           <section class="upstream-setup is-hidden" id="upstream-setup" aria-labelledby="upstream-setup-title">
             <div class="upstream-setup-copy">
               <div>
@@ -66,7 +85,7 @@
                 <h2 id="upstream-setup-title">配置上游模型</h2>
               </div>
               <span class="configuration-status" id="upstream-status">未配置</span>
-              <p id="upstream-description">输入模型服务商的 Base URL 和 API Key 后即可开始使用 Agent。配置只保存在本机。</p>
+              <p id="upstream-description">填写 Base URL 和 API Key。</p>
               <div class="upstream-profile-toolbar">
                 <label><span>已保存配置</span><select id="upstream-profile-select"></select></label>
                 <div class="upstream-profile-actions">
@@ -81,7 +100,7 @@
             </div>
             <form class="upstream-key-form" id="upstream-key-form">
               <label><span>配置名称</span><input id="upstream-profile-name" type="text" autocomplete="off" maxlength="80" placeholder="例如：Anthropic 生产环境" required></label>
-              <label><span>上游 API 格式</span><select id="upstream-protocol" required><option value="">请选择格式</option><option value="openai_chat_completions">OpenAI Chat Completions</option><option value="openai_responses">OpenAI Responses</option><option value="anthropic_messages">Anthropic Messages</option></select></label>
+              <label><span>上游 API 格式</span><select id="upstream-protocol" required><option value="" disabled>请选择格式</option><option value="openai_chat_completions">OpenAI Chat Completions</option><option value="openai_responses">OpenAI Responses</option><option value="anthropic_messages">Anthropic Messages</option></select></label>
               <label><span>上游 Base URL</span><input class="mono" id="upstream-base-url-input" type="url" autocomplete="url" spellcheck="false" placeholder="https://api.example.com/v1" required maxlength="2048"></label>
               <label><span>上游 API Key</span><input class="mono" id="upstream-api-key" type="password" autocomplete="new-password" spellcheck="false" maxlength="4096" placeholder="编辑时留空可保留现有密钥"></label>
               <p class="form-error" id="upstream-key-error" role="alert"></p>
@@ -99,13 +118,56 @@
             <div class="agent-access-fields">
               <label class="connection-field"><span>OpenAI Base URL</span><span class="copy-control"><input class="mono" id="agent-openai-base-url" readonly autocomplete="off" spellcheck="false"><button type="button" data-copy-connection="openai-base-url" aria-label="复制 OpenAI Base URL" title="复制 OpenAI Base URL"><i data-lucide="copy"></i></button></span></label>
               <label class="connection-field"><span>Anthropic Base URL</span><span class="copy-control"><input class="mono" id="agent-anthropic-base-url" readonly autocomplete="off" spellcheck="false"><button type="button" data-copy-connection="anthropic-base-url" aria-label="复制 Anthropic Base URL" title="复制 Anthropic Base URL"><i data-lucide="copy"></i></button></span></label>
-              <label class="connection-field"><span>API Key</span><span class="copy-control"><input class="mono" id="agent-api-key" type="password" readonly autocomplete="off" spellcheck="false"><span class="copy-control-actions"><button class="key-visibility-button" type="button" id="toggle-agent-key" aria-label="显示 API Key" aria-pressed="false" title="显示 API Key"></button><button type="button" data-copy-connection="api-key" aria-label="复制 API Key" title="复制 API Key"><i data-lucide="copy"></i></button></span></span></label>
-              <div class="claude-command-row">
-                <span><strong>Claude Code</strong><small>Anthropic</small></span>
-                <button class="icon-action-button" type="button" id="copy-claude-command" aria-label="复制接入命令" title="复制接入命令" disabled><i data-lucide="terminal"></i></button>
-              </div>
+              <label class="connection-field"><span>API Key</span><span class="copy-control"><input class="mono" id="agent-api-key" type="password" readonly autocomplete="off" spellcheck="false"><span class="copy-control-actions"><button class="key-visibility-button" type="button" id="toggle-agent-key" aria-label="显示 API Key" aria-pressed="false" title="显示 API Key"></button><button type="button" id="generate-agent-key" aria-label="生成随机 API Key" title="生成随机 API Key"><i data-lucide="dices"></i></button><button type="button" data-copy-connection="api-key" aria-label="复制 API Key" title="复制 API Key"><i data-lucide="copy"></i></button></span></span></label>
             </div>
           </section>
+
+          <details class="agent-quickstart">
+            <summary>
+              <span class="agent-quickstart-icon" aria-hidden="true"><i data-lucide="bot"></i></span>
+              <span class="agent-quickstart-title"><strong>Agent 快捷接入</strong><small>展开查看常见 Agent 的接入步骤和快捷复制</small></span>
+              <i class="agent-quickstart-chevron" data-lucide="chevron-down"></i>
+            </summary>
+            <div class="agent-quickstart-body">
+              <p class="agent-quickstart-warning"><i data-lucide="shield-check"></i><span>复制内容会包含当前本地 API Key，请只粘贴到可信的本机配置或终端。</span></p>
+              <div class="agent-setup-grid">
+                <article class="agent-setup-card">
+                  <div class="agent-setup-heading">
+                    <span class="agent-setup-icon"><img src="/ui/assets/claude-code.svg" alt=""></span>
+                    <div><strong>Claude Code</strong><small>Anthropic Messages</small></div>
+                    <div class="agent-setup-actions">
+                      <button class="icon-action-button agent-setup-info" type="button" data-agent-guide="claude" aria-label="查看 Claude Code 详细使用方法" title="查看 Claude Code 详细使用方法"><i data-lucide="info"></i></button>
+                      <button class="icon-action-button agent-setup-copy" type="button" data-copy-agent-setup="claude" data-agent-protocol="anthropic" aria-label="复制 Claude Code 环境变量" title="复制 Claude Code 环境变量" disabled><i data-lucide="copy"></i></button>
+                    </div>
+                  </div>
+                  <p>复制环境变量，在终端粘贴后运行 Claude Code。</p>
+                </article>
+                <article class="agent-setup-card">
+                  <div class="agent-setup-heading">
+                    <span class="agent-setup-icon"><img src="/ui/assets/opencode.svg" alt=""></span>
+                    <div><strong>OpenCode</strong><small>OpenAI Chat Completions</small></div>
+                    <div class="agent-setup-actions">
+                      <button class="icon-action-button agent-setup-info" type="button" data-agent-guide="opencode" aria-label="查看 OpenCode 详细使用方法" title="查看 OpenCode 详细使用方法"><i data-lucide="info"></i></button>
+                      <button class="icon-action-button agent-setup-copy" type="button" data-copy-agent-setup="opencode" data-agent-protocol="openai" aria-label="复制 OpenCode 配置" title="复制 OpenCode 配置" disabled><i data-lucide="copy"></i></button>
+                    </div>
+                  </div>
+                  <p>复制 JSON 并合并到 opencode.json，然后选择 APG 模型。</p>
+                </article>
+                <article class="agent-setup-card">
+                  <div class="agent-setup-heading">
+                    <span class="agent-setup-icon"><img src="/ui/assets/codex.svg" alt=""></span>
+                    <div><strong>Codex</strong><small>OpenAI Responses</small></div>
+                    <div class="agent-setup-actions">
+                      <button class="icon-action-button agent-setup-info" type="button" data-agent-guide="codex" aria-label="查看 Codex 详细使用方法" title="查看 Codex 详细使用方法"><i data-lucide="info"></i></button>
+                      <button class="icon-action-button agent-setup-copy" type="button" data-copy-agent-setup="codex-config" data-agent-protocol="openai" aria-label="复制 Codex 配置" title="复制 Codex 配置" disabled><i data-lucide="copy"></i></button>
+                      <button class="icon-action-button agent-setup-copy" type="button" data-copy-agent-setup="codex-key" data-agent-protocol="openai" aria-label="复制 Codex 密钥变量" title="复制 Codex 密钥变量" disabled><i data-lucide="key-round"></i></button>
+                    </div>
+                  </div>
+                  <p>将配置加入 ~/.codex/config.toml，再复制密钥变量后启动 Codex。</p>
+                </article>
+              </div>
+            </div>
+          </details>
 
           <div class="metric-grid" id="overview-metrics">
             <article class="metric-card skeleton"></article>
@@ -159,7 +221,7 @@
           <div class="result-meta"><span id="audit-count">0 条替换记录</span><span id="audit-window-note"></span></div>
           <div class="table-wrap audit-table-wrap">
             <table class="audit-operation-table">
-              <thead><tr><th>时间</th><th id="audit-map-heading">替换内容</th><th>类型</th><th id="audit-result-heading">检测与动作</th><th>出现</th><th>上下文</th></tr></thead>
+              <thead><tr><th>时间</th><th id="audit-map-heading">替换内容</th><th>类型</th><th id="audit-result-heading">检测与动作</th><th>次数</th><th>上下文</th></tr></thead>
               <tbody id="audit-events"></tbody>
             </table>
           </div>
@@ -196,7 +258,7 @@
           </div>
           <div class="privacy-note">
             <strong>原值默认隐藏</strong>
-            <span>仅在管理员确认后临时读取仍有效的本地原值；关闭显示后立即清除页面中的原文。</span>
+            <span>确认后临时显示，关闭显示即清除。</span>
           </div>
         </section>
 
@@ -215,7 +277,6 @@
               <div class="configuration-identity">
                 <input id="configuration-name" aria-label="配置名称" maxlength="80">
                 <textarea id="configuration-description" aria-label="配置说明" rows="2" maxlength="240"></textarea>
-                <div class="configuration-tags" id="configuration-tags"></div>
               </div>
               <div class="configuration-status" id="configuration-status"></div>
             </div>
@@ -257,6 +318,11 @@
     <div class="modal-body" id="modal-body"></div>
   </dialog>
 
+  <dialog class="modal agent-guide-modal" id="agent-guide-modal">
+    <div class="modal-header"><div><p class="section-kicker">AGENT SETUP</p><h2 id="agent-guide-title">详细使用方法</h2></div><button class="icon-button" type="button" data-close-modal aria-label="关闭弹窗" title="关闭弹窗"><i data-lucide="x"></i></button></div>
+    <div class="modal-body" id="agent-guide-body"></div>
+  </dialog>
+
   <dialog class="modal configuration-modal" id="configuration-modal">
     <form id="configuration-form">
       <div class="modal-header"><div><p class="section-kicker">DETECTOR CONFIGURATION</p><h2>新建检测器配置</h2></div><button class="icon-button" type="button" data-close-modal aria-label="关闭弹窗" title="关闭弹窗"><i data-lucide="x"></i></button></div>
@@ -274,15 +340,15 @@
       <div class="modal-header"><div><p class="section-kicker">PIPELINE MODULE</p><h2 id="module-modal-title">编辑检测模块</h2></div><button class="icon-button" type="button" data-close-modal aria-label="关闭弹窗" title="关闭弹窗"><i data-lucide="x"></i></button></div>
       <div class="modal-body">
         <div class="form-grid module-common-fields">
-          <label><span>模块名称</span><input name="name" maxlength="80" required></label>
-          <label><span>模块类型</span><select name="type" id="module-type"><option value="regex">正则检测</option><option value="entropy">熵值检测</option><option value="path">路径检测</option><option value="local_model">本地小模型</option></select></label>
+          <label id="module-name-field"><span>模块名称</span><input name="name" maxlength="80" required></label>
+          <label class="module-type-field" id="module-type-field"><span>模块类型</span><select name="type" id="module-type"><option value="regex">正则检测</option><option value="entropy">熵值检测</option><option value="path">路径检测</option><option value="local_model">本地小模型</option></select></label>
         </div>
         <div class="module-specific-fields" id="module-specific-fields"></div>
         <details class="advanced-settings">
           <summary>高级设置</summary>
           <div class="form-grid">
             <label><span>模块超时（ms）</span><input name="timeout_ms" type="number" min="1" max="60000" placeholder="不限制"></label>
-            <label><span>失败策略</span><select name="failure_mode"><option value="open">Fail open</option><option value="closed">Fail closed</option></select></label>
+            <label><span>失败策略</span><select name="failure_mode"><option value="open">失败时跳过模块（Fail open）</option><option value="closed">失败时中止流程（Fail closed）</option></select></label>
           </div>
         </details>
         <p class="form-error" id="module-error" role="alert"></p>

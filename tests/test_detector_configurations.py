@@ -37,9 +37,16 @@ def test_content_templates_detect_declared_categories(tmp_path) -> None:
     assert "email" not in subtypes(credentials, text)
     assert "email" in subtypes(personal, text)
     assert "openai_api_key" not in subtypes(personal, text)
-    assert "credential_file" in subtypes(local_context, text)
+    assert "local_path" in subtypes(local_context, text)
     assert "email" not in subtypes(local_context, text)
-    assert {"openai_api_key", "email", "credential_file"} <= subtypes(comprehensive, text)
+    assert {"openai_api_key", "email", "local_path"} <= subtypes(comprehensive, text)
+    path_config = detector_control.get_configuration("builtin.local_context")["modules"][0]["config"]
+    assert detector_control.get_configuration("builtin.local_context")["modules"][0]["name"] == "本地路径"
+    assert path_config["path_risk"] == "medium"
+    assert "credential_names" not in path_config
+    assert "credential_risk" not in path_config
+    assert "path_action" not in path_config
+    assert "credential_action" not in path_config
 
     diagnostics = comprehensive.diagnostics()
     assert [item["id"] for item in diagnostics] == ["apg_core", "credentials", "personal_data", "local_paths", "entropy", "personal_model"]
@@ -64,6 +71,42 @@ def test_copy_edit_activate_and_atomic_revision(tmp_path) -> None:
     assert applied[-1].hierarchical.flow.preset == created["id"]
     with pytest.raises(DetectorConfigurationConflict):
         detector_control.delete_configuration(created["id"])
+
+
+def test_template_module_switch_persists_and_hot_applies(tmp_path) -> None:
+    detector_control, applied = control(tmp_path)
+    configuration_id = "builtin.comprehensive"
+    module_id = "entropy"
+    assert detector_control.active_configuration()["id"] == configuration_id
+    assert next(
+        module for module in detector_control.active_configuration()["modules"] if module["id"] == module_id
+    )["enabled"] is True
+
+    applied_before = len(applied)
+    updated = detector_control.set_template_module_enabled(configuration_id, module_id, False)
+    assert updated["readonly"] is True
+    assert next(module for module in updated["modules"] if module["id"] == module_id)["enabled"] is False
+    assert len(applied) == applied_before + 1
+    assert applied[-1].hierarchical.flow.preset == configuration_id
+
+    state_path = tmp_path / "detector-control.json"
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    assert state["template_module_overrides"] == {configuration_id: {module_id: False}}
+
+    reloaded, _ = control(tmp_path)
+    restored = reloaded.get_configuration(configuration_id)
+    assert next(module for module in restored["modules"] if module["id"] == module_id)["enabled"] is False
+
+    reset = reloaded.set_template_module_enabled(configuration_id, module_id, True)
+    assert next(module for module in reset["modules"] if module["id"] == module_id)["enabled"] is True
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    assert state["template_module_overrides"] == {}
+
+    custom = reloaded.create_configuration({"name": "Custom", "source_id": configuration_id})
+    with pytest.raises(DetectorControlError, match="Only preset"):
+        reloaded.set_template_module_enabled(custom["id"], module_id, True)
+    with pytest.raises(DetectorControlError, match="boolean"):
+        reloaded.set_template_module_enabled(configuration_id, module_id, "yes")  # type: ignore[arg-type]
 
 
 def test_regex_validation_and_model_url_normalization(tmp_path) -> None:
@@ -105,7 +148,6 @@ def test_regex_validation_and_model_url_normalization(tmp_path) -> None:
                         "pattern": "(a+)+$",
                         "type": "MACHINE_SECRET",
                         "subtype": "unsafe",
-                        "confidence": 0.9,
                         "risk": "high",
                         "suggested_action": "redact",
                     }
@@ -168,7 +210,6 @@ def test_v1_state_migrates_module_overrides_and_custom_rules(tmp_path) -> None:
                         "pattern": r"\bpartner_[A-Za-z0-9]{8,}\b",
                         "type": "MACHINE_SECRET",
                         "subtype": "partner",
-                        "confidence": 0.9,
                         "risk": "high",
                         "suggested_action": "redact",
                     }
@@ -245,7 +286,6 @@ def test_v1_migration_failure_keeps_original_state_and_runtime(tmp_path) -> None
                         "pattern": "(a+)+$",
                         "type": "MACHINE_SECRET",
                         "subtype": "legacy",
-                        "confidence": 0.9,
                         "risk": "high",
                         "suggested_action": "redact",
                     }

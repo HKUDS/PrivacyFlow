@@ -115,16 +115,7 @@ def _entropy_config() -> dict[str, Any]:
     return {
         "min_length": 20,
         "min_entropy": 3.5,
-        "context_window": 80,
-        "sensitive_words": [
-            "api_key", "token", "secret", "password", "passwd", "credential", "private_key",
-            "access_token", "refresh_token", "authorization", "bearer", "cookie", "session", "client_secret",
-        ],
-        "false_positive_hints": ["fake", "example", "dummy", "placeholder", "sample", "mock", "fixture"],
-        "sensitive_risk": "high",
-        "contextless_risk": "medium",
-        "sensitive_action": "redact",
-        "contextless_action": "warn",
+        "risk": "medium",
     }
 
 
@@ -134,12 +125,8 @@ def _path_config() -> dict[str, Any]:
         "detect_macos_private": True,
         "detect_shell_config": True,
         "detect_windows_user": True,
-        "credential_names": [".env", "id_rsa", "id_ed25519", "credentials.json", "kubeconfig", ".npmrc", ".pypirc"],
         "exclude_patterns": [],
         "path_risk": "medium",
-        "credential_risk": "high",
-        "path_action": "warn",
-        "credential_action": "redact",
     }
 
 
@@ -182,7 +169,7 @@ def _builtin_templates() -> dict[str, dict[str, Any]]:
         _module("personal_data", "个人信息规则", "regex", {"rules": PII_RULES}),
         _module("personal_model", "个人信息小模型", "local_model", _model_config(), enabled=False, timeout_ms=800),
     ]
-    local_context = [_module("local_paths", "本地路径与凭据文件", "path", _path_config(), failure_mode="closed")]
+    local_context = [_module("local_paths", "本地路径", "path", _path_config(), failure_mode="closed")]
     comprehensive = [
         copy.deepcopy(credentials[0]),
         copy.deepcopy(personal[0]),
@@ -222,6 +209,8 @@ class DetectorControlPlane:
             active_id = self._state["active_configuration_id"]
             return {
                 "active_configuration_id": active_id,
+                "apg_enabled": bool(self._state.get("apg_enabled", True)),
+                "configuration_available": self._active_configuration_available(),
                 "templates": [self._summary(item, active_id) for item in self._templates.values()],
                 "configurations": [self._summary(item, active_id) for item in self._state["configurations"]],
                 "module_types": self._module_type_catalog(),
@@ -302,6 +291,34 @@ class DetectorControlPlane:
             self.apply_manager(manager)
             return self._public_configuration(configuration)
 
+    def set_template_module_enabled(self, configuration_id: str, module_id: str, enabled: bool) -> dict[str, Any]:
+        if not isinstance(enabled, bool):
+            raise DetectorControlError("Expected boolean module enabled state")
+        with self._lock:
+            template = self._templates.get(configuration_id)
+            if template is None:
+                raise DetectorControlError("Only preset module switches can be updated directly")
+            module = next((item for item in template["modules"] if item["id"] == module_id), None)
+            if module is None:
+                raise DetectorConfigurationNotFound("Unknown detector module")
+            next_state = copy.deepcopy(self._state)
+            overrides = next_state.setdefault("template_module_overrides", {})
+            template_overrides = overrides.setdefault(configuration_id, {})
+            if enabled == bool(module.get("enabled", True)):
+                template_overrides.pop(module_id, None)
+                if not template_overrides:
+                    overrides.pop(configuration_id, None)
+            else:
+                template_overrides[module_id] = enabled
+            configuration = self._template_configuration(configuration_id, next_state)
+            manager = self._build_manager(configuration) if configuration_id == next_state["active_configuration_id"] else None
+            self._persist_state(next_state)
+            self._state = next_state
+            if manager is not None:
+                self._manager = manager
+                self.apply_manager(manager)
+            return self._public_configuration(configuration)
+
     def delete_configuration(self, configuration_id: str) -> dict[str, Any]:
         with self._lock:
             if configuration_id == self._state["active_configuration_id"]:
@@ -321,13 +338,47 @@ class DetectorControlPlane:
         with self._lock:
             return self._public_configuration(self._configuration(self._state["active_configuration_id"]))
 
+    def apg_enabled(self) -> bool:
+        with self._lock:
+            return bool(self._state.get("apg_enabled", True))
+
+    def set_apg_enabled(self, enabled: bool) -> bool:
+        if not isinstance(enabled, bool):
+            raise DetectorControlError("Expected boolean APG enabled state")
+        with self._lock:
+            next_state = copy.deepcopy(self._state)
+            next_state["apg_enabled"] = enabled
+            self._persist_state(next_state)
+            self._state = next_state
+            return enabled
+
+    def active_configuration_available(self) -> bool:
+        with self._lock:
+            return self._active_configuration_available()
+
+    def _active_configuration_available(self) -> bool:
+        try:
+            self._configuration(str(self._state.get("active_configuration_id", "")))
+        except DetectorConfigurationNotFound:
+            return False
+        return True
+
     def _configuration(self, configuration_id: str) -> dict[str, Any]:
         if configuration_id in self._templates:
-            return self._templates[configuration_id]
+            return self._template_configuration(configuration_id)
         for item in self._state.get("configurations", []):
             if item.get("id") == configuration_id:
                 return item
         raise DetectorConfigurationNotFound("Unknown detector configuration")
+
+    def _template_configuration(self, configuration_id: str, state: dict[str, Any] | None = None) -> dict[str, Any]:
+        configuration = copy.deepcopy(self._templates[configuration_id])
+        overrides = (state or self._state).get("template_module_overrides", {}).get(configuration_id, {})
+        for module in configuration["modules"]:
+            enabled = overrides.get(module["id"])
+            if isinstance(enabled, bool):
+                module["enabled"] = enabled
+        return configuration
 
     def _user_configuration(self, configuration_id: str) -> dict[str, Any]:
         configuration = self._configuration(configuration_id)
@@ -444,6 +495,8 @@ class DetectorControlPlane:
         if module_type not in MODULE_TYPE_LABELS:
             raise DetectorControlError("Unknown module type")
         name = str(module.get("name", "")).strip()
+        if module_type == "path" and name == "本地路径与凭据文件":
+            name = "本地路径"
         if not 1 <= len(name) <= 80:
             raise DetectorControlError("Module name must be between 1 and 80 characters")
         failure_mode = str(module.get("failure_mode", "open"))
@@ -526,7 +579,6 @@ class DetectorControlPlane:
                 "pattern": pattern,
                 "type": finding_type,
                 "subtype": subtype,
-                "confidence": self._bounded_float(raw.get("confidence", 0.9), 0.0, 1.0, "confidence"),
                 "risk": risk,
                 "suggested_action": action,
                 "flags": flags,
@@ -543,13 +595,7 @@ class DetectorControlPlane:
         return {
             "min_length": self._bounded_int(config.get("min_length", 20), 8, 512, "min_length"),
             "min_entropy": self._bounded_float(config.get("min_entropy", 3.5), 0.0, 8.0, "min_entropy"),
-            "context_window": self._bounded_int(config.get("context_window", 80), 0, 1024, "context_window"),
-            "sensitive_words": self._string_list(config.get("sensitive_words", []), "sensitive_words", 128),
-            "false_positive_hints": self._string_list(config.get("false_positive_hints", []), "false_positive_hints", 128),
-            "sensitive_risk": self._choice(config.get("sensitive_risk", "high"), RISK_LEVELS, "sensitive_risk"),
-            "contextless_risk": self._choice(config.get("contextless_risk", "medium"), RISK_LEVELS, "contextless_risk"),
-            "sensitive_action": self._choice(config.get("sensitive_action", "redact"), ACTIONS, "sensitive_action"),
-            "contextless_action": self._choice(config.get("contextless_action", "warn"), ACTIONS, "contextless_action"),
+            "risk": self._choice(config.get("risk", "medium"), RISK_LEVELS, "risk"),
         }
 
     def _validate_path_config(self, config: dict[str, Any]) -> dict[str, Any]:
@@ -558,12 +604,8 @@ class DetectorControlPlane:
             "detect_macos_private": bool(config.get("detect_macos_private", True)),
             "detect_shell_config": bool(config.get("detect_shell_config", True)),
             "detect_windows_user": bool(config.get("detect_windows_user", True)),
-            "credential_names": self._string_list(config.get("credential_names", []), "credential_names", 128),
             "exclude_patterns": self._string_list(config.get("exclude_patterns", []), "exclude_patterns", 128),
             "path_risk": self._choice(config.get("path_risk", "medium"), RISK_LEVELS, "path_risk"),
-            "credential_risk": self._choice(config.get("credential_risk", "high"), RISK_LEVELS, "credential_risk"),
-            "path_action": self._choice(config.get("path_action", "warn"), ACTIONS, "path_action"),
-            "credential_action": self._choice(config.get("credential_action", "redact"), ACTIONS, "credential_action"),
         }
 
     def _validate_model_config(self, config: dict[str, Any]) -> dict[str, Any]:
@@ -648,8 +690,8 @@ class DetectorControlPlane:
         gliner = self._module_available("gliner")
         return [
             {"id": "regex", "label": MODULE_TYPE_LABELS["regex"], "description": "多条安全正则与格式验证器", "available": True},
-            {"id": "entropy", "label": MODULE_TYPE_LABELS["entropy"], "description": "结合上下文检测随机 Token", "available": True},
-            {"id": "path", "label": MODULE_TYPE_LABELS["path"], "description": "本地路径与凭据文件位置", "available": True},
+            {"id": "entropy", "label": MODULE_TYPE_LABELS["entropy"], "description": "按长度和熵值检测随机 Token", "available": True},
+            {"id": "path", "label": MODULE_TYPE_LABELS["path"], "description": "本地路径位置", "available": True},
             {
                 "id": "local_model",
                 "label": MODULE_TYPE_LABELS["local_model"],
@@ -763,7 +805,13 @@ class DetectorControlPlane:
         return out
 
     def _load_state(self) -> dict[str, Any]:
-        empty = {"version": 2, "active_configuration_id": self._default_active_id(), "configurations": []}
+        empty = {
+            "version": 2,
+            "active_configuration_id": self._default_active_id(),
+            "apg_enabled": True,
+            "template_module_overrides": {},
+            "configurations": [],
+        }
         if not self.state_path.exists():
             return empty
         try:
@@ -777,7 +825,14 @@ class DetectorControlPlane:
             try:
                 configurations = [self._validate_configuration(item, trusted=True) for item in data.get("configurations", [])]
                 active = str(data.get("active_configuration_id", self._default_active_id()))
-                state = {"version": 2, "active_configuration_id": active, "configurations": configurations}
+                stored_enabled = data.get("apg_enabled", True)
+                state = {
+                    "version": 2,
+                    "active_configuration_id": active,
+                    "apg_enabled": stored_enabled if isinstance(stored_enabled, bool) else True,
+                    "template_module_overrides": self._validate_template_module_overrides(data.get("template_module_overrides", {})),
+                    "configurations": configurations,
+                }
                 if active not in self._templates and not any(item["id"] == active for item in configurations):
                     state["active_configuration_id"] = self._default_active_id()
                 return state
@@ -825,7 +880,13 @@ class DetectorControlPlane:
             "template": False,
         }
         configuration = self._validate_configuration(configuration, trusted=True)
-        return {"version": 2, "active_configuration_id": configuration["id"], "configurations": [configuration]}
+        return {
+            "version": 2,
+            "active_configuration_id": configuration["id"],
+            "apg_enabled": True,
+            "template_module_overrides": {},
+            "configurations": [configuration],
+        }
 
     def _effective_v1_config(self, data: dict[str, Any]) -> dict[str, Any]:
         effective = copy.deepcopy(self.base_config)
@@ -883,7 +944,31 @@ class DetectorControlPlane:
             "readonly": False,
             "template": False,
         }
-        return {"version": 2, "active_configuration_id": configuration["id"], "configurations": [configuration]}
+        return {
+            "version": 2,
+            "active_configuration_id": configuration["id"],
+            "apg_enabled": True,
+            "template_module_overrides": {},
+            "configurations": [configuration],
+        }
+
+    def _validate_template_module_overrides(self, value: Any) -> dict[str, dict[str, bool]]:
+        if not isinstance(value, dict):
+            return {}
+        out: dict[str, dict[str, bool]] = {}
+        for configuration_id, raw_modules in value.items():
+            template = self._templates.get(str(configuration_id))
+            if template is None or not isinstance(raw_modules, dict):
+                continue
+            module_ids = {str(module["id"]) for module in template["modules"]}
+            modules = {
+                str(module_id): enabled
+                for module_id, enabled in raw_modules.items()
+                if str(module_id) in module_ids and isinstance(enabled, bool)
+            }
+            if modules:
+                out[str(configuration_id)] = modules
+        return out
 
     def _persist_state(self, state: dict[str, Any]) -> None:
         self.state_path.parent.mkdir(parents=True, exist_ok=True)

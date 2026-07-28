@@ -119,20 +119,23 @@ def test_api_route_not_flagged_as_local_path() -> None:
     assert "local_path" not in subtypes("GET /api/v1/users")
 
 
-def test_users_env_path_flagged_as_credential_context() -> None:
-    finding = by_subtype("/Users/alice/project/.env", "credential_file")
-    assert finding.type == "CREDENTIAL_FILE"
+def test_users_env_path_uses_the_same_local_path_policy() -> None:
+    finding = by_subtype("/Users/alice/project/.env", "local_path")
+    assert finding.type == "LOCAL_CONTEXT"
+    assert finding.risk == "medium"
+    assert finding.suggested_action == "alias"
 
 
-def test_high_entropy_near_token_is_high_risk() -> None:
-    finding = by_subtype("TOKEN=abcdefghijklmnopqrstuvwxyzABCDEFGH1234567890", "high_entropy_token")
-    assert finding.risk == "high"
-    assert finding.metadata["sensitive_context"] is True
+def test_high_entropy_token_uses_fixed_risk_without_context() -> None:
+    finding = by_subtype("value abcdefghijklmnopqrstuvwxyzABCDEFGH1234567890", "high_entropy_token")
+    assert finding.risk == "medium"
+    assert "sensitive_context" not in finding.metadata
+    assert "weak_context" not in finding.metadata
 
 
-def test_high_entropy_near_sha256_is_lower_risk() -> None:
+def test_high_entropy_sha256_uses_same_context_free_risk() -> None:
     finding = by_subtype("SHA256 abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890", "high_entropy_token")
-    assert finding.risk in {"low", "medium"}
+    assert finding.risk == "medium"
 
 
 def test_plain_schema_url_is_not_high_entropy_secret() -> None:
@@ -151,10 +154,9 @@ def test_local_path_span_excludes_sentence_punctuation() -> None:
     assert text[finding.original_start : finding.original_end] == "/private/tmp/project/private/path_probe.txt"
 
 
-def test_fake_context_lowers_confidence_but_provider_token_stays_hard() -> None:
+def test_fake_context_does_not_downgrade_provider_token() -> None:
     finding = by_subtype("fake example key sk-proj-abcdefghijklmnopqrstuvwxyz123456", "openai_api_key")
     assert finding.risk == "critical"
-    assert finding.confidence >= 0.95
 
 
 class MockStarPII(BaseModelDetector):
@@ -166,7 +168,7 @@ class MockStarPII(BaseModelDetector):
 
     def detect_loaded(self, block: SourceBlock, normalized: NormalizedText) -> Iterable[Finding]:
         start = normalized.normalized.index("Alice")
-        yield self.finding_from_span(block=block, normalized=normalized, start=start, end=start + 5, label="name", confidence=0.81)
+        yield self.finding_from_span(block=block, normalized=normalized, start=start, end=start + 5, label="name")
 
 
 class MockPiiranha(BaseModelDetector):
@@ -178,7 +180,7 @@ class MockPiiranha(BaseModelDetector):
 
     def detect_loaded(self, block: SourceBlock, normalized: NormalizedText) -> Iterable[Finding]:
         start = normalized.normalized.index("张三")
-        yield self.finding_from_span(block=block, normalized=normalized, start=start, end=start + 2, label="name", confidence=0.84)
+        yield self.finding_from_span(block=block, normalized=normalized, start=start, end=start + 2, label="name")
 
 
 class FailingModel(BaseModelDetector):
@@ -219,8 +221,8 @@ def test_overlapping_jwt_and_entropy_merge_into_one() -> None:
     assert "heuristic.entropy_context" in findings[0].detectors
 
 
-class LowConfidencePrivateKeyModel(Detector):
-    name = "models.low_confidence"
+class LowRiskPrivateKeyModel(Detector):
+    name = "models.low_risk"
 
     def detect(self, block: SourceBlock, normalized: NormalizedText) -> Iterable[Finding]:
         yield Finding.make(
@@ -231,16 +233,15 @@ class LowConfidencePrivateKeyModel(Detector):
             normalized_end=len(normalized.normalized),
             type="PII",
             subtype="name",
-            confidence=0.2,
             risk="low",
             detector=self.name,
             suggested_action="warn",
         )
 
 
-def test_deterministic_private_key_overrides_low_model_confidence() -> None:
+def test_rule_private_key_overrides_low_risk_model_finding() -> None:
     text = "-----BEGIN PRIVATE KEY-----\nabc\n-----END PRIVATE KEY-----"
-    manager = HierarchicalDetectorManager(model_detectors=[LowConfidencePrivateKeyModel()])
+    manager = HierarchicalDetectorManager(model_detectors=[LowRiskPrivateKeyModel()])
     finding = manager.scan_text(text)[0]
     assert finding.subtype == "private_key"
     assert finding.risk == "critical"
@@ -266,7 +267,6 @@ class WeakSecretSignal(Detector):
             normalized_end=10,
             type="UNKNOWN_SECRET_CANDIDATE",
             subtype="opaque_token",
-            confidence=0.4,
             risk="low",
             detector=self.name,
             suggested_action="warn",
@@ -317,7 +317,6 @@ def test_custom_rule_detects_project_specific_pattern() -> None:
                                 "pattern": r"\bCUST-[0-9]{4}\b",
                                 "type": "LOCAL_CONTEXT",
                                 "subtype": "customer_id",
-                                "confidence": 0.88,
                                 "risk": "medium",
                                 "suggested_action": "redact",
                             }

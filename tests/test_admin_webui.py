@@ -81,6 +81,15 @@ def test_webui_assets_and_admin_api_require_no_authentication(tmp_path) -> None:
         assert i18n_js.status_code == 200
         lucide_js = client.get("/ui/assets/lucide.min.js")
         assert lucide_js.status_code == 200
+        brand_icon = client.get("/ui/assets/apg-icon.png")
+        assert brand_icon.status_code == 200
+        assert brand_icon.headers["content-type"] == "image/png"
+        assert brand_icon.content.startswith(b"\x89PNG\r\n\x1a\n")
+        for agent_icon in ("claude-code.svg", "opencode.svg", "codex.svg"):
+            icon = client.get(f"/ui/assets/{agent_icon}")
+            assert icon.status_code == 200
+            assert icon.headers["content-type"] == "image/svg+xml"
+            assert icon.text.startswith("<svg")
         assert "@license lucide v1.27.0 - ISC" in lucide_js.text
         assert "Privacy operations overview" in i18n_js.text
         assert "Detectors" in i18n_js.text
@@ -96,6 +105,11 @@ def test_webui_assets_and_admin_api_require_no_authentication(tmp_path) -> None:
         assert client.get("/api/admin/overview").status_code == 200
         assert client.get("/api/admin/overview", headers={"Authorization": "Bearer agent-key"}).status_code == 200
         assert client.get("/api/admin/overview", headers=_admin_headers()).status_code == 200
+        privacy_control = client.get("/api/admin/privacy-control")
+        assert privacy_control.status_code == 200
+        assert privacy_control.json()["enabled"] is True
+        assert privacy_control.json()["effective"] is True
+        assert privacy_control.json()["available"] is True
         assert client.get("/api/admin/audit/requests").status_code == 200
         assert client.get("/api/admin/audit/requests", headers={"Authorization": "Bearer agent-key"}).status_code == 200
         assert client.get("/api/admin/audit/operations?direction=replacement").status_code == 200
@@ -125,17 +139,85 @@ def test_webui_assets_and_admin_api_require_no_authentication(tmp_path) -> None:
         assert "agent-api-key" in page.text
         assert '"agent-key"' not in page.text
         assert "data-copy-connection" in page.text
-        assert "copy-claude-command" in page.text
-        assert "复制接入命令" in page.text
+        assert "copy-claude-command" not in page.text
+        assert 'class="agent-quickstart"' in page.text
+        assert "Agent 快捷接入" in page.text
+        assert 'data-copy-agent-setup="claude"' in page.text
+        assert 'data-copy-agent-setup="opencode"' in page.text
+        assert 'data-copy-agent-setup="codex-config"' in page.text
+        assert 'data-copy-agent-setup="codex-key"' in page.text
+        assert 'data-copy-agent-setup="aider"' not in page.text
+        assert 'data-lucide="bot"' in page.text
+        assert 'src="/ui/assets/claude-code.svg"' in page.text
+        assert 'src="/ui/assets/opencode.svg"' in page.text
+        assert 'src="/ui/assets/codex.svg"' in page.text
+        assert page.text.count('data-lucide="info"') >= 3
+        assert 'data-agent-guide="claude"' in page.text
+        assert 'data-agent-guide="opencode"' in page.text
+        assert 'data-agent-guide="codex"' in page.text
+        assert 'id="agent-guide-modal"' in page.text
+        assert "agent-setup-tags" not in page.text
+        assert "function openAgentGuide(kind)" in app_js.text
+        assert "agent-guide-meta" not in app_js.text
+        assert "~/.config/opencode/opencode.json" in app_js.text
+        assert "~/.codex/config.toml" in app_js.text
+        assert "查看 Claude Code 详细使用方法" in i18n_js.text
+        assert "View detailed Claude Code setup" in i18n_js.text
+        assert "<strong>Codex</strong>" in page.text
+        assert "Codex CLI" not in page.text
+        assert "<strong>Aider</strong>" not in page.text
+        assert "copyAgentSetup" in app_js.text
+        assert "function agentSetupText(kind)" in app_js.text
+        assert "ANTHROPIC_AUTH_TOKEN" in app_js.text
+        assert "@ai-sdk/openai-compatible" in app_js.text
+        assert 'wire_api = "responses"' in app_js.text
+        assert 'kind === "aider"' not in app_js.text
+        assert "Copied content includes the current local API key." in i18n_js.text
         assert "配置上游模型" in page.text
+        assert 'id="privacy-control"' in page.text
+        assert 'id="privacy-control-enabled"' in page.text
+        assert "APG 总开关" in page.text
+        assert "一键开启或关闭 APG 保护。" in page.text
+        assert "Turn APG protection on or off with one click." in i18n_js.text
+        assert 'api("/privacy-control")' in app_js.text
+        assert 'method: "PUT"' in app_js.text
+        assert "renderPrivacyControl" in app_js.text
+        assert "APG master switch" in i18n_js.text
+        assert ".privacy-control {" in styles.text
+        assert 'overview: ["LOCAL CONTROL PLANE", "概览"' in app_js.text
+        assert ".eyebrow, .section-kicker, .page-subtitle { display: none; }" in styles.text
+        assert "配置已在本机保存，密钥不会回显。" in app_js.text
+        assert "Saved locally; keys are never displayed." in i18n_js.text
+        assert "填写 Base URL 和 API Key。" in app_js.text
+        assert "已替换或折叠" in app_js.text
+        assert "本地保存" in app_js.text
+        assert '["工作区", "Workspace"]' in i18n_js.text
+        assert '["严格模式", "Strict"]' in i18n_js.text
+        assert 'system.strict_mode ? "开启" : "关闭"' in app_js.text
+        assert "确认后临时显示，关闭显示即清除。" in page.text
         assert "upstream-base-url-input" in page.text
         assert 'id="upstream-protocol"' in page.text
+        assert '<option value="" disabled>请选择格式</option>' in page.text
         assert 'value="openai_chat_completions"' in page.text
         assert 'value="openai_responses"' in page.text
         assert 'value="anthropic_messages"' in page.text
+        assert "const showingDefaults = editing && editingProfile && !editingProfile.persisted;" in app_js.text
+        assert 'setup.classList.toggle("is-editing", editing);' in app_js.text
+        assert "@media (min-width: 1100px)" in styles.text
+        assert ".upstream-setup:not(.is-editing) .upstream-profile-toolbar { grid-column: 2;" in styles.text
+        assert "nameInput.placeholder = showingDefaults" in app_js.text
+        assert "baseUrlInput.placeholder = showingDefaults" in app_js.text
+        assert "!selected.persisted" in app_js.text
+        assert "#upstream-protocol:invalid { color: var(--muted); }" in styles.text
+        assert "input::placeholder, textarea::placeholder { color: var(--muted); opacity: 1; }" in styles.text
         assert "data-connection-protocol" not in page.text
         assert "agent-openai-base-url" in page.text
         assert "agent-anthropic-base-url" in page.text
+        assert 'id="generate-agent-key"' in page.text
+        assert 'data-lucide="dices"' in page.text
+        assert 'aria-label="生成随机 API Key"' in page.text
+        assert 'api("/connection/api-key", {method: "POST"})' in app_js.text
+        assert "Generate random API key" in i18n_js.text
         assert 'api("/upstream-configuration"' in app_js.text
         assert 'data-locale="zh"' in page.text
         assert 'data-locale="en"' in page.text
@@ -149,7 +231,7 @@ def test_webui_assets_and_admin_api_require_no_authentication(tmp_path) -> None:
         assert '<button class="nav-item" type="button" data-view="protected">' in page.text
         assert '<i class="nav-icon" data-lucide="lock"></i><span>受保护值</span>' in page.text
         assert 'data-lucide="sliders-horizontal"' in page.text
-        assert '<span class="brand-mark" aria-hidden="true"><i data-lucide="shield-check"></i></span>' in page.text
+        assert '<span class="brand-mark" aria-hidden="true"><img src="/ui/assets/apg-icon.png" alt=""></span>' in page.text
         assert '<span class="brand-mark" aria-hidden="true">A</span>' not in page.text
         detector_icons = {
             "regex": "regex-reference",
@@ -161,16 +243,92 @@ def test_webui_assets_and_admin_api_require_no_authentication(tmp_path) -> None:
         for detector_type, detector_icon in detector_icons.items():
             assert f'{detector_type}: "{detector_icon}"' in app_js.text
         assert "moduleTypeIcon" in app_js.text
-        assert "DETECTOR_TAG_LABELS" in app_js.text
+        assert '<span>${escapeHtml(type)}</span>' in app_js.text
+        assert '${escapeHtml(type)} · ${escapeHtml(module.id)}' not in app_js.text
+        assert "module-meta" not in app_js.text
+        assert ".module-meta" not in styles.text
+        assert 'name="failure_mode"' in page.text
+        assert "失败时跳过模块（Fail open）" in page.text
+        assert "失败时中止流程（Fail closed）" in page.text
+        assert "Skip module on failure (Fail open)" in i18n_js.text
+        assert "Stop pipeline on failure (Fail closed)" in i18n_js.text
+        assert 'module.editable === false ? "managed" : "activated"' in app_js.text
+        assert 'status === "activated" ? "green"' in app_js.text
+        assert "moduleStatusLabel(status)" in app_js.text
+        assert 'activated: "已启用"' in app_js.text
+        assert 'module.editable === false ? "managed" : "ready"' not in app_js.text
+        assert 'data-module-drag="${index}"' in app_js.text
+        assert '${dragControl}<span class="module-order"' in app_js.text
+        assert 'iconMarkup("grip-vertical")' in app_js.text
+        assert "beginModuleDrag" in app_js.text
+        assert "reorderModule" in app_js.text
+        assert "data-module-up" not in app_js.text
+        assert "data-module-down" not in app_js.text
+        assert '["拖动排序", "Drag to reorder"]' in i18n_js.text
         assert 'uiText(configuration.name)' in app_js.text
-        assert 'detectorTagLabel(tag)' in app_js.text
+        assert "DETECTOR_TAG_LABELS" not in app_js.text
+        assert "detectorTagLabel" not in app_js.text
+        assert 'id="configuration-tags"' not in page.text
         assert 'function updateConfigurationFields(event)' in app_js.text
         assert 'class="lucide detector-regex-icon"' in app_js.text
         assert '<circle cx="9" cy="13" r="1.15"' in app_js.text
         assert "type.slice(0, 2)" not in app_js.text
-        assert ".brand-mark .lucide { display: block; width: 28px; height: 28px;" in styles.text
+        assert "<span>规则名称</span>" in app_js.text
+        assert "<span>风险等级（仅用于审计）</span>" in app_js.text
+        assert 'data-rule-field="name"' in app_js.text
+        assert 'data-rule-field="id"' not in app_js.text
+        assert "display_name: displayName" in app_js.text
+        assert 'data-rule-field="subtype"' not in app_js.text
+        assert 'data-rule-field="suggested_action"' not in app_js.text
+        assert "riskActionFields" not in app_js.text
+        assert "凭据文件名（逗号分隔）" not in app_js.text
+        assert "凭据文件风险" not in app_js.text
+        assert "普通路径动作" not in app_js.text
+        assert "凭据文件动作" not in app_js.text
+        assert "敏感上下文动作" not in app_js.text
+        assert "无上下文动作" not in app_js.text
+        assert "上下文窗口" not in app_js.text
+        assert "敏感上下文词" not in app_js.text
+        assert "误报提示词" not in app_js.text
+        assert "sensitive_words" not in app_js.text
+        assert "false_positive_hints" not in app_js.text
+        assert 'riskField("path", "模块", config.path_risk)' in app_js.text
+        assert 'riskField("entropy", "模块", config.risk || "medium")' in app_js.text
+        assert "风险等级（仅用于审计）" in app_js.text
+        assert "Module risk level (audit only)" in i18n_js.text
+        assert '<details class="rule-advanced full-row"><summary>高级选项（选填）</summary>' in app_js.text
+        advanced_rule_fields = app_js.text.split('<details class="rule-advanced full-row"><summary>高级选项（选填）</summary>', 1)[1].split("</details>", 1)[0]
+        assert "Flags（逗号分隔）" in advanced_rule_fields
+        assert '<details class="rule-advanced full-row" open>' not in app_js.text
+        assert "Validators（选填）" in app_js.text
+        assert "Required validators (optional)" in i18n_js.text
+        assert 'id="module-name-field"' in page.text
+        assert 'id="module-type-field"' in page.text
+        assert '$("#module-type-field").hidden = editing;' in app_js.text
+        assert '$("#module-name-field").classList.toggle("full-row", editing);' in app_js.text
+        assert ".module-type-field[hidden] { display: none; }" in styles.text
+        readonly_notice = "默认预设不可编辑，请复制或新建自定义配置。模块开关仍可直接调整。"
+        assert readonly_notice in app_js.text
+        assert readonly_notice in i18n_js.text
+        assert "Default presets cannot be edited. Duplicate one or create a custom configuration; module switches remain adjustable." in i18n_js.text
+        assert "只读模板" not in app_js.text
+        assert "只读模板" not in i18n_js.text
+        assert "Revision ${configuration.revision}" not in app_js.text
+        assert "async function updateModuleEnabled(index, enabled)" in app_js.text
+        assert "/modules/${encodeURIComponent(moduleId)}/enabled" in app_js.text
+        assert '${readonly || module.editable === false ? "disabled" : ""}' not in app_js.text
+        assert ".brand-mark { width: 34px; height: 34px; flex: 0 0 34px; display: grid; place-items: center; border: 0; background: transparent;" in styles.text
+        assert ".brand-mark" not in "\n".join(
+            line for line in styles.text.splitlines() if "border: 1px solid #4d7863" in line
+        )
+        assert ".brand-mark img { display: block; width: 34px; height: 34px; object-fit: contain; }" in styles.text
         assert ".module-symbol .lucide { display: block; width: 28px; height: 28px;" in styles.text
-        assert styles.text.count("transform: translate(1px, 1px);") == 2
+        assert ".module-row > .toggle { grid-column: 6; }" in styles.text
+        assert ".module-drag-handle { padding: 0; border: 0;" in styles.text
+        assert ".toggle span { position: absolute; inset: 0; margin: 0; border-radius: 12px; background: #cbd3cf; overflow: hidden;" in styles.text
+        assert "transform: translateY(-50%);" in styles.text
+        assert ".toggle input:checked + span::after { transform: translate(16px, -50%); }" in styles.text
+        assert styles.text.count("transform: translate(1px, 1px);") == 1
         assert "configuration-core-guard" not in page.text
         assert "core-guard-warning" not in page.text
         assert "updateCoreGuard" not in app_js.text
@@ -196,19 +354,53 @@ def test_webui_assets_and_admin_api_require_no_authentication(tmp_path) -> None:
         assert "还原记录" in page.text
         assert "audit-activity" not in page.text
         assert 'api("/audit/operations?" + params)' in app_js.text
+        assert 'class="audit-type"' in app_js.text
+        assert ".audit-operation-table .audit-type > * { grid-column: 2;" in styles.text
         assert "本地映射保留" in page.text
         assert "mapping-retention-enabled" in page.text
         assert "upstream-profile-select" in page.text
         assert "new-upstream-profile" in page.text
         assert "activate-upstream-profile" in page.text
+        assert '["暂无配置", "No saved configurations"]' in i18n_js.text
+        assert "`${translateCore(name)} (Active)`" in i18n_js.text
         assert "protected-show-raw" in page.text
         assert "visibility-button" in page.text
+        assert 'class="protected-cell-stack"' in app_js.text
+        assert ".protected-values-table td > .protected-cell-stack" in styles.text
+        assert ".metric-grid, .protected-summary { grid-template-columns: repeat(2, minmax(0, 1fr)); }" in styles.text
+        assert ".modal > form { max-height: calc(100vh - 40px); display: grid;" in styles.text
         assert 'api("/protected-values/retention"' in app_js.text
 
         audit_text = (tmp_path / "audit.jsonl").read_text(encoding="utf-8")
         assert "view_agent_connection_info" in audit_text
         assert "agent-key" not in audit_text
         assert "provider-key" not in audit_text
+
+
+def test_admin_can_regenerate_and_persist_agent_api_key(tmp_path, monkeypatch) -> None:
+    launcher_path = tmp_path / "launcher.json"
+    monkeypatch.setenv("APG_LAUNCHER_CONFIG_PATH", str(launcher_path))
+    cfg = _config(tmp_path)
+
+    with TestClient(create_app(cfg, AdminFakeUpstream())) as client:
+        rotated = client.post("/api/admin/connection/api-key")
+        assert rotated.status_code == 200
+        generated = rotated.json()["api_key"]
+        assert re.fullmatch(r"apg_local_[A-Za-z0-9_-]{32}", generated)
+        assert generated != "agent-key"
+        assert rotated.json()["available_key_count"] == 1
+        assert cfg.local_api_keys == {generated}
+
+        assert client.get("/v1/models", headers={"Authorization": "Bearer agent-key"}).status_code == 401
+        assert client.get("/v1/models", headers={"Authorization": f"Bearer {generated}"}).status_code == 200
+        assert client.get("/api/admin/connection").json()["api_key"] == generated
+
+    stored = json.loads(launcher_path.read_text(encoding="utf-8"))
+    assert stored["local_api_key"] == generated
+    assert os.stat(launcher_path).st_mode & 0o777 == 0o600
+    audit_text = (tmp_path / "audit.jsonl").read_text(encoding="utf-8")
+    assert "rotate_agent_api_key" in audit_text
+    assert generated not in audit_text
 
 
 def test_webui_can_persist_and_hot_apply_first_run_upstream_key(tmp_path, monkeypatch) -> None:
@@ -353,6 +545,62 @@ def test_webui_can_persist_and_hot_apply_first_run_upstream_key(tmp_path, monkey
     audit_text = (tmp_path / "audit.jsonl").read_text(encoding="utf-8")
     assert "configure_upstream_connection" in audit_text
     assert "saved-provider-key" not in audit_text
+
+
+def test_default_upstream_store_survives_app_restart(tmp_path, monkeypatch) -> None:
+    monkeypatch.delenv("APG_LAUNCHER_CONFIG_PATH", raising=False)
+    launcher_path = tmp_path / "launcher.json"
+    cfg = _config(tmp_path)
+
+    with TestClient(create_app(cfg, AdminFakeUpstream())) as client:
+        initial = client.get("/api/admin/upstream-configuration", headers=_admin_headers())
+        assert initial.status_code == 200
+        assert initial.json()["persistent"] is True
+        assert initial.json()["active_profile_id"] == "runtime_default"
+        assert initial.json()["profiles"][0]["persisted"] is False
+
+        saved = client.put(
+            "/api/admin/upstream-configuration",
+            headers=_admin_headers(),
+            json={
+                "profile_id": "runtime_default",
+                "name": "本地持久配置",
+                "protocol": ANTHROPIC_MESSAGES,
+                "base_url": "https://persisted.example/anthropic",
+                "api_key": "",
+            },
+        )
+        assert saved.status_code == 200
+        saved_body = saved.json()
+        assert saved_body["profiles"][0]["persisted"] is True
+        assert saved_body["active_profile_id"] != "runtime_default"
+        assert "provider-key" not in saved.text
+
+    assert launcher_path.exists()
+    assert os.stat(launcher_path).st_mode & 0o777 == 0o600
+
+    with TestClient(create_app(cfg, AdminFakeUpstream())) as restarted_client:
+        restored = restarted_client.get(
+            "/api/admin/upstream-configuration",
+            headers=_admin_headers(),
+        )
+        assert restored.status_code == 200
+        restored_body = restored.json()
+        assert restored_body["configured"] is True
+        assert restored_body["base_url"] == "https://persisted.example/anthropic"
+        assert restored_body["protocol"] == ANTHROPIC_MESSAGES
+        assert restored_body["profiles"] == [
+            {
+                "id": saved_body["active_profile_id"],
+                "name": "本地持久配置",
+                "protocol": ANTHROPIC_MESSAGES,
+                "base_url": "https://persisted.example/anthropic",
+                "has_api_key": True,
+                "active": True,
+                "persisted": True,
+            }
+        ]
+        assert "provider-key" not in restored.text
 
 
 def test_admin_audit_and_protected_values_never_return_raw_capabilities(tmp_path) -> None:
@@ -672,7 +920,6 @@ def test_detector_control_hot_reload_and_persistence(tmp_path) -> None:
         "pattern": r"\bpartner_live_[A-Za-z0-9_-]{8,}\b",
         "subtype": "partner_token",
         "type": "MACHINE_SECRET",
-        "confidence": 0.9,
         "risk": "high",
         "suggested_action": "redact",
         "flags": [],
@@ -688,6 +935,30 @@ def test_detector_control_hot_reload_and_persistence(tmp_path) -> None:
         catalog = catalog_response.json()
         assert [item["name"] for item in catalog["templates"][:4]] == ["凭据与密钥", "个人信息", "本地开发环境", "全面保护"]
         assert client.get("/api/admin/detectors", headers=_admin_headers()).status_code == 404
+        preset = client.get(
+            "/api/admin/detector-configurations/builtin.comprehensive",
+            headers=_admin_headers(),
+        ).json()
+        assert next(module for module in preset["modules"] if module["id"] == "entropy")["enabled"] is True
+        toggled = client.put(
+            "/api/admin/detector-configurations/builtin.comprehensive/modules/entropy/enabled",
+            headers=_admin_headers(),
+            json={"enabled": False},
+        )
+        assert toggled.status_code == 200
+        assert next(module for module in toggled.json()["modules"] if module["id"] == "entropy")["enabled"] is False
+        invalid_toggle = client.put(
+            "/api/admin/detector-configurations/builtin.comprehensive/modules/entropy/enabled",
+            headers=_admin_headers(),
+            json={"enabled": "yes"},
+        )
+        assert invalid_toggle.status_code == 400
+        reset_toggle = client.put(
+            "/api/admin/detector-configurations/builtin.comprehensive/modules/entropy/enabled",
+            headers=_admin_headers(),
+            json={"enabled": True},
+        )
+        assert reset_toggle.status_code == 200
 
         created = client.post(
             "/api/admin/detector-configurations",
@@ -761,6 +1032,8 @@ def test_detector_control_hot_reload_and_persistence(tmp_path) -> None:
     state_text = state_path.read_text(encoding="utf-8")
     assert "partner_live_abcdefghijkl" not in state_text
     assert '"version": 2' in state_text
+    audit_text = (tmp_path / "audit.jsonl").read_text(encoding="utf-8")
+    assert "toggle_preset_detector_module" in audit_text
 
     with TestClient(create_app(cfg, AdminFakeUpstream())) as client:
         persisted = client.get("/api/admin/detector-configurations", headers=_admin_headers()).json()
