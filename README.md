@@ -79,13 +79,9 @@ continue without directly exposing sensitive data to the cloud.
 
 ## 🛡️ How it works
 
-```mermaid
-flowchart LR
-    A["Agent or LLM client"] -->|"request"| B["APG<br/>detect + replace locally"]
-    B -->|"signed placeholders"| C["Cloud model"]
-    C -->|"response"| D["APG<br/>verify + restore locally"]
-    D -->|"answer or structured tool args"| E["User or local tool"]
-```
+<p align="center">
+  <img src="assets/branding/apg-flow-en.svg" width="100%" alt="APG detects and replaces sensitive values locally before a cloud request, then verifies and restores them for the user or local tool">
+</p>
 
 Given this local input:
 
@@ -101,12 +97,17 @@ Email <APG:v1:pii:...>, open /workspace/project-hash,
 and use key <APG:v1:secret:...>.
 ```
 
+After the model returns the placeholders, the authorized local result is:
+
+```text
+Email alice@example.test, open /Users/alice/private/project,
+and use key sk-example-not-a-real-key.
+```
+
 If the model needs a protected value, it keeps the placeholder unchanged. APG
 verifies the placeholder and restores the original only in the authorized local
 response or decoded structured tool argument. Raw values are never restored
 into upstream/model-visible traffic.
-
-Invalid, altered, expired, revoked, or cross-session placeholders fail closed.
 
 ## ⚡ Quick Start
 

@@ -75,13 +75,9 @@ APG 把原值留在本地，只向模型提供稳定的占位符。模型通常�
 
 ## 🛡️ 工作原理
 
-```mermaid
-flowchart LR
-    A["Agent 或 LLM 客户端"] -->|"请求"| B["APG<br/>本地检测与替换"]
-    B -->|"签名占位符"| C["云端模型"]
-    C -->|"响应"| D["APG<br/>本地验证与还原"]
-    D -->|"答案或结构化工具参数"| E["用户或本地工具"]
-```
+<p align="center">
+  <img src="assets/branding/apg-flow-zh.svg" width="100%" alt="APG 在云端请求前于本地检测并替换敏感值，再为用户或本地工具验证并还原原值">
+</p>
 
 以下本地输入：
 
@@ -97,11 +93,16 @@ Email <APG:v1:pii:...>, open /workspace/project-hash,
 and use key <APG:v1:secret:...>.
 ```
 
+模型返回占位符后，经授权的本地结果为：
+
+```text
+Email alice@example.test, open /Users/alice/private/project,
+and use key sk-example-not-a-real-key.
+```
+
 如果模型需要使用受保护值，它只需原样保留占位符。APG 会验证该占位符，并仅在
 经授权的本地响应或解码后的结构化工具参数中还原原值。原始值不会被还原到
 上游或模型可见的流量中。
-
-无效、被修改、已过期、已撤销或跨会话使用的占位符都会以 fail-closed 方式处理。
 
 <a id="quick-start"></a>
 

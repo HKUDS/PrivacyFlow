@@ -1,0 +1,48 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1400" height="260" viewBox="0 0 1400 260" role="img" aria-labelledby="title desc">
+  <title id="title">Agent Privacy Gateway 敏感值保护流程</title>
+  <desc id="desc">请求从 Agent 进入 APG，敏感值在发往云端模型前被替换为占位符。模型响应返回后，APG 仅在授权的本地目标中还原通过验证的原值。</desc>
+  <defs>
+    <marker id="arrow" markerWidth="10" markerHeight="10" refX="8" refY="5" orient="auto">
+      <path d="M0 0L10 5L0 10Z" fill="#4f625b"/>
+    </marker>
+    <filter id="shadow" x="-10%" y="-20%" width="120%" height="150%">
+      <feDropShadow dx="0" dy="4" stdDeviation="6" flood-color="#10251d" flood-opacity=".10"/>
+    </filter>
+  </defs>
+  <rect width="1400" height="260" rx="24" fill="#f6f9f7"/>
+  <g font-family="-apple-system, BlinkMacSystemFont, 'PingFang SC', 'Microsoft YaHei', sans-serif">
+    <g filter="url(#shadow)">
+      <rect x="30" y="58" width="210" height="144" rx="18" fill="#ffffff" stroke="#c8d7d1" stroke-width="2"/>
+      <rect x="300" y="42" width="230" height="176" rx="18" fill="#eaf6f0" stroke="#72aa90" stroke-width="2"/>
+      <rect x="590" y="58" width="200" height="144" rx="18" fill="#ffffff" stroke="#c8d7d1" stroke-width="2"/>
+      <rect x="850" y="42" width="230" height="176" rx="18" fill="#eaf6f0" stroke="#72aa90" stroke-width="2"/>
+      <rect x="1140" y="58" width="230" height="144" rx="18" fill="#ffffff" stroke="#c8d7d1" stroke-width="2"/>
+    </g>
+
+    <g text-anchor="middle" fill="#17231e">
+      <text x="135" y="116" font-size="22" font-weight="700">Agent 或客户端</text>
+      <text x="135" y="150" font-size="17" fill="#64756e">请求包含敏感值</text>
+
+      <text x="415" y="94" font-size="18" font-weight="800" fill="#16794e">APG · 本地</text>
+      <text x="415" y="132" font-size="23" font-weight="700">检测并替换</text>
+      <text x="415" y="166" font-size="17" fill="#52665e">原值留在设备上</text>
+
+      <text x="690" y="116" font-size="22" font-weight="700">云端模型</text>
+      <text x="690" y="150" font-size="17" fill="#64756e">只看到占位符</text>
+
+      <text x="965" y="94" font-size="18" font-weight="800" fill="#16794e">APG · 本地</text>
+      <text x="965" y="132" font-size="23" font-weight="700">验证并还原</text>
+      <text x="965" y="166" font-size="17" fill="#52665e">仅限授权目标</text>
+
+      <text x="1255" y="116" font-size="22" font-weight="700">用户或本地工具</text>
+      <text x="1255" y="150" font-size="17" fill="#64756e">收到原始值</text>
+    </g>
+
+    <g stroke="#4f625b" stroke-width="3" fill="none" marker-end="url(#arrow)">
+      <path d="M242 130H288"/>
+      <path d="M532 130H578"/>
+      <path d="M792 130H838"/>
+      <path d="M1082 130H1128"/>
+    </g>
+  </g>
+</svg>
