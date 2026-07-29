@@ -383,6 +383,9 @@ def test_webui_assets_and_admin_api_require_no_authentication(tmp_path) -> None:
         assert "upstream-profile-select" in page.text
         assert "new-upstream-profile" in page.text
         assert "activate-upstream-profile" in page.text
+        assert "#upstream-status { width: max-content; max-width: 100%; justify-self: end; justify-content: center; flex-wrap: nowrap; white-space: nowrap;" in styles.text
+        assert "minmax(220px, .85fr) max-content;" in styles.text
+        assert "#edit-upstream-key { grid-column: 4; grid-row: 2; justify-self: end;" in styles.text
         assert '["暂无配置", "No saved configurations"]' in i18n_js.text
         assert "`${translateCore(name)} (Active)`" in i18n_js.text
         assert "protected-show-raw" in page.text
