@@ -25,7 +25,7 @@
 <p align="center">
   <a href="#-quick-start">Quick Start</a> ·
   <a href="#-how-it-works">How It Works</a> ·
-  <a href="#-native-protocol-support">Protocols</a> ·
+  <a href="#-supported-api-formats">API Formats</a> ·
   <a href="#-security-boundary">Security</a> ·
   <a href="#-documentation">Docs</a>
 </p>
@@ -41,22 +41,34 @@
 
 ## Why APG?
 
-Coding agents routinely inspect `.env` files, logs, configuration, source code,
-local paths, and tool arguments. Blocking that context makes an Agent less
-useful; sending every raw value to a cloud model creates unnecessary exposure.
+Coding agents routinely encounter API keys, passwords, personal information,
+private paths, and other sensitive values in `.env` files, logs, configuration,
+source code, and tool arguments. Sending those values directly to a cloud model
+means trusting every provider and intermediary that handles the request. Data
+policies vary; some services may retain or reuse requests for model improvement
+or training. Unofficial or personal API relays make retention, access, and reuse
+even harder to assess.
 
-APG inserts a local boundary between the Agent and the model:
+Exposing a secret can also interrupt the task itself. A safety-aligned model may
+warn the user to revoke a credential, refuse to continue, or avoid using the
+value—even when the intended operation is legitimate. The user is then forced
+to replace, paste, or manage sensitive values manually, adding friction and
+more human-in-the-loop work.
 
-| Detect locally | Protect before upload | Stay protocol-native | Restore locally |
-| --- | --- | --- | --- |
-| Credentials, PII, local paths, and high-entropy values | Signed placeholders and stable path aliases replace raw values | Chat Completions, Responses, and Anthropic Messages remain separate wire formats | Verified values reappear in local answers and structured tool arguments |
+APG keeps the literal value local and gives the model a stable placeholder
+instead. The model only needs to know that a secret exists and where it should
+be used; it rarely needs to know the secret itself. APG verifies and restores
+the original value only at an authorized local destination, so the task can
+continue without directly exposing sensitive data to the cloud.
+
+| Detect locally | Protect before upload | Restore locally |
+| --- | --- | --- |
+| Credentials, PII, local paths, and high-entropy values | Signed placeholders and stable path aliases replace raw values | Verified values reappear in local answers and structured tool arguments |
 
 ### What makes APG different
 
 - **Transparent protection** — the model works with stable placeholders; the
   user receives authorized values back without manually decoding them.
-- **Native in, native out** — APG does not translate requests, responses,
-  streams, tool calls, or provider errors between API formats.
 - **Local control plane** — provider credentials, protected-value mappings,
   detector configuration, audit records, and optional models stay on the
   machine.
@@ -64,16 +76,14 @@ APG inserts a local boundary between the Agent and the model:
   session, workspace, mapping state, expiry, revocation, and sink.
 - **Inspectable behavior** — dry-run detectors, review protected mappings, and
   audit every replacement and restoration without storing raw values in logs.
-- **Agent-focused validation** — the repository includes deterministic and live
-  Claude Code/OpenCode matrices with explicit leak assertions.
 
 ## 🛡️ How it works
 
 ```mermaid
 flowchart LR
-    A["Agent or LLM client"] -->|"native request"| B["APG<br/>detect + replace locally"]
+    A["Agent or LLM client"] -->|"request"| B["APG<br/>detect + replace locally"]
     B -->|"signed placeholders"| C["Cloud model"]
-    C -->|"native response"| D["APG<br/>verify + restore locally"]
+    C -->|"response"| D["APG<br/>verify + restore locally"]
     D -->|"answer or structured tool args"| E["User or local tool"]
 ```
 
@@ -162,19 +172,15 @@ selection.
 The repository-level `./apg` wrapper is also available for development
 checkouts. Installed environments should use the `apg` command.
 
-## 🔌 Native protocol support
+## 🔌 Supported API formats
 
-APG deliberately keeps the three supported formats separate:
+APG accepts three API formats:
 
-| Format | Local endpoint | Upstream request | Streaming and errors |
-| --- | --- | --- | --- |
-| OpenAI Chat Completions | `POST /v1/chat/completions` | Chat Completions JSON | Preserved as Chat Completions SSE/errors |
-| OpenAI Responses | `POST /v1/responses` | Responses JSON | Preserved as Responses events/errors |
-| Anthropic Messages | `POST /v1/messages` | Anthropic Messages JSON | Preserved as Anthropic events/errors |
-
-This avoids lossy mappings between different message roles, content blocks,
-reasoning fields, tool-call representations, usage data, finish reasons, event
-types, and provider-specific errors.
+| Format | Local endpoint |
+| --- | --- |
+| OpenAI Chat Completions | `POST /v1/chat/completions` |
+| OpenAI Responses | `POST /v1/responses` |
+| Anthropic Messages | `POST /v1/messages` |
 
 ## ✨ Features
 
@@ -204,7 +210,6 @@ materialization layers.
 - detector presets, ordering, enablement, duplication, and advanced settings;
 - protected-value review, revocation, and retention controls;
 - replacement and restoration audit views;
-- sanitized checked-in live-Agent validation evidence;
 - responsive desktop and mobile management UI.
 
 ### Optional local models
@@ -305,11 +310,6 @@ The main branch keeps the standard regression suite:
 | Unit and API regression | Proxy, detector, mapping, stream, UI, and security behavior | `pytest -m 'not integration'` |
 | Networked local-model integration | Isolated runtime download and real Worker inference | `APG_RUN_LOCAL_MODEL_INTEGRATION=1 pytest -m integration tests/test_local_models_integration.py` |
 
-The deterministic E2E harness, live Claude Code/OpenCode matrix, leak assertions,
-and sanitized evidence are maintained on the
-[`dev` branch](https://github.com/zzhtx258/Agent-Privacy-Gateway/tree/dev/e2e_agent_tests).
-Live runs are opt-in and consume provider capacity.
-
 ## 📚 Documentation
 
 | Start here | What it covers |
@@ -318,8 +318,6 @@ Live runs are opt-in and consume provider capacity.
 | [`docs/webui.md`](docs/webui.md) | Management behavior, persistence, raw-value review, and UI security |
 | [`docs/threat_model.md`](docs/threat_model.md) | Threats, mitigations, assumptions, and residual risk |
 | [`docs/harness_integration.md`](docs/harness_integration.md) | Agent and tool-harness integration |
-| [`dev` validation suite](https://github.com/zzhtx258/Agent-Privacy-Gateway/tree/dev/e2e_agent_tests) | Deterministic E2E and live Agent matrix |
-| [`dev` validation evidence](https://github.com/zzhtx258/Agent-Privacy-Gateway/blob/dev/docs/live_validation_results.md) | Sanitized real-Agent validation results |
 | [`docs/roadmap.md`](docs/roadmap.md) | Planned work and open design areas |
 
 ## Development
@@ -355,7 +353,7 @@ APG_RUN_LOCAL_MODEL_INTEGRATION=1 pytest -m integration \
 
 Contributions are welcome. Start with [`CONTRIBUTING.md`](CONTRIBUTING.md), read
 the [`CODE_OF_CONDUCT.md`](CODE_OF_CONDUCT.md), and open an issue before large
-architectural or protocol changes.
+architectural or API contract changes.
 
 Please never include real credentials, protected values, private paths, or
 unsanitized Agent transcripts in issues or pull requests.

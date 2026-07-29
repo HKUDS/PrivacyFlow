@@ -25,7 +25,7 @@
 <p align="center">
   <a href="#quick-start">快速开始</a> ·
   <a href="#how-it-works">工作原理</a> ·
-  <a href="#protocols">协议支持</a> ·
+  <a href="#api-formats">API 格式</a> ·
   <a href="#security">安全边界</a> ·
   <a href="#documentation">文档</a>
 </p>
@@ -41,30 +41,35 @@
 
 ## 为什么需要 APG？
 
-编程 Agent 经常需要读取 `.env`、日志、配置文件、源代码、本地路径和工具参数。
-完全禁止这些上下文会显著降低 Agent 的能力，而把所有原始值发送给云端模型又会
-造成不必要的数据暴露。
+编程 Agent 经常会在 `.env`、日志、配置文件、源代码和工具参数中遇到 API Key、
+密码、个人信息、私有路径等敏感值。把这些原值直接发给云端模型，意味着必须信任
+请求链路上的模型供应商和所有中间服务。不同服务的数据政策并不相同，部分服务会
+留存请求，甚至将其用于模型改进或训练；如果使用来路不明的个人中转站，用户往往
+更难判断自己的数据最终去了哪里、由谁访问以及会被如何利用。
 
-APG 在 Agent 与模型之间建立一道本地边界：
+直接暴露密钥还可能妨碍任务进行。经过安全对齐的模型可能要求用户撤销密钥、拒绝
+继续处理，或刻意避开这些值，即使用户的操作本身完全合理。用户只能手动替换、
+复制或管理敏感数据，增加操作成本，也让本应自动完成的流程重新依赖人工介入。
 
-| 本地检测 | 上传前保护 | 保持原生协议 | 本地还原 |
-| --- | --- | --- | --- |
-| 检测凭据、个人信息、本地路径和高熵值 | 使用签名占位符和稳定路径别名替换原值 | Chat Completions、Responses 与 Anthropic Messages 始终是独立的传输格式 | 仅在本地答案和结构化工具参数中还原通过验证的值 |
+APG 把原值留在本地，只向模型提供稳定的占位符。模型通常只需要知道“这里有一个
+密钥”以及“应该在哪里使用它”，并不需要知道密钥的具体内容。APG 仅在经过授权的
+本地目标中验证并还原原值，使任务能够继续执行，同时避免把敏感信息直接暴露给
+云端模型。
+
+| 本地检测 | 上传前保护 | 本地还原 |
+| --- | --- | --- |
+| 检测凭据、个人信息、本地路径和高熵值 | 使用签名占位符和稳定路径别名替换原值 | 仅在本地答案和结构化工具参数中还原通过验证的值 |
 
 ### APG 有什么不同
 
 - **无感保护**——模型使用稳定的占位符继续工作，用户无需手动解码即可在本地看到
   经授权还原的原值。
-- **原生输入，原生输出**——APG 不在不同 API 格式之间转换请求、响应、流式事件、
-  工具调用或供应商错误。
 - **本地控制平面**——供应商凭据、受保护值映射、检测器配置、审计记录和可选模型
   均保存在本机。
 - **防止伪造占位符**——还原前会验证签名、会话、工作区、映射状态、有效期、
   撤销状态和目标出口。
 - **行为可检查**——可以试跑检测器、查看受保护映射，并在不把原值写入日志的
   前提下审计每次替换与还原。
-- **面向真实 Agent 验证**——仓库包含确定性测试，以及带明确泄漏断言的
-  Claude Code/OpenCode 真实矩阵。
 
 <a id="how-it-works"></a>
 
@@ -72,9 +77,9 @@ APG 在 Agent 与模型之间建立一道本地边界：
 
 ```mermaid
 flowchart LR
-    A["Agent 或 LLM 客户端"] -->|"原生请求"| B["APG<br/>本地检测与替换"]
+    A["Agent 或 LLM 客户端"] -->|"请求"| B["APG<br/>本地检测与替换"]
     B -->|"签名占位符"| C["云端模型"]
-    C -->|"原生响应"| D["APG<br/>本地验证与还原"]
+    C -->|"响应"| D["APG<br/>本地验证与还原"]
     D -->|"答案或结构化工具参数"| E["用户或本地工具"]
 ```
 
@@ -162,20 +167,17 @@ WebUI: http://127.0.0.1:8765/ui/
 在开发检出目录中也可以使用仓库根目录下的 `./apg` 包装脚本。安装后的环境
 应使用 `apg` 命令。
 
-<a id="protocols"></a>
+<a id="api-formats"></a>
 
-## 🔌 原生协议支持
+## 🔌 支持的 API 格式
 
-APG 有意将三种支持的格式完全分开：
+APG 支持三种 API 格式：
 
-| 格式 | 本地端点 | 上游请求 | 流式事件与错误 |
-| --- | --- | --- | --- |
-| OpenAI Chat Completions | `POST /v1/chat/completions` | Chat Completions JSON | 保持 Chat Completions SSE 与错误格式 |
-| OpenAI Responses | `POST /v1/responses` | Responses JSON | 保持 Responses 事件与错误格式 |
-| Anthropic Messages | `POST /v1/messages` | Anthropic Messages JSON | 保持 Anthropic 事件与错误格式 |
-
-这样可以避免在消息角色、内容块、推理字段、工具调用表示、用量信息、结束原因、
-事件类型和供应商特有错误之间进行有损映射。
+| 格式 | 本地端点 |
+| --- | --- |
+| OpenAI Chat Completions | `POST /v1/chat/completions` |
+| OpenAI Responses | `POST /v1/responses` |
+| Anthropic Messages | `POST /v1/messages` |
 
 ## ✨ 功能
 
@@ -204,7 +206,6 @@ APG 有意将三种支持的格式完全分开：
 - 检测器预设、排序、启停、复制和高级设置；
 - 受保护值查看、撤销和保留策略；
 - 替换与还原审计视图；
-- 仓库内经过脱敏的真实 Agent 验证证据；
 - 支持桌面与移动端的响应式管理界面。
 
 ### 可选本地模型
@@ -301,10 +302,6 @@ export APG_GC_INTERVAL_SECONDS=60
 | 单元与 API 回归 | 验证代理、检测器、映射、流式传输、WebUI 与安全行为 | `pytest -m 'not integration'` |
 | 联网本地模型集成 | 验证隔离运行环境下载和真实 Worker 推理 | `APG_RUN_LOCAL_MODEL_INTEGRATION=1 pytest -m integration tests/test_local_models_integration.py` |
 
-确定性 E2E、Claude Code/OpenCode 真实矩阵、泄漏断言和脱敏证据统一维护在
-[`dev` 分支](https://github.com/zzhtx258/Agent-Privacy-Gateway/tree/dev/e2e_agent_tests)。
-真实测试需要明确启用，并会消耗供应商容量。
-
 <a id="documentation"></a>
 
 ## 📚 文档
@@ -315,8 +312,6 @@ export APG_GC_INTERVAL_SECONDS=60
 | [`docs/webui.md`](docs/webui.md) | 管理行为、持久化、原值查看和 UI 安全 |
 | [`docs/threat_model.md`](docs/threat_model.md) | 威胁、缓解措施、假设和残余风险 |
 | [`docs/harness_integration.md`](docs/harness_integration.md) | Agent 与工具运行框架接入 |
-| [`dev` 验证套件](https://github.com/zzhtx258/Agent-Privacy-Gateway/tree/dev/e2e_agent_tests) | 确定性 E2E 和真实 Agent 矩阵 |
-| [`dev` 验证证据](https://github.com/zzhtx258/Agent-Privacy-Gateway/blob/dev/docs/live_validation_results.md) | 经过脱敏的真实 Agent 验证结果 |
 | [`docs/roadmap.md`](docs/roadmap.md) | 计划工作和待定设计 |
 
 ## 开发
