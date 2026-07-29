@@ -1,73 +1,252 @@
-# Agent Privacy Gateway
+<p align="center">
+  <img src="assets/branding/apg-icon-robot-shield-v2.png" width="128" alt="Agent Privacy Gateway robot shield logo">
+</p>
 
-[![CI](https://github.com/zzhtx258/Agent-Privacy-Gateway/actions/workflows/ci.yml/badge.svg)](https://github.com/zzhtx258/Agent-Privacy-Gateway/actions/workflows/ci.yml)
-[![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-blue.svg)](https://www.python.org/)
-[![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
+<h1 align="center">Agent Privacy Gateway</h1>
 
-Agent Privacy Gateway (APG) is a local privacy proxy for cloud coding agents and
-LLM clients. It detects sensitive values before a request leaves the machine,
-replaces them with signed placeholders, and restores authorized placeholders
-only at local user or tool sinks.
+<p align="center"><strong>Keep secrets local. Let agents keep working.</strong></p>
+
+<p align="center">
+  A local privacy boundary for cloud coding agents and LLM clients.<br>
+  Detect sensitive values, replace them before upload, and restore them only at authorized local sinks.
+</p>
+
+<p align="center">
+  <a href="https://github.com/zzhtx258/Agent-Privacy-Gateway/actions/workflows/ci.yml"><img src="https://github.com/zzhtx258/Agent-Privacy-Gateway/actions/workflows/ci.yml/badge.svg" alt="CI status"></a>
+  <a href="https://www.python.org/"><img src="https://img.shields.io/badge/Python-3.11%2B-3776AB?logo=python&logoColor=white" alt="Python 3.11 or newer"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/License-Apache--2.0-4C7A64" alt="Apache 2.0 license"></a>
+  <img src="https://img.shields.io/badge/Status-Alpha-C47A19" alt="Alpha status">
+</p>
+
+<p align="center">
+  <a href="#-quick-start">Quick Start</a> ·
+  <a href="#-how-it-works">How It Works</a> ·
+  <a href="#-native-protocol-support">Protocols</a> ·
+  <a href="#-security-boundary">Security</a> ·
+  <a href="#-documentation">Docs</a>
+</p>
+
+<p align="center">
+  <img src="assets/branding/apg-control-overview.png" width="100%" alt="APG Control overview with a synthetic provider configuration">
+</p>
 
 > [!IMPORTANT]
-> APG is pre-1.0 software. Review the [security model](#security-model) and test
-> it with your own workflows before using it with production credentials.
+> APG is pre-1.0 software. Keep the management interface on loopback, review the
+> [security boundary](#-security-boundary), and test your own Agent workflow
+> before using production credentials.
 
-## Why APG
+## Why APG?
 
-- OpenAI Chat Completions, OpenAI Responses, and Anthropic Messages are separate
-  native upstream formats. APG never translates requests, responses, streams,
-  tool calls, or errors between them.
-- Provider credentials stay in a mode-`0600` local configuration and are not
-  returned by the management API.
-- Deterministic credential, personal-information, and local-path detectors run
-  locally. Optional small models run in an isolated managed environment.
-- Signed, session-bound placeholders can be restored transparently in local
-  answers and structured tool arguments.
-- The management UI supports multiple named upstream configurations, detector
-  dry runs, protected-value review, audit review, and local-model management.
+Coding agents routinely inspect `.env` files, logs, configuration, source code,
+local paths, and tool arguments. Blocking that context makes an Agent less
+useful; sending every raw value to a cloud model creates unnecessary exposure.
 
-## Quick start
+APG inserts a local boundary between the Agent and the model:
 
-Requirements:
+| Detect locally | Protect before upload | Stay protocol-native | Restore locally |
+| --- | --- | --- | --- |
+| Credentials, PII, local paths, and high-entropy values | Signed placeholders and stable path aliases replace raw values | Chat Completions, Responses, and Anthropic Messages remain separate wire formats | Verified values reappear in local answers and structured tool arguments |
 
-- Python 3.11 or newer
-- macOS, Linux, or Windows
+### What makes APG different
 
-Install from a checkout:
+- **Transparent protection** — the model works with stable placeholders; the
+  user receives authorized values back without manually decoding them.
+- **Native in, native out** — APG does not translate requests, responses,
+  streams, tool calls, or provider errors between API formats.
+- **Local control plane** — provider credentials, protected-value mappings,
+  detector configuration, audit records, and optional models stay on the
+  machine.
+- **Defense against placeholder spoofing** — materialization checks signature,
+  session, workspace, mapping state, expiry, revocation, and sink.
+- **Inspectable behavior** — dry-run detectors, review protected mappings, and
+  audit every replacement and restoration without storing raw values in logs.
+- **Agent-focused validation** — the repository includes deterministic and live
+  Claude Code/OpenCode matrices with explicit leak assertions.
+
+## 🛡️ How it works
+
+```mermaid
+flowchart LR
+    A["Agent or LLM client"] -->|"native request"| B["APG<br/>detect + replace locally"]
+    B -->|"signed placeholders"| C["Cloud model"]
+    C -->|"native response"| D["APG<br/>verify + restore locally"]
+    D -->|"answer or structured tool args"| E["User or local tool"]
+```
+
+Given this local input:
+
+```text
+Email alice@example.test, open /Users/alice/private/project,
+and use key sk-example-not-a-real-key.
+```
+
+the model sees:
+
+```text
+Email <APG:v1:pii:...>, open /workspace/project-hash,
+and use key <APG:v1:secret:...>.
+```
+
+If the model needs a protected value, it keeps the placeholder unchanged. APG
+verifies the placeholder and restores the original only in the authorized local
+response or decoded structured tool argument. Raw values are never restored
+into upstream/model-visible traffic.
+
+Invalid, altered, expired, revoked, or cross-session placeholders fail closed.
+
+## ⚡ Quick Start
+
+### 1. Install
+
+Requirements: Python 3.11 or newer on macOS, Linux, or Windows.
 
 ```bash
 git clone https://github.com/zzhtx258/Agent-Privacy-Gateway.git
 cd Agent-Privacy-Gateway
+
 python3 -m venv .venv
 . .venv/bin/activate
 python -m pip install -e .
+```
+
+On Windows PowerShell, activate the environment with
+`.venv\Scripts\Activate.ps1`.
+
+### 2. Start APG
+
+```bash
 apg
 ```
 
 The first start creates `.apg/launcher.json`, a random local Agent API key, and
-a signing secret. Open the printed loopback WebUI URL, add an upstream
-configuration, and enable APG with the master switch.
+a signing secret. APG prints its loopback WebUI:
 
-Point clients at one of the local endpoints:
+```text
+Agent Privacy Gateway
+WebUI: http://127.0.0.1:8765/ui/
+```
 
-| Client format | Base URL |
+### 3. Connect an upstream
+
+Open the WebUI and:
+
+1. add a named upstream configuration;
+2. choose its exact API format;
+3. enter the provider Base URL and API key;
+4. save and enable the configuration;
+5. turn on the APG master switch.
+
+Provider keys are written to the local launcher configuration with mode `0600`
+where supported and are never returned by the management API.
+
+### 4. Point your Agent at APG
+
+Copy the Base URL and generated local API key from **Agent connection** in the
+WebUI. Select the model in the Agent itself—APG deliberately does not own model
+selection.
+
+| Agent request format | APG Base URL |
 | --- | --- |
 | OpenAI Chat Completions | `http://127.0.0.1:8765/v1` |
 | OpenAI Responses | `http://127.0.0.1:8765/v1` |
 | Anthropic Messages | `http://127.0.0.1:8765` |
 
-Use the local Agent API key shown in the WebUI. Select the model in the Agent or
-client itself; APG deliberately does not own Agent model selection. The client
-endpoint must match the active upstream format exactly.
+> [!CAUTION]
+> The Agent format must match the active upstream format exactly. APG does not
+> convert between Chat Completions, Responses, and Anthropic Messages.
 
 The repository-level `./apg` wrapper is also available for development
-checkouts. Installed environments should use the `apg` console command.
+checkouts. Installed environments should use the `apg` command.
 
-## Configuration
+## 🔌 Native protocol support
 
-The WebUI is the recommended configuration path. Advanced deployments can use
-environment variables:
+APG deliberately keeps the three supported formats separate:
+
+| Format | Local endpoint | Upstream request | Streaming and errors |
+| --- | --- | --- | --- |
+| OpenAI Chat Completions | `POST /v1/chat/completions` | Chat Completions JSON | Preserved as Chat Completions SSE/errors |
+| OpenAI Responses | `POST /v1/responses` | Responses JSON | Preserved as Responses events/errors |
+| Anthropic Messages | `POST /v1/messages` | Anthropic Messages JSON | Preserved as Anthropic events/errors |
+
+This avoids lossy mappings between different message roles, content blocks,
+reasoning fields, tool-call representations, usage data, finish reasons, event
+types, and provider-specific errors.
+
+## ✨ Features
+
+### Protection pipeline
+
+- deterministic credential and API-key rules;
+- deterministic personal-information rules;
+- local path detection and stable workspace aliases;
+- optional entropy/context heuristics;
+- optional local small-model detection;
+- session-bound signed placeholders and lifecycle-aware mappings;
+- streaming-safe replacement and restoration;
+- structured tool-argument materialization;
+- detector dry runs with per-finding module attribution;
+- configurable fail-open/fail-close behavior for detector failures.
+
+Risk levels are audit metadata. They do not change how protected data is
+replaced; enforcement remains in the policy, mapping, placeholder, and
+materialization layers.
+
+### Control and observability
+
+- one-click APG master switch;
+- multiple named upstream configurations;
+- random local Agent API-key generation;
+- bilingual English/Chinese WebUI;
+- detector presets, ordering, enablement, duplication, and advanced settings;
+- protected-value review, revocation, and retention controls;
+- replacement and restoration audit views;
+- sanitized checked-in live-Agent validation evidence;
+- responsive desktop and mobile management UI.
+
+### Optional local models
+
+The **Local model management** page accepts a Hugging Face repository/URL or an
+existing local directory. **Add and prepare** performs:
+
+```text
+inspect → prepare isolated runtime → download → real inference verification
+```
+
+APG does not install PyTorch into its own environment. It creates a versioned
+runtime under `.apg/runtimes/`, stores managed model data under `.apg/models/`,
+and communicates with a local worker over private JSON Lines. Remote custom code
+is disabled, and local model directories remain read-only.
+
+## 🔒 Security boundary
+
+APG protects sensitive values in traffic that actually passes through APG. Its
+scope is intentionally narrower than a sandbox or endpoint security product.
+
+| APG does | APG does not |
+| --- | --- |
+| Detect and replace configured sensitive values before upstream transmission | Stop an Agent process from reading local files directly |
+| Let Agent clients use a local key instead of the provider key, and never return provider keys in management responses | Approve tool calls or control the Agent's permissions |
+| Validate signed placeholders before local restoration | Control destinations contacted by locally executed tools |
+| Keep mappings, configuration, models, and audit state local | Replace a secrets manager, network policy, EDR, or OS sandbox |
+| Record sanitized replacement/restoration operations | Make a remotely exposed management endpoint safe |
+
+The management API and WebUI intentionally have **no application-layer
+authentication**. They must remain loopback-only. Never publish port `8765`,
+reverse-proxy the management routes, or bind APG to an untrusted network.
+
+A prompt-injected model can still request a local tool call that sends a
+materialized secret to an attacker. The Agent harness must gate tool execution
+and outbound destinations.
+
+Read the full [design and threat model](docs/design.md),
+[WebUI security notes](docs/webui.md), and [security policy](SECURITY.md).
+
+## ⚙️ Configuration and local state
+
+The WebUI is the recommended configuration path.
+
+<details>
+<summary><strong>Advanced environment configuration</strong></summary>
 
 ```bash
 export APG_UPSTREAM_API_KEY='provider-key'
@@ -95,120 +274,42 @@ export APG_GC_INTERVAL_SECONDS=60
 See [`config/example_policy.yaml`](config/example_policy.yaml) for policy
 settings.
 
-## How protection works
-
-Input:
-
-```text
-Email alice@example.test, path /Users/alice/private/project, key sk-example-...
-```
-
-Model-visible form:
-
-```text
-Email <APG:v1:pii:...>, path /workspace/project-hash, key <APG:v1:secret:...>
-```
-
-1. APG detects a value in local request content.
-2. It stores the mapping locally and sends a signed placeholder or path alias
-   upstream.
-3. If the model needs the value, it emits the placeholder unchanged.
-4. APG verifies the signature, session, workspace, mapping state, and sink.
-5. APG restores the value only in the local user-facing response or decoded
-   structured tool argument.
-
-Raw values are never restored into upstream/model-visible traffic. Invalid,
-altered, expired, revoked, or cross-session placeholders fail closed.
-
-## Detection
-
-The default pipeline combines:
-
-- deterministic credential and key rules;
-- deterministic personal-information rules;
-- local-path detection;
-- optional entropy/context heuristics;
-- optional local model detection.
-
-Risk levels are audit metadata; they do not change how protected data is
-replaced. Detector modules can choose fail-open or fail-close behavior under
-advanced settings. Enforcement remains in the policy, mapping, placeholder, and
-materialization layers rather than in model confidence scores.
-
-The WebUI can dry-run any saved detector configuration without activating it.
-The result highlights each finding and identifies the module that produced it.
-
-### Local models
-
-The Local model management page accepts a Hugging Face repository/URL or an
-existing local directory. **Add and prepare** performs:
-
-```text
-inspect → prepare isolated runtime → download → real inference verification
-```
-
-APG does not install PyTorch into its own environment. It creates a versioned
-runtime under `.apg/runtimes/`, stores managed model data under `.apg/models/`,
-and communicates with a local worker over private JSON Lines. Remote custom code
-is disabled. Local directories are read-only from APG's perspective.
-
-## Management and storage
-
-The management API and WebUI have no application-layer authentication. They
-must remain loopback-only. Never publish port `8765`, reverse-proxy the
-management routes, or bind APG to an untrusted network.
+</details>
 
 Local state defaults to `.apg/`:
 
 | Path | Contents |
 | --- | --- |
-| `launcher.json` | named upstream profiles, provider keys, local Agent key |
-| `apg.sqlite3` | protected-value mappings and operation records |
-| `detector-control.json` | detector configurations |
-| `local-models.json` | local-model catalog and validation state |
+| `launcher.json` | Named upstream profiles, provider keys, local Agent key |
+| `state.sqlite3` | Protected-value mappings and operation records |
+| `audit.jsonl` | Sanitized append-only audit events |
+| `detector-control.json` | Detector configurations |
+| `local-models.json` | Local-model catalog and validation state |
 | `models/` | APG-managed Hugging Face cache |
-| `runtimes/` | isolated model runtime |
+| `runtimes/` | Isolated model runtime |
 
 Secret-bearing files are created with restrictive permissions where supported.
 Place the state directory on encrypted storage and restrict access to the APG
 process user.
 
-## Security model
+## ✅ Validation
 
-APG protects values in traffic that actually passes through APG. It does not:
+APG ships with multiple validation layers:
 
-- sandbox an Agent or approve its tools;
-- stop a local process from reading files directly;
-- control destinations contacted by locally executed tools;
-- replace a secrets manager, endpoint security product, or network policy;
-- make an untrusted management endpoint safe.
+| Layer | Purpose | Command or evidence |
+| --- | --- | --- |
+| Unit and API regression | Proxy, detector, mapping, stream, UI, and security behavior | `pytest -m 'not integration'` |
+| Deterministic Agent harness | Offline synthetic leak scenarios | `python -m e2e_agent_tests.scripts.run_all` |
+| Live Agent matrix | Native Claude Code and OpenCode behavior | [`docs/live_validation_results.md`](docs/live_validation_results.md) |
+| Leak assertions | Upstream, workspace, audit, final-answer, and provider-key boundaries | [`docs/e2e_test_plan.md`](docs/e2e_test_plan.md) |
 
-A prompt-injected model can request a local tool call that sends a materialized
-secret to an attacker. The Agent harness must gate tool execution and outbound
-destinations. Read the full [design and threat model](docs/design.md) and
-[WebUI security notes](docs/webui.md). Report vulnerabilities according to
-[`SECURITY.md`](SECURITY.md).
+Checked-in live evidence is sanitized. Real-Agent runs are opt-in and consume
+provider capacity.
 
-## Development
+<details>
+<summary><strong>Run the native live-Agent matrix</strong></summary>
 
-```bash
-python3 -m venv .venv
-. .venv/bin/activate
-python -m pip install -e '.[dev]'
-pytest -m 'not integration'
-node --check src/gateway/webui/app.js
-node --check src/gateway/webui/i18n.js
-ruff check .
-```
-
-The deterministic Agent harness is offline:
-
-```bash
-python -m e2e_agent_tests.scripts.run_all
-```
-
-Real Agent validation is opt-in and consumes provider capacity. Because APG
-does not convert protocols, run each Agent separately with a matching saved
+Because APG does not convert protocols, run each Agent with a matching saved
 upstream profile:
 
 ```bash
@@ -223,17 +324,36 @@ python -m e2e_agent_tests.scripts.run_live_agents \
   --concurrency 4
 ```
 
-Use `--agents claude`, `--agents opencode`, `--model MODEL`, and
-`--concurrency N` to narrow a run. The runner asserts upstream, workspace,
-audit, final-answer, and provider-key leak boundaries. Checked-in evidence is
-sanitized; see:
+Use `--model MODEL` and `--concurrency N` to narrow or tune a run.
 
-- [`docs/live_validation_results.md`](docs/live_validation_results.md)
-- [`docs/live_agent_scenarios.html`](docs/live_agent_scenarios.html)
-- [`docs/e2e_test_plan.md`](docs/e2e_test_plan.md)
+</details>
 
-Networked local-model integration is excluded from normal tests. Run it only
-when downloads are intentional:
+## 📚 Documentation
+
+| Start here | What it covers |
+| --- | --- |
+| [`docs/design.md`](docs/design.md) | Architecture, trust boundaries, placeholders, and materialization |
+| [`docs/webui.md`](docs/webui.md) | Management behavior, persistence, raw-value review, and UI security |
+| [`docs/threat_model.md`](docs/threat_model.md) | Threats, mitigations, assumptions, and residual risk |
+| [`docs/harness_integration.md`](docs/harness_integration.md) | Agent and tool-harness integration |
+| [`docs/e2e_test_plan.md`](docs/e2e_test_plan.md) | Deterministic/live scenarios and leak assertions |
+| [`docs/live_validation_results.md`](docs/live_validation_results.md) | Sanitized real-Agent validation results |
+| [`docs/roadmap.md`](docs/roadmap.md) | Planned work and open design areas |
+
+## Development
+
+```bash
+python3 -m venv .venv
+. .venv/bin/activate
+python -m pip install -e '.[dev]'
+
+pytest -m 'not integration'
+node --check src/gateway/webui/app.js
+node --check src/gateway/webui/i18n.js
+ruff check .
+```
+
+Networked local-model integration is intentionally excluded from normal tests:
 
 ```bash
 APG_RUN_LOCAL_MODEL_INTEGRATION=1 pytest -m integration \
@@ -242,19 +362,25 @@ APG_RUN_LOCAL_MODEL_INTEGRATION=1 pytest -m integration \
 
 ## Project layout
 
-- [`src/gateway/`](src/gateway/) — gateway, detection, storage, proxy, and UI
-- [`tests/`](tests/) — unit and API regression tests
-- [`e2e_agent_tests/`](e2e_agent_tests/) — deterministic and live Agent matrix
-- [`docs/`](docs/) — design, operations, validation, and implementation notes
-- [`examples/`](examples/) — minimal client examples
+| Path | Purpose |
+| --- | --- |
+| [`src/gateway/`](src/gateway/) | Gateway, detection, storage, proxy, model worker, and WebUI |
+| [`tests/`](tests/) | Unit, API, stream, security, and WebUI regression tests |
+| [`e2e_agent_tests/`](e2e_agent_tests/) | Deterministic and live Agent validation matrix |
+| [`docs/`](docs/) | Design, operations, threat model, and validation evidence |
+| [`examples/`](examples/) | Minimal client and security examples |
 
 ## Contributing
 
-Contributions are welcome. Start with [`CONTRIBUTING.md`](CONTRIBUTING.md) and
-follow the [`CODE_OF_CONDUCT.md`](CODE_OF_CONDUCT.md). Please open an issue
-before large architectural changes.
+Contributions are welcome. Start with [`CONTRIBUTING.md`](CONTRIBUTING.md), read
+the [`CODE_OF_CONDUCT.md`](CODE_OF_CONDUCT.md), and open an issue before large
+architectural or protocol changes.
+
+Please never include real credentials, protected values, private paths, or
+unsanitized Agent transcripts in issues or pull requests.
 
 ## License
 
-Licensed under the [Apache License 2.0](LICENSE). Bundled third-party notices are
-kept under [`docs/vendor/`](docs/vendor/).
+Agent Privacy Gateway is licensed under the
+[Apache License 2.0](LICENSE). Bundled third-party notices are kept under
+[`docs/vendor/`](docs/vendor/).
