@@ -30,10 +30,6 @@
   <a href="#-documentation">Docs</a>
 </p>
 
-<p align="center">
-  <img src="assets/branding/apg-control-overview.png" width="100%" alt="APG Control overview with a synthetic provider configuration">
-</p>
-
 ## Why APG?
 
 Coding agents routinely encounter API keys, passwords, personal information,
