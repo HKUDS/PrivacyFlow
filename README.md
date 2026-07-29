@@ -16,8 +16,8 @@ only at local user or tool sinks.
 ## Why APG
 
 - OpenAI Chat Completions, OpenAI Responses, and Anthropic Messages are separate
-  upstream formats. Anthropic Messages traffic stays native rather than being
-  translated through OpenAI.
+  native upstream formats. APG never translates requests, responses, streams,
+  tool calls, or errors between them.
 - Provider credentials stay in a mode-`0600` local configuration and are not
   returned by the management API.
 - Deterministic credential, personal-information, and local-path detectors run
@@ -53,11 +53,13 @@ Point clients at one of the local endpoints:
 
 | Client format | Base URL |
 | --- | --- |
-| OpenAI Chat Completions / Responses | `http://127.0.0.1:8765/v1` |
+| OpenAI Chat Completions | `http://127.0.0.1:8765/v1` |
+| OpenAI Responses | `http://127.0.0.1:8765/v1` |
 | Anthropic Messages | `http://127.0.0.1:8765` |
 
 Use the local Agent API key shown in the WebUI. Select the model in the Agent or
-client itself; APG deliberately does not own Agent model selection.
+client itself; APG deliberately does not own Agent model selection. The client
+endpoint must match the active upstream format exactly.
 
 The repository-level `./apg` wrapper is also available for development
 checkouts. Installed environments should use the `apg` console command.
@@ -205,16 +207,23 @@ The deterministic Agent harness is offline:
 python -m e2e_agent_tests.scripts.run_all
 ```
 
-Real Claude Code and OpenCode validation is opt-in and consumes provider
-capacity:
+Real Agent validation is opt-in and consumes provider capacity. Because APG
+does not convert protocols, run each Agent separately with a matching saved
+upstream profile:
 
 ```bash
 python -m e2e_agent_tests.scripts.run_live_agents \
-  --launcher-config .apg/launcher.json \
+  --launcher-config .apg/openai-chat-launcher.json \
+  --agents opencode \
+  --concurrency 4
+
+python -m e2e_agent_tests.scripts.run_live_agents \
+  --launcher-config .apg/anthropic-launcher.json \
+  --agents claude \
   --concurrency 4
 ```
 
-Use `--agent claude`, `--agent opencode`, `--model MODEL`, and
+Use `--agents claude`, `--agents opencode`, `--model MODEL`, and
 `--concurrency N` to narrow a run. The runner asserts upstream, workspace,
 audit, final-answer, and provider-key leak boundaries. Checked-in evidence is
 sanitized; see:

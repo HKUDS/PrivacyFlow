@@ -6,6 +6,7 @@ from fastapi.testclient import TestClient
 
 from gateway.config import GatewayConfig, UpstreamConfig
 from gateway.server import APG_UPSTREAM_SYSTEM_PROMPT, create_app
+from gateway.upstream_protocol import ANTHROPIC_MESSAGES
 
 
 class FakeUpstream:
@@ -14,6 +15,16 @@ class FakeUpstream:
 
     async def request_json(self, method, path, payload=None):
         self.calls.append((method, path, payload))
+        if path == "/v1/messages":
+            return 200, {"content-type": "application/json"}, {
+                "id": "msg_test",
+                "type": "message",
+                "role": "assistant",
+                "model": payload.get("model", "claude-test"),
+                "content": [{"type": "text", "text": "ok"}],
+                "stop_reason": "end_turn",
+                "usage": {"input_tokens": 1, "output_tokens": 1},
+            }
         return 200, {"content-type": "application/json"}, {"choices": [{"message": {"content": "ok sk-proj-abcdefghijklmnopqrstuvwxyz123456"}}]}
 
     async def stream_request(self, method, path, payload=None):
@@ -150,7 +161,17 @@ def test_model_response_is_scanned_before_return(tmp_path) -> None:
 
 def test_anthropic_messages_forwards_sanitized_request(tmp_path) -> None:
     fake = FakeUpstream()
-    cfg = GatewayConfig(database_path=str(tmp_path / "state.sqlite3"), audit_log_path=str(tmp_path / "audit.jsonl"), signing_secret="secret", local_api_keys={"local"}, upstream=UpstreamConfig(base_url="https://upstream", api_key="up"))
+    cfg = GatewayConfig(
+        database_path=str(tmp_path / "state.sqlite3"),
+        audit_log_path=str(tmp_path / "audit.jsonl"),
+        signing_secret="secret",
+        local_api_keys={"local"},
+        upstream=UpstreamConfig(
+            base_url="https://upstream",
+            api_key="up",
+            protocol=ANTHROPIC_MESSAGES,
+        ),
+    )
     client = TestClient(create_app(cfg, fake))
     resp = client.post(
         "/v1/messages",
@@ -164,11 +185,10 @@ def test_anthropic_messages_forwards_sanitized_request(tmp_path) -> None:
     )
     assert resp.status_code == 200
     assert resp.json()["type"] == "message"
-    assert fake.calls[0][1] == "/v1/chat/completions"
+    assert fake.calls[0][1] == "/v1/messages"
     assert fake.calls[0][2]["model"] == "claude-sonnet-4-5-20250929"
     assert "sk-proj-" not in json.dumps(fake.calls[0][2])
-    assert fake.calls[0][2]["messages"][0]["role"] == "system"
-    assert APG_UPSTREAM_SYSTEM_PROMPT in fake.calls[0][2]["messages"][0]["content"]
+    assert APG_UPSTREAM_SYSTEM_PROMPT in fake.calls[0][2]["system"]
 
 
 def test_invalid_upstream_errors_handled_safely(tmp_path) -> None:

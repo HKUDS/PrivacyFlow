@@ -52,14 +52,18 @@ Run the strong pytest set:
 .venv/bin/python -m pytest e2e_agent_tests/tests
 ```
 
-Run real Claude Code and OpenCode scenarios through APG and DeepSeek (opt-in):
+Run real Agent scenarios through APG and a matching native upstream (opt-in).
+APG does not convert protocols, so Claude Code and OpenCode use separate
+launcher profiles and separate invocations:
 
 ```bash
-DEEPSEEK_API_KEY='<your key>' \
-.venv/bin/python -m e2e_agent_tests.scripts.run_live_agents --concurrency 4
-# Reuse the active locally saved upstream profile:
 .venv/bin/python -m e2e_agent_tests.scripts.run_live_agents \
-  --launcher-config .apg/launcher.json --concurrency 4
+  --launcher-config .apg/openai-chat-launcher.json \
+  --agents opencode --concurrency 4
+
+.venv/bin/python -m e2e_agent_tests.scripts.run_live_agents \
+  --launcher-config .apg/anthropic-launcher.json \
+  --agents claude --concurrency 4
 ```
 
 Live cases use isolated work directories, APG processes, ports, and SQLite
@@ -80,7 +84,7 @@ The scenario YAML files provide prompts, required files, expected agent actions,
 - memory writes
 - local file diffs
 
-`run_live_agents` launches Claude Code and OpenCode themselves in isolated synthetic repositories. Its prompts resemble ordinary user requests: they may be brief or underspecified, do not prescribe a tool sequence, and do not tell the Agent to avoid values that APG is responsible for protecting. Each Agent keeps one unpruned native-tool configuration across all scenarios, with no validator-only Bash pattern or scenario-specific file permission. The harness requests Read/Glob/Grep/Edit/Write/Bash; the actual Agent transcript remains authoritative about which native tools that product exposes and uses. Tool trajectories and accessed paths are recorded for diagnosis, not used as pass conditions.
+`run_live_agents` launches Claude Code or OpenCode in isolated synthetic repositories. Claude Code requires an `anthropic_messages` upstream profile; OpenCode requires `openai_chat_completions`. The runner rejects mismatched formats instead of relying on translation. Its prompts resemble ordinary user requests: they may be brief or underspecified, do not prescribe a tool sequence, and do not tell the Agent to avoid values that APG is responsible for protecting. Each Agent keeps one unpruned native-tool configuration across all scenarios, with no validator-only Bash pattern or scenario-specific file permission. The harness requests Read/Glob/Grep/Edit/Write/Bash; the actual Agent transcript remains authoritative about which native tools that product exposes and uses. Tool trajectories and accessed paths are recorded for diagnosis, not used as pass conditions.
 
 The live matrix contains 15 scenarios per agent: secret and PII validator calls, combined secret/PII validation, configuration debugging, PII summary, log analysis, absolute-path restoration, multi-file privacy review, `.env.example` generation, an exact sensitive-file copy, a customer reply, a generated debug script executed under a canary environment, boolean credential-status documentation, mixed credential/reference/status inventory, and a same-line secret-plus-diagnostic log. Success requires a machine-verifiable useful result and no privacy leak. Validators, file existence and semantics, output assertions, or SHA-256 equality establish task completion; upstream payloads, audit/server logs, final answers, changed files, APG-marker residue, private paths, and provider-key isolation establish privacy. Extra tool calls, alternative tool choices, accessed paths, materialization counts, and harmless extra workspace changes remain diagnostics.
 

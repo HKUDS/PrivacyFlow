@@ -1,10 +1,8 @@
 from __future__ import annotations
 
 import asyncio
-import json
 import os
 import uuid
-from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from dataclasses import replace
 from pathlib import Path
@@ -39,12 +37,8 @@ from gateway.local_models import LocalModelError, LocalModelService
 from gateway.placeholder_parser import APG_PLACEHOLDER_FORMAT_EXAMPLE, PlaceholderSigner
 from gateway.policy_engine import PolicyEngine
 from gateway.redaction_engine import (
-    BalancedStreamScanner,
     RedactionEngine,
-    StreamAuditSummary,
-    StreamProtocolError,
     ToolArgumentsJSONError,
-    iter_sse_data,
 )
 from gateway.response_scanner import ResponseScanner
 from gateway.state.session_manager import SessionManager, SessionScopeError
@@ -352,8 +346,10 @@ def create_app(config: GatewayConfig | None = None, upstream_client: UpstreamCli
         protocol = active_upstream_protocol()
         if endpoint == "/v1/responses":
             return protocol == OPENAI_RESPONSES
-        if endpoint in {"/v1/chat/completions", "/v1/messages"}:
-            return protocol in {OPENAI_CHAT_COMPLETIONS, ANTHROPIC_MESSAGES}
+        if endpoint == "/v1/chat/completions":
+            return protocol == OPENAI_CHAT_COMPLETIONS
+        if endpoint == "/v1/messages":
+            return protocol == ANTHROPIC_MESSAGES
         return True
 
     def upstream_protocol_unsupported_response(endpoint: str, *, anthropic: bool = False) -> JSONResponse:
@@ -555,362 +551,6 @@ def create_app(config: GatewayConfig | None = None, upstream_client: UpstreamCli
         )
         return JSONResponse(scanned_body, status_code=status, headers=headers)
 
-    def anthropic_text_from_content(content: Any) -> str:
-        if isinstance(content, str):
-            return content
-        if isinstance(content, list):
-            parts: list[str] = []
-            for block in content:
-                if isinstance(block, dict):
-                    if block.get("type") == "text":
-                        parts.append(str(block.get("text", "")))
-                    elif block.get("type") == "tool_result":
-                        result_content = block.get("content", "")
-                        if isinstance(result_content, str):
-                            parts.append(result_content)
-                        else:
-                            parts.append(json.dumps(result_content, ensure_ascii=False))
-            return "\n".join(part for part in parts if part)
-        return str(content)
-
-    def anthropic_to_openai(body: dict[str, Any]) -> dict[str, Any]:
-        messages: list[dict[str, Any]] = []
-        system = body.get("system")
-        if isinstance(system, str) and system:
-            messages.append({"role": "system", "content": system})
-        elif isinstance(system, list):
-            system_text = anthropic_text_from_content(system)
-            if system_text:
-                messages.append({"role": "system", "content": system_text})
-
-        for message in body.get("messages", []):
-            role = message.get("role")
-            content = message.get("content", "")
-            if role == "user" and isinstance(content, list) and any(isinstance(block, dict) and block.get("type") == "tool_result" for block in content):
-                text_parts: list[str] = []
-                for block in content:
-                    if not isinstance(block, dict):
-                        continue
-                    if block.get("type") == "tool_result":
-                        messages.append(
-                            {
-                                "role": "tool",
-                                "tool_call_id": block.get("tool_use_id", ""),
-                                "content": anthropic_text_from_content(block.get("content", "")),
-                            }
-                        )
-                    elif block.get("type") == "text":
-                        text_parts.append(str(block.get("text", "")))
-                if text_parts:
-                    messages.append({"role": "user", "content": "\n".join(text_parts)})
-                continue
-
-            if role == "assistant" and isinstance(content, list):
-                text_parts = []
-                tool_calls = []
-                for block in content:
-                    if not isinstance(block, dict):
-                        continue
-                    if block.get("type") == "text":
-                        text_parts.append(str(block.get("text", "")))
-                    elif block.get("type") == "tool_use":
-                        tool_calls.append(
-                            {
-                                "id": block.get("id", f"call_{uuid.uuid4().hex[:12]}"),
-                                "type": "function",
-                                "function": {
-                                    "name": block.get("name", ""),
-                                    "arguments": json.dumps(block.get("input", {}), ensure_ascii=False),
-                                },
-                            }
-                        )
-                msg: dict[str, Any] = {"role": "assistant", "content": "\n".join(text_parts) if text_parts else None}
-                if tool_calls:
-                    msg["tool_calls"] = tool_calls
-                messages.append(msg)
-                continue
-
-            messages.append({"role": role, "content": anthropic_text_from_content(content)})
-
-        requested_model = str(body.get("model") or "")
-        converted: dict[str, Any] = {
-            "model": requested_model,
-            "_apg_requested_model": requested_model,
-            "messages": messages,
-            "stream": bool(body.get("stream")),
-        }
-        if "max_tokens" in body:
-            converted["max_tokens"] = body["max_tokens"]
-        if "temperature" in body:
-            converted["temperature"] = body["temperature"]
-        if body.get("tools"):
-            converted["tools"] = [
-                {
-                    "type": "function",
-                    "function": {
-                        "name": tool.get("name"),
-                        "description": tool.get("description", ""),
-                        "parameters": tool.get("input_schema", {"type": "object", "properties": {}}),
-                    },
-                }
-                for tool in body["tools"]
-                if isinstance(tool, dict)
-            ]
-        if body.get("tool_choice"):
-            choice = body["tool_choice"]
-            if isinstance(choice, dict) and choice.get("type") == "tool":
-                converted["tool_choice"] = {"type": "function", "function": {"name": choice.get("name")}}
-            elif isinstance(choice, dict) and choice.get("type") == "any":
-                converted["tool_choice"] = "required"
-            elif isinstance(choice, dict) and choice.get("type") == "auto":
-                converted["tool_choice"] = "auto"
-        return converted
-
-    def openai_message_to_anthropic(body: dict[str, Any], model: str) -> dict[str, Any]:
-        choice = (body.get("choices") or [{}])[0]
-        message = choice.get("message") or {}
-        content: list[dict[str, Any]] = []
-        text = message.get("content")
-        if text:
-            content.append({"type": "text", "text": text})
-        for call in message.get("tool_calls") or []:
-            function = call.get("function") or {}
-            try:
-                args = json.loads(function.get("arguments") or "{}")
-            except json.JSONDecodeError:
-                args = {}
-            content.append({"type": "tool_use", "id": call.get("id"), "name": function.get("name"), "input": args})
-        finish = choice.get("finish_reason")
-        stop_reason = "tool_use" if finish == "tool_calls" else "max_tokens" if finish == "length" else "end_turn"
-        usage = body.get("usage") or {}
-        return {
-            "id": body.get("id", f"msg_{uuid.uuid4().hex[:24]}"),
-            "type": "message",
-            "role": "assistant",
-            "model": model,
-            "content": content,
-            "stop_reason": stop_reason,
-            "stop_sequence": None,
-            "usage": {
-                "input_tokens": usage.get("prompt_tokens", 0),
-                "output_tokens": usage.get("completion_tokens", 0),
-            },
-        }
-
-    def sse_event(event: str, data: dict[str, Any]) -> bytes:
-        return f"event: {event}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n".encode("utf-8")
-
-    async def openai_stream_to_anthropic(
-        chunks: AsyncIterator[bytes],
-        session_id: str,
-        model: str,
-        *,
-        privacy_enabled: bool = True,
-        on_complete: Any | None = None,
-    ) -> AsyncIterator[bytes]:
-        message_id = f"msg_{uuid.uuid4().hex[:24]}"
-        summary = StreamAuditSummary()
-        text_scanner: BalancedStreamScanner | None = None
-        text_started = False
-        tools: dict[int, dict[str, Any]] = {}
-        tool_order: list[int] = []
-        stop_reason = "end_turn"
-        output_tokens = 0
-        normal_end = False
-
-        def append_fragment(current: str, fragment: Any) -> str:
-            if not isinstance(fragment, str) or not fragment:
-                return current
-            if fragment == current:
-                return current
-            return current + fragment
-
-        try:
-            yield sse_event(
-                "message_start",
-                {
-                    "type": "message_start",
-                    "message": {
-                        "id": message_id,
-                        "type": "message",
-                        "role": "assistant",
-                        "model": model,
-                        "content": [],
-                        "stop_reason": None,
-                        "stop_sequence": None,
-                        "usage": {"input_tokens": 0, "output_tokens": 0},
-                    },
-                },
-            )
-            async for data in iter_sse_data(chunks):
-                if not data:
-                    continue
-                if data == "[DONE]":
-                    break
-                try:
-                    payload = json.loads(data)
-                except (ValueError, TypeError) as exc:
-                    raise StreamProtocolError("invalid_sse_json") from exc
-                if not isinstance(payload, dict):
-                    raise StreamProtocolError("invalid_sse_payload")
-                usage = payload.get("usage") or {}
-                if isinstance(usage, dict):
-                    output_tokens = int(usage.get("completion_tokens") or output_tokens)
-                choices = payload.get("choices")
-                if not isinstance(choices, list) or not choices:
-                    continue
-                choice = choices[0]
-                if not isinstance(choice, dict):
-                    raise StreamProtocolError("invalid_choice")
-                delta = choice.get("delta") or {}
-                if not isinstance(delta, dict):
-                    raise StreamProtocolError("invalid_delta")
-                finish = choice.get("finish_reason")
-                if finish == "tool_calls":
-                    stop_reason = "tool_use"
-                elif finish == "length":
-                    stop_reason = "max_tokens"
-
-                text = delta.get("content")
-                if isinstance(text, str):
-                    if not text_started:
-                        yield sse_event(
-                            "content_block_start",
-                            {
-                                "type": "content_block_start",
-                                "index": 0,
-                                "content_block": {"type": "text", "text": ""},
-                            },
-                        )
-                        text_started = True
-                        if privacy_enabled:
-                            text_scanner = BalancedStreamScanner(redactor, session_id)
-                    if privacy_enabled:
-                        assert text_scanner is not None
-                        safe_text, events = text_scanner.feed(text)
-                        summary.record(events)
-                    else:
-                        safe_text = text
-                    if safe_text:
-                        yield sse_event(
-                            "content_block_delta",
-                            {
-                                "type": "content_block_delta",
-                                "index": 0,
-                                "delta": {"type": "text_delta", "text": safe_text},
-                            },
-                        )
-
-                calls = delta.get("tool_calls")
-                if calls is not None and not isinstance(calls, list):
-                    raise StreamProtocolError("invalid_tool_calls")
-                for position, call in enumerate(calls or []):
-                    if not isinstance(call, dict):
-                        raise StreamProtocolError("invalid_tool_call")
-                    call_pos = int(call.get("index", position))
-                    if call_pos not in tools:
-                        tools[call_pos] = {"id": "", "name": "", "arguments": ""}
-                        tool_order.append(call_pos)
-                    tool = tools[call_pos]
-                    tool["id"] = append_fragment(tool["id"], call.get("id"))
-                    function = call.get("function") or {}
-                    if not isinstance(function, dict):
-                        raise StreamProtocolError("invalid_tool_function")
-                    tool["name"] = append_fragment(tool["name"], function.get("name"))
-                    tool["arguments"] = append_fragment(tool["arguments"], function.get("arguments"))
-
-            if text_started:
-                if privacy_enabled and text_scanner is not None:
-                    safe_text, events = text_scanner.flush()
-                    summary.record(events)
-                    if safe_text:
-                        yield sse_event(
-                            "content_block_delta",
-                            {
-                                "type": "content_block_delta",
-                                "index": 0,
-                                "delta": {"type": "text_delta", "text": safe_text},
-                            },
-                        )
-                yield sse_event("content_block_stop", {"type": "content_block_stop", "index": 0})
-
-            next_index = 1 if text_started else 0
-            if tools and stop_reason == "end_turn":
-                stop_reason = "tool_use"
-            prepared_tools: list[tuple[int, dict[str, Any], str]] = []
-            materialization_events: list[dict[str, Any]] = []
-            for call_pos in tool_order:
-                tool = tools[call_pos]
-                index = next_index
-                next_index += 1
-                if privacy_enabled:
-                    args, events = redactor.materialize_local_tool_arguments_json_with_events(
-                        tool["arguments"],
-                        session_id,
-                        tool_name=tool["name"],
-                    )
-                else:
-                    args, events = tool["arguments"], []
-                prepared_tools.append((index, tool, args))
-                materialization_events.extend(events)
-            summary.record(materialization_events)
-            for index, tool, args in prepared_tools:
-                yield sse_event(
-                    "content_block_start",
-                    {
-                        "type": "content_block_start",
-                        "index": index,
-                        "content_block": {
-                            "type": "tool_use",
-                            "id": tool["id"] or f"call_{uuid.uuid4().hex[:12]}",
-                            "name": tool["name"],
-                            "input": {},
-                        },
-                    },
-                )
-                yield sse_event(
-                    "content_block_delta",
-                    {
-                        "type": "content_block_delta",
-                        "index": index,
-                        "delta": {"type": "input_json_delta", "partial_json": args},
-                    },
-                )
-                yield sse_event("content_block_stop", {"type": "content_block_stop", "index": index})
-            yield sse_event(
-                "message_delta",
-                {
-                    "type": "message_delta",
-                    "delta": {"stop_reason": stop_reason, "stop_sequence": None},
-                    "usage": {"output_tokens": output_tokens},
-                },
-            )
-            normal_end = True
-            yield sse_event("message_stop", {"type": "message_stop"})
-        except StreamProtocolError as exc:
-            summary.record_protocol_error(exc)
-            summary.termination = "protocol_error"
-            tool_error = isinstance(exc, ToolArgumentsJSONError)
-            yield sse_event(
-                "error",
-                {
-                    "type": "error",
-                    "error": {
-                        "type": "api_error",
-                        "message": (
-                            "The upstream tool-call arguments were not valid JSON."
-                            if tool_error
-                            else "The upstream stream could not be safely parsed."
-                        ),
-                    },
-                },
-            )
-        finally:
-            if not normal_end and summary.termination == "completed":
-                summary.termination = "client_disconnected"
-            if on_complete is not None:
-                on_complete(summary.to_dict())
-
     async def anthropic_messages(request: Request, authorization: str | None, x_apg_session_id: str | None, x_api_key: str | None = None) -> Response:
         request_id = f"req_{uuid.uuid4().hex[:12]}"
         session_id = authenticate(authorization, x_apg_session_id, x_api_key)
@@ -929,17 +569,8 @@ def create_app(config: GatewayConfig | None = None, upstream_client: UpstreamCli
             sanitized, request_events = redactor.sanitize_json(body, session_id)
         else:
             sanitized, request_events = body, []
-        native_anthropic = active_upstream_protocol() == ANTHROPIC_MESSAGES
-        if native_anthropic:
-            upstream_payload = _inject_apg_anthropic_system(sanitized) if privacy_enabled else sanitized
-            response_model = str(upstream_payload.get("model", ""))
-            upstream_path = "/v1/messages"
-        else:
-            upstream_payload = anthropic_to_openai(sanitized)
-            if privacy_enabled:
-                upstream_payload = _inject_apg_system_prompt(upstream_payload)
-            response_model = str(upstream_payload.pop("_apg_requested_model", upstream_payload.get("model", "")))
-            upstream_path = "/v1/chat/completions"
+        upstream_payload = _inject_apg_anthropic_system(sanitized) if privacy_enabled else sanitized
+        upstream_path = "/v1/messages"
         endpoint = "/v1/messages"
         if privacy_enabled:
             audit.log(
@@ -985,24 +616,15 @@ def create_app(config: GatewayConfig | None = None, upstream_client: UpstreamCli
                     }
                 )
 
-            if native_anthropic:
-                local_stream = (
-                    redactor.scan_anthropic_stream(
-                        stream_body,
-                        session_id,
-                        on_complete=log_stream_complete,
-                    )
-                    if privacy_enabled
-                    else stream_body
-                )
-            else:
-                local_stream = openai_stream_to_anthropic(
+            local_stream = (
+                redactor.scan_anthropic_stream(
                     stream_body,
                     session_id,
-                    response_model,
-                    privacy_enabled=privacy_enabled,
-                    on_complete=log_stream_complete if privacy_enabled else None,
+                    on_complete=log_stream_complete,
                 )
+                if privacy_enabled
+                else stream_body
+            )
             return StreamingResponse(
                 local_stream,
                 status_code=status,
@@ -1040,27 +662,7 @@ def create_app(config: GatewayConfig | None = None, upstream_client: UpstreamCli
                         "detections": response_events,
                     }
                 )
-            if native_anthropic:
-                return JSONResponse(scanned_body, status_code=status, headers=headers)
-            error = scanned_body.get("error") if isinstance(scanned_body, dict) else {}
-            if not isinstance(error, dict):
-                error = {}
-            return JSONResponse(
-                {
-                    "type": "error",
-                    "error": {
-                        "type": str(error.get("type") or "api_error"),
-                        "message": str(error.get("message") or "Upstream request failed."),
-                    },
-                },
-                status_code=status,
-                headers=headers,
-            )
-        anthropic_body = (
-            scanned_body
-            if native_anthropic
-            else openai_message_to_anthropic(scanned_body, response_model)
-        )
+            return JSONResponse(scanned_body, status_code=status, headers=headers)
         if privacy_enabled:
             audit.log(
                 {
@@ -1073,7 +675,7 @@ def create_app(config: GatewayConfig | None = None, upstream_client: UpstreamCli
                     "detections": response_events,
                 }
             )
-        return JSONResponse(anthropic_body, status_code=status, headers=headers)
+        return JSONResponse(scanned_body, status_code=status, headers=headers)
 
     @app.get("/v1/models")
     async def models(authorization: str | None = Header(default=None), x_apg_session_id: str | None = Header(default=None), x_api_key: str | None = Header(default=None)) -> Response:

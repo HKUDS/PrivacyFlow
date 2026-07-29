@@ -29,6 +29,7 @@ from e2e_agent_tests.scripts.run_live_agents import (
     _extract_final_output,
     _extract_tool_summary,
     _extract_tool_trace,
+    incompatible_agents,
     _nonnegative_int,
     _positive_int,
     _run_live_matrix,
@@ -82,6 +83,13 @@ def test_live_agent_prerequisites_report_missing_key(monkeypatch) -> None:
     monkeypatch.delenv("DEEPSEEK_API_KEY", raising=False)
     missing = detect_live_prerequisites([])
     assert missing == ["DEEPSEEK_API_KEY"]
+
+
+def test_live_agents_require_native_matching_upstream_protocols() -> None:
+    assert incompatible_agents(["opencode"], "openai_chat_completions") == []
+    assert incompatible_agents(["claude"], "anthropic_messages") == []
+    assert incompatible_agents(["claude", "opencode"], "openai_chat_completions") == ["claude"]
+    assert incompatible_agents(["claude", "opencode"], "anthropic_messages") == ["opencode"]
 
 
 def test_live_runner_can_load_active_launcher_profile_without_printing_key(

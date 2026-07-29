@@ -1,36 +1,33 @@
 # Live Validation Results
 
-## Uniform-Tool 15-by-2 Matrix
+## Native-format live validation
 
 Date: 2026-07-28
 
-All 15 scenarios keep each real coding agent on one unpruned native-tool configuration. There are no scenario-specific file permissions, validator-only Bash patterns, required tool choices, or required action sequences. The harness requests `Read`, `Glob`, `Grep`, `Edit`, `Write`, and `Bash`; the effective Claude Code evidence uses Read/Bash/Write/Edit, while the OpenCode evidence uses read/bash/write/glob. Web fetching, external directories, and ordinary direct outbound network access remain uniformly isolated as test-environment boundaries. The provider key exists only in the APG server process.
+All 15 scenarios keep OpenCode on one unpruned native-tool configuration. There are no scenario-specific file permissions, validator-only Bash patterns, required tool choices, or required action sequences. The harness requests `Read`, `Glob`, `Grep`, `Edit`, `Write`, and `Bash`; the retained OpenCode evidence uses read/bash/write/glob. Web fetching, external directories, and ordinary direct outbound network access remain uniformly isolated as test-environment boundaries. The provider key exists only in the APG server process.
 
-Current effective result:
+Current effective result after removing all cross-protocol conversion:
 
 - The runner used its configurable concurrent scheduler with `concurrency=4` and `retries=1`. Each case retained an isolated repository, APG process, port, audit log, and SQLite database; completion progress was concurrent while `summary.json` retained deterministic Agent/scenario order. Failed combinations are retried independently and record `attempt_count`.
-- Claude Code `2.1.220` through APG's local Anthropic Messages endpoint and explicit Anthropic-to-OpenAI adapter to the configured OpenAI-compatible e2ez profile, model `gpt-5.6-terra`: `15/15`.
-- OpenCode `1.17.18` through APG's OpenAI Chat Completions endpoint to the same profile and model: `15/15`.
-- The effective 30 runs passed task-completion and privacy conditions. OpenCode `sanitized_customer_reply` passed on its second attempt; the other 29 combinations passed on their first effective attempt. The runs produced 125 API streams, 1,377 audited upstream replacements, and 113 successful `local_tool` materializations.
-- Raw canary leak files, final APG handles, failed materializations, omitted audit details, upstream private-path leaks, and provider-key file hits were all zero. All final-value authorization checks passed.
-- All 125 streams completed without an allowed disconnect. Parse errors, stream parse errors, tool-argument JSON errors, and protocol failures were zero. The isolated databases contain 62 per-run unique replacement/materialization representation pairs.
-- The first Claude attempt exposed a provider-specific adapter bug: APG silently rewrote any non-DeepSeek Anthropic model name to `deepseek-v4-flash`, which the selected upstream rejected with `404`. APG now preserves the requested model across protocol conversion. The runner also uses the selected `--model` for both Agents and passes only `ANTHROPIC_AUTH_TOKEN`, avoiding Claude Code's conflicting-auth warning. Protocol and runner regressions cover both fixes.
+- OpenCode `1.17.18` used APG's native OpenAI Chat Completions endpoint with the OpenAI-compatible e2ez profile and model `gpt-5.6-terra`: `15/15`.
+- The corresponding OpenCode runs passed task-completion and privacy conditions. `sanitized_customer_reply` passed on its second attempt; the other combinations passed on their first effective attempt.
+- The former Claude Code/e2ez result is withdrawn: it exercised the now-removed Anthropic-to-OpenAI conversion path and is not evidence for the current native-only design. Claude Code must be validated separately against an `anthropic_messages` profile.
+- Raw canary leak files, final APG handles, failed materializations, omitted audit details, upstream private-path leaks, and provider-key file hits were zero for the retained native-format evidence. All final-value authorization checks passed.
 - Large Agent requests no longer invoke an enabled local model once per tool-schema or protocol-metadata string. Deterministic rules still inspect those fields, while expensive model inference is restricted to content-bearing prompt/response fields and diagnostics are aggregated by module.
 - The live run exposed and verified fixes for three detector boundaries: grep-style `path:content` output no longer absorbs a credential into a path alias, zero-character audit previews now remain fully hidden, and split credentials in hex-dump ASCII gutters keep their high-signal key/JWT fragments protected. Hex columns are also excluded from phone-number detection.
 - Reserved placeholder-format examples are now treated consistently by the live assertion and APG detector. A model's literal `<APG:v1:secret:...>` format example is not mistaken for an unresolved signed handle, while real or malformed non-example APG markers still fail the assertion.
-- The upstream-format follow-up separates `openai_chat_completions`, `openai_responses`, and `anthropic_messages`. Matching Anthropic `/v1/messages` requests, responses, tool inputs, errors, and SSE stay in native Anthropic form while still using APG's leak and materialization guards. Named multi-profile upstream storage, a randomly generated local Agent key, and the unauthenticated loopback management plane are also covered.
+- `openai_chat_completions`, `openai_responses`, and `anthropic_messages` are strict native-only capabilities. A mismatched local endpoint returns `501`; APG does not translate requests, responses, tool calls, errors, or streams between formats.
 - The WebUI now presents local models as a one-input **Add and prepare** workflow. Runtime packages are atomically installed into a versioned `.apg/runtimes/model-runtime-v1/` environment, while a persistent offline Worker owns model loading and inference without receiving provider, Agent, signing, or Hugging Face credentials. Desktop `1440×1000` and mobile `390×844` renders had no page-width overflow or console errors; the mobile document and body widths both remained exactly 390px.
-- The final full offline regression is `338 passed`, with the explicit networked CPU tiny-model Worker integration test deselected. The deterministic E2E suite is `14/14`.
-- Sanitized fixture structure, compact trajectories, terminal-visible model text, tool inputs, tool outputs, errors, step token usage, per-run counters, and changed-file metadata are exported to `docs/live_agent_evidence.js` and rendered by `docs/live_agent_scenarios.html`. The export covers all 30 passing transcripts, 315 visible events, and 592 joined operation annotations. Protected fixture values, APG placeholders, token-like strings, and machine-local artifact paths are replaced during export; the original local run artifacts remain outside the repository and the active provider credential is absent.
+- The final full offline regression is `337 passed`, with the explicit networked CPU tiny-model Worker integration test deselected. The deterministic E2E suite is `14/14`.
+- Sanitized fixture structure, compact trajectories, terminal-visible model text, tool inputs, tool outputs, errors, step token usage, per-run counters, and changed-file metadata are exported to `docs/live_agent_evidence.js` and rendered by `docs/live_agent_scenarios.html`. Protected fixture values, APG placeholders, token-like strings, and machine-local artifact paths are replaced during export; the original local run artifacts remain outside the repository and active provider credentials are absent.
 
 Source evidence:
 
-- `<local-run-artifacts>/apg-open-source-ready-live/summary.json` (effective OpenCode `15/15`);
-- `<local-run-artifacts>/apg-open-source-ready-claude-rerun/summary.json` (`passed=true`, Claude `15/15`).
+- `<local-run-artifacts>/apg-open-source-ready-live/summary.json` (effective native OpenCode `15/15`).
 
-The checked-in evidence exporter applies the later passing Claude summary over
-the diagnostic first attempt. Thirty standalone artifact leak assertions also
-returned `ok=true`.
+The removed Claude conversion run is intentionally excluded from current
+support claims. Its historical artifact remains local-only and must not be
+used as native-format validation.
 
 ## API-Key Assignment Edge Matrix
 
@@ -156,7 +153,7 @@ The following result is historical and predates removal of one scenario from the
 The expanded run exposed and fixed issues that the original three-scenario smoke set did not cover:
 
 - Agent subprocesses inherited the full parent environment, including the provider key. The runner now uses an environment allowlist and gives the provider key only to the APG server.
-- Claude used `bypassPermissions`, which defeated the historical declared tool allowlist. That run switched to `dontAsk`; the current 15-by-2 matrix instead keeps one unpruned native-tool configuration per Agent across all scenarios and does not use validator-only Bash patterns.
+- Claude used `bypassPermissions`, which defeated the historical declared tool allowlist. That historical run switched to `dontAsk`; later matrices kept one unpruned native-tool configuration per Agent across all scenarios and did not use validator-only Bash patterns.
 - Entropy scanning falsely classified `scripts/validate_secret.py`, including stream fragments beginning mid-path, as a secret.
 - Path detection included sentence punctuation in aliases, producing paths such as `path_probe.txt.`.
 - Child paths received unrelated aliases instead of preserving the workspace hierarchy. Existing parent aliases now produce stable child suffixes such as `/workspace/project-hash/scripts/validate_secret.py`.

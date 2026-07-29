@@ -180,9 +180,48 @@ def test_privacy_control_bypasses_native_anthropic_system_and_scanning(tmp_path)
         assert response.json() == response_body
 
 
-def test_privacy_control_bypasses_converted_anthropic_stream_scanning(tmp_path) -> None:
-    upstream = RecordingUpstream()
-    with TestClient(create_app(config(tmp_path), upstream)) as client:
+def test_privacy_control_bypasses_native_anthropic_stream_scanning(tmp_path) -> None:
+    events = [
+        {
+            "type": "message_start",
+            "message": {
+                "id": "msg_1",
+                "type": "message",
+                "role": "assistant",
+                "model": "claude",
+                "content": [],
+                "stop_reason": None,
+                "usage": {"input_tokens": 1, "output_tokens": 0},
+            },
+        },
+        {
+            "type": "content_block_start",
+            "index": 0,
+            "content_block": {"type": "text", "text": ""},
+        },
+        {
+            "type": "content_block_delta",
+            "index": 0,
+            "delta": {"type": "text_delta", "text": SECRET},
+        },
+        {"type": "content_block_stop", "index": 0},
+        {
+            "type": "message_delta",
+            "delta": {"stop_reason": "end_turn", "stop_sequence": None},
+            "usage": {"output_tokens": 1},
+        },
+        {"type": "message_stop"},
+    ]
+    upstream = RecordingUpstream(
+        stream_chunks=[
+            (
+                f"event: {event['type']}\n"
+                f"data: {json.dumps(event)}\n\n"
+            ).encode()
+            for event in events
+        ]
+    )
+    with TestClient(create_app(config(tmp_path, protocol=ANTHROPIC_MESSAGES), upstream)) as client:
         disable_apg(client)
         payload = {
             "model": "claude",

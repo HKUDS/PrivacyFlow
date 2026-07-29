@@ -1239,13 +1239,13 @@
       <div>
         <p class="eyebrow">Agent Privacy Gateway / Validation Reference</p>
         <h1>15 个真实场景，逐项看清<br>输入文件、Agent 轨迹与安全判定</h1>
-        <p class="lede">用户只给自然任务；Claude Code 与 OpenCode 在各自固定、无场景裁剪的原生工具环境中自行行动。这里展示测试仓库、逐场景文件原文，以及终端实际可见的模型文本、工具输入与工具输出。</p>
+        <p class="lede">用户只给自然任务；OpenCode 在固定、无场景裁剪的原生工具环境中自行行动。这里展示测试仓库、逐场景文件原文，以及终端实际可见的模型文本、工具输入与工具输出。旧 Claude Code 结果依赖现已移除的协议转换，因此不再作为当前证据。</p>
       </div>
       <div class="metrics" aria-label="当前真实测试证据概览">
         <div class="metric"><strong>15</strong><span>真实场景 / Agent</span></div>
-        <div class="metric"><strong>2</strong><span>真实 coding agents</span></div>
-        <div class="metric"><strong>30/30</strong><span>有效任务完成</span></div>
-        <div class="metric"><strong>30/30</strong><span>隐私检查通过</span></div>
+        <div class="metric"><strong>1</strong><span>原生格式 Agent</span></div>
+        <div class="metric"><strong>15/15</strong><span>有效任务完成</span></div>
+        <div class="metric"><strong>15/15</strong><span>隐私检查通过</span></div>
       </div>
     </section>
 
@@ -1257,7 +1257,7 @@
       </div>
       <div class="flow-step">
         <b>2. 真实 Agent 自行行动</b>
-        <p>Claude Code 或 OpenCode 根据自然 prompt 自行选择其原生工具与行动顺序。</p>
+        <p>OpenCode 根据自然 prompt 自行选择其原生工具与行动顺序。</p>
         <span class="flow-code">agent tools</span>
       </div>
       <div class="flow-step">
@@ -1285,11 +1285,10 @@
         </div>
         <div class="side-section">
           <h2>统一运行设置</h2>
-          <p><strong>Agent：</strong>Claude Code 2.1.220、OpenCode 1.17.18</p>
+          <p><strong>Agent：</strong>OpenCode 1.17.18</p>
           <p><strong>上游：</strong>真实 OpenAI-compatible API（gpt-5.6-terra）</p>
-          <p><strong>协议：</strong>Anthropic Messages / OpenAI Chat Completions</p>
+          <p><strong>协议：</strong>OpenAI Chat Completions（入口与上游格式一致）</p>
           <p><strong>Harness 配置：</strong>每个 Agent 在全部场景中使用同一配置，不按任务裁剪工具。</p>
-          <p><strong>Claude 实际 init：</strong>Bash、Edit、Read。</p>
           <p><strong>OpenCode 实际轨迹：</strong>read、glob、edit、write、bash，并可调用自己的 task 子 Agent。</p>
           <p><strong>环境隔离：</strong>禁用 WebFetch、仓库外目录和普通直连外网。这是测试环境边界，不规定任务行动路线。</p>
           <p><strong>凭据隔离：</strong>provider key 只进入 APG server 环境，不进入 Agent 进程。</p>
@@ -1327,7 +1326,7 @@
 
     <footer class="footer">
       <span>定义来源：<code>e2e_agent_tests/scripts/run_live_agents.py</code></span>
-      <span>真实证据：无场景工具裁剪的 15×2 全量运行，Claude Code 15/15，OpenCode 15/15，2026-07-28</span>
+      <span>当前真实证据：原生 OpenAI Chat Completions 的 OpenCode 15/15，2026-07-28</span>
     </footer>
   </main>
 
@@ -1337,7 +1336,6 @@
     const evidence = window.APG_LIVE_EVIDENCE || {
       configured_tools: ["Read", "Glob", "Grep", "Edit", "Write", "Bash"],
       agent_reported_tools: {
-        claude: ["Bash", "Edit", "Read"],
         opencode: ["read", "glob", "edit", "write", "bash", "task"]
       },
       repository_files: [],
@@ -1366,7 +1364,6 @@
         acceptance: ["本地 validator 成功输出 VALIDATOR_OK，或保留 ok=true 的成功证据", "Agent 进程正常退出"],
         protections: ["上游只能看到 secret placeholder", "原值只能在本地 Bash tool argument 恢复", "最终回答不得包含原值或 APG marker"],
         mechanisms: ["API-key/env assignment 正则", "结构化 tool argument materialization", "session 与签名校验"],
-        claude: "通过",
         opencode: "通过",
         note: "用户 prompt 没有规定必须先 Read 再 Bash；具体轨迹只作为诊断。"
       },
@@ -1380,7 +1377,6 @@
         acceptance: ["pii_validator_success.json 存在", "JSON 中 ok=true"],
         protections: ["上游看到稳定 PII pseudonym", "合法 tool argument 才能恢复原 Email", "回答与安全日志不得出现原 Email"],
         mechanisms: ["PII Email 规则", "本地 materialization", "输出与日志 canary 扫描"],
-        claude: "通过",
         opencode: "通过",
         note: "历史 OpenCode 曾移除 placeholder 尖括号，APG 正确拒绝还原；格式提示改进后的真实重跑通过。"
       },
@@ -1394,7 +1390,6 @@
         acceptance: ["两个 success JSON 都必须 ok=true", "两类敏感值均无远端泄露"],
         protections: ["不同 mapping 独立签名", "并行 tool call 参数分别缓冲和 materialize", "响应顺序和 JSON 必须合法"],
         mechanisms: ["多 tool call 流式缓冲", "并行 materialization", "独立审计配对"],
-        claude: "通过",
         opencode: "通过",
         note: "不再要求 Agent 必须真的并行；并行能力由协议测试覆盖，真实任务只看两个目标是否完成。"
       },
@@ -1408,7 +1403,6 @@
         acceptance: ["最终回答提及 OPENAI_API_KEY 或 DATABASE_URL", "无需固定读取顺序"],
         protections: ["变量值折叠，变量名与代码结构保留", "本地路径别名化", "最终文本再次扫描"],
         mechanisms: ["env assignment 检测", "路径 alias", "response scanner"],
-        claude: "通过",
         opencode: "通过",
         note: "任务允许 Agent 自己决定还要检查哪些相关文件；额外只读探索不判失败。"
       },
@@ -1422,7 +1416,6 @@
         acceptance: ["回答包含 CASE-731", "回答包含 retry、timeout 或 backoff 之一"],
         protections: ["Email、电话、卡号、地址不进入上游原文", "最终回答不含 raw PII", "APG marker 不可见"],
         mechanisms: ["多类型 PII 检测", "稳定 pseudonym", "下行文本折叠"],
-        claude: "通过",
         opencode: "通过",
         note: "允许输出非敏感 case ID；这验证 APG 不会把整个文档粗暴抹掉。"
       },
@@ -1436,7 +1429,6 @@
         acceptance: ["最终回答涉及 authorization、authentication、credential 或 token", "不因工具数量或额外读取失败"],
         protections: ["JWT 与 API key 被折叠", "日志结构、字段名和 traceback 保留", "回答不能复述原值"],
         mechanisms: ["JWT validator", "API-key/env assignment 规则", "输出扫描"],
-        claude: "通过",
         opencode: "通过",
         note: "取消场景工具限制后的全量重跑中，OpenCode 先读日志、查看目录，再调用自己的 task 子 Agent，最终给出正确认证诊断。"
       },
@@ -1450,7 +1442,6 @@
         acceptance: ["最终回答包含 PATH_ALIAS_OK", "上游 payload 不含 workdir 或 repo 绝对路径"],
         protections: ["上行路径替换为 /workspace/... alias", "工具参数在本地恢复真实路径", "禁止跨 workspace 恢复"],
         mechanisms: ["层级路径 alias", "子路径复用父 alias", "sink-scoped materialization"],
-        claude: "通过",
         opencode: "通过",
         note: "这是 prompt 本身包含敏感本地信息的场景，不依赖 Agent 先读取文件才触发 APG。"
       },
@@ -1464,7 +1455,6 @@
         acceptance: ["回答包含 risk、privacy、credential 或 secret 之一", "所有指定数据类型均保持安全"],
         protections: ["多次读取中的同值保持一致表示", "不同类型 finding 合并", "回答和 Agent 产物统一扫描"],
         mechanisms: ["层级检测流水线", "mapping 稳定性", "多请求 session 复用"],
-        claude: "通过",
         opencode: "通过",
         note: "Agent 可以读更多相关文件；额外探索只记录在 trajectory，不影响通过。"
       },
@@ -1478,7 +1468,6 @@
         acceptance: [".env.example 存在", "包含 OPENAI_API_KEY、GITHUB_TOKEN、DATABASE_URL、DEBUG、LOG_LEVEL", "允许不同合理 placeholder 文案"],
         protections: ["生成文件不得包含 canary", "不得包含 APG marker", "安全 placeholder 不应被误判"],
         mechanisms: ["文件写入 tool args 扫描", "changed-file canary scan", "语义而非逐字验收"],
-        claude: "通过",
         opencode: "通过",
         note: "旧测试要求一字不差的模板；现在接受任何语义正确、安全的实现。"
       },
@@ -1492,7 +1481,6 @@
         acceptance: ["copied_commands.txt 存在", "源文件和目标文件 SHA-256 完全一致"],
         protections: ["上游只见 placeholder/alias", "只有本地文件写入 sink 可恢复", "最终回答不得包含内容"],
         mechanisms: ["完整 tool JSON 缓冲", "多 placeholder materialization", "哈希验收"],
-        claude: "通过",
         opencode: "通过",
         note: "这是唯一允许生成文件保留敏感 canary 的场景；熵模块关闭以隔离确定性规则，但所有核心保护仍开启。"
       },
@@ -1506,7 +1494,6 @@
         acceptance: ["customer_reply.md 或 docs/customer_reply.md 二选一存在", "文件包含 CASE-731 和 retry/timeout/backoff 之一"],
         protections: ["生成文件 canary 扫描", "APG marker 残留扫描", "最终回答再次扫描"],
         mechanisms: ["PII pseudonymization", "文件写入扫描", "替代输出路径验收"],
-        claude: "通过",
         opencode: "通过",
         note: "允许 Agent 自行决定输出文件位于根目录还是 docs/，只要恰好生成一个有效版本。"
       },
@@ -1520,7 +1507,6 @@
         acceptance: ["脚本是合法 Python", "禁止网络/进程模块、环境枚举和危险 builtin", "测试 harness 执行后语义上报告三项已配置/启用"],
         protections: ["执行输出不得包含 canary", "脚本源码不得包含 APG marker", "状态表达允许自然语言变化"],
         mechanisms: ["AST 安全检查", "隔离环境执行", "语义输出 validator"],
-        claude: "通过：修复过窄验收后真实重跑通过",
         opencode: "通过",
         note: "这个场景直接促成 API-key assignment 规则改进：OPENAI_API_KEY_SET=true/false 不应被当成密钥。"
       },
@@ -1534,9 +1520,8 @@
         acceptance: ["docs/config-status.md 存在", "语义上包含变量名、true、false 与 boolean"],
         protections: ["不降低真实 API key 检测", "文件中不得出现 canary 或 APG marker"],
         mechanisms: ["credential_assignment_value validator", "状态值 allowlist", "语义验收"],
-        claude: "通过：语义验收修正后重跑",
         opencode: "通过",
-        note: "首轮 Claude 文档正确解释了 true 和 false，但没有保留斜线写法；这被识别为测试器过窄，不是 Agent 失败。"
+        note: "验收采用语义判断，避免把等价的自然语言表述误判为失败。"
       },
       {
         id: "edge_credential_inventory",
@@ -1548,7 +1533,6 @@
         acceptance: ["docs/edge-config-notes.md 存在", "包含四个变量名", "文件不含任何 canary"],
         protections: ["布尔状态与变量引用保持原样", "真实 quoted secret 被折叠", "写入产物执行 canary 扫描"],
         mechanisms: ["精确赋值 span", "安全值 validator", "quoted value 支持"],
-        claude: "通过",
         opencode: "通过",
         note: "该场景不告诉 Agent“不要复制值”；能否生成安全说明由 APG 与 Agent 的正常协作共同验证。"
       },
@@ -1562,9 +1546,8 @@
         acceptance: ["回答包含 401", "回答涉及 authorization、authentication、credential 或 token"],
         protections: ["上游不得出现 SERVICE_TOKEN 原值", "后续诊断字段必须保持可见", "最终回答无 canary"],
         mechanisms: ["赋值值单-token span", "分号边界", ".log 路径熵误报排除"],
-        claude: "通过：路径修复后仅一次 Read",
         opencode: "通过",
-        note: "首轮 Claude 的 logs/assignment_edge.log 被熵模块误折叠，导致 48 次盲猜 Read；加入 logs/.log 路径识别后真实重跑通过。"
+        note: "加入 logs/.log 路径识别后，日志路径不会再被熵模块误折叠。"
       }
     ];
 
@@ -2023,7 +2006,6 @@
                 <h4>统一工具环境</h4>
                 ${listHTML([
                   `Harness 候选配置：${evidence.configured_tools.join(" / ")}`,
-                  `Claude init 实报：${evidence.agent_reported_tools.claude.join(" / ")}`,
                   `OpenCode 轨迹实见：${evidence.agent_reported_tools.opencode.join(" / ")}`,
                   "没有场景专属 Bash allowlist 或文件权限"
                 ])}
@@ -2058,7 +2040,6 @@
                 <p>概览在前；下面保留实际模型文本、工具输入和工具输出</p>
               </div>
               <div class="trace-grid">
-                ${trajectoryHTML("claude", "Claude Code 2.1.220", "Anthropic", item)}
                 ${trajectoryHTML("opencode", "OpenCode 1.17.18", "OpenAI", item)}
               </div>
               <p class="boundary-note">工具输入/输出中的凭据和个人信息来自合成测试 fixture，并且可能以原值出现在本地 Agent transcript 中。这正是 APG 的边界：阻止其上传云端，不负责抹除受信任本地 Agent 自己显示或保存的工具记录。</p>
@@ -2067,7 +2048,6 @@
                 <span><i class="operation-swatch materialization"></i><strong>↓ 本地已还原</strong>：保护表示仅在本地工具参数恢复</span>
                 <span><i class="operation-swatch representation"></i><strong>云端保护表示</strong>：模型实际看到的占位符或路径别名</span>
               </div>
-              ${transcriptHTML("claude", "Claude Code 2.1.220", "Anthropic", item)}
               ${transcriptHTML("opencode", "OpenCode 1.17.18", "OpenAI", item)}
               <div class="note">${escapeHTML(item.note)}</div>
             </section>

@@ -42,8 +42,8 @@ The Agent connection strip displays the OpenAI-compatible and Anthropic local Ba
 
 | Agent endpoint | Chat Completions upstream | Responses upstream | Anthropic Messages upstream |
 | --- | --- | --- | --- |
-| `/v1/chat/completions` | Native | Unsupported (`501`) | Converted request, response, and SSE |
-| `/v1/messages` | Converted request, response, and SSE | Unsupported (`501`) | Native Anthropic JSON and SSE |
+| `/v1/chat/completions` | Native | Unsupported (`501`) | Unsupported (`501`) |
+| `/v1/messages` | Unsupported (`501`) | Unsupported (`501`) | Native Anthropic JSON and SSE |
 | `/v1/responses` | Unsupported (`501`) | Native | Unsupported (`501`) |
 | `/v1/models` | Native | Native | Native Anthropic Models API |
 

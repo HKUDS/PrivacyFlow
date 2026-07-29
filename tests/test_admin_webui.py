@@ -17,6 +17,14 @@ class AdminFakeUpstream:
     async def request_json(self, method, path, payload=None):
         if path == "/v1/models":
             return 200, {"content-type": "application/json"}, {"data": []}
+        if path == "/v1/messages":
+            return 200, {"content-type": "application/json"}, {
+                "id": "msg_test",
+                "type": "message",
+                "role": "assistant",
+                "content": [{"type": "text", "text": "Done."}],
+                "stop_reason": "end_turn",
+            }
         return 200, {"content-type": "application/json"}, {"choices": [{"message": {"content": "Done."}}]}
 
     async def stream_request(self, method, path, payload=None):
@@ -542,12 +550,24 @@ def test_webui_can_persist_and_hot_apply_first_run_upstream_key(tmp_path, monkey
         assert deleted.json()["active_profile_id"] == first_profile_id
         assert deleted.json()["protocol"] == ANTHROPIC_MESSAGES
 
-        response = client.post(
+        mismatched_response = client.post(
             "/v1/chat/completions",
             headers={"Authorization": "Bearer agent-key"},
             json={"model": "test", "messages": [{"role": "user", "content": "hello"}]},
         )
+        assert mismatched_response.status_code == 501
+
+        response = client.post(
+            "/v1/messages",
+            headers={"x-api-key": "agent-key", "anthropic-version": "2023-06-01"},
+            json={
+                "model": "test",
+                "max_tokens": 32,
+                "messages": [{"role": "user", "content": "hello"}],
+            },
+        )
         assert response.status_code == 200
+        assert response.json()["type"] == "message"
 
     assert os.stat(launcher_path).st_mode & 0o777 == 0o600
     stored_launcher = json.loads(launcher_path.read_text(encoding="utf-8"))

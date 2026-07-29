@@ -23,11 +23,19 @@ from e2e_agent_tests.scripts.common import CANARY_STRINGS, HarnessPaths, file_sn
 from e2e_agent_tests.scripts.setup_test_repo import setup_test_repo
 from gateway.cli.launcher import LauncherConfigError, prepare_launcher_config
 from gateway.placeholder_parser import APG_PLACEHOLDER_FORMAT_EXAMPLES
-from gateway.upstream_protocol import OPENAI_CHAT_COMPLETIONS
+from gateway.upstream_protocol import (
+    ANTHROPIC_MESSAGES,
+    OPENAI_CHAT_COMPLETIONS,
+    canonical_upstream_protocol,
+)
 
 
 PromptFactory = Callable[[Path], str]
 DEFAULT_LIVE_MODEL = "deepseek-v4-flash"
+AGENT_UPSTREAM_PROTOCOLS = {
+    "claude": ANTHROPIC_MESSAGES,
+    "opencode": OPENAI_CHAT_COMPLETIONS,
+}
 
 
 @dataclass(frozen=True)
@@ -162,6 +170,11 @@ def detect_live_prerequisites(agents: list[str]) -> list[str]:
         if shutil.which(agent) is None:
             missing.append(agent)
     return missing
+
+
+def incompatible_agents(agents: list[str], upstream_protocol: str) -> list[str]:
+    protocol = canonical_upstream_protocol(upstream_protocol)
+    return [agent for agent in agents if AGENT_UPSTREAM_PROTOCOLS[agent] != protocol]
 
 
 def _apply_live_launcher_config(path: Path) -> None:
@@ -1016,7 +1029,17 @@ def main() -> None:
         type=Path,
         help="Load the active upstream URL, protocol, and API key from an APG launcher configuration.",
     )
-    parser.add_argument("--agents", nargs="+", choices=["claude", "opencode"], default=["claude", "opencode"])
+    parser.add_argument(
+        "--agents",
+        nargs="+",
+        choices=["claude", "opencode"],
+        default=["opencode"],
+        help=(
+            "Coding Agent to validate. APG does not convert protocols: Claude requires an "
+            "anthropic_messages profile and OpenCode requires openai_chat_completions. "
+            "Run them separately (default: opencode)."
+        ),
+    )
     parser.add_argument("--scenarios", nargs="+", choices=sorted(LIVE_SCENARIOS), default=list(LIVE_SCENARIOS))
     parser.add_argument(
         "--model",
@@ -1050,6 +1073,17 @@ def main() -> None:
             _apply_live_launcher_config(args.launcher_config)
         except LauncherConfigError as exc:
             parser.error(str(exc))
+    upstream_protocol = os.getenv("APG_UPSTREAM_PROTOCOL", OPENAI_CHAT_COMPLETIONS)
+    incompatible = incompatible_agents(args.agents, upstream_protocol)
+    if incompatible:
+        expected = ", ".join(
+            f"{agent}={AGENT_UPSTREAM_PROTOCOLS[agent]}" for agent in incompatible
+        )
+        parser.error(
+            f"Active upstream format {canonical_upstream_protocol(upstream_protocol)!r} "
+            f"is incompatible with: {expected}. APG does not convert protocols; "
+            "run each Agent with a matching launcher profile."
+        )
     missing = detect_live_prerequisites(args.agents)
     if missing:
         result = {"skipped": True, "missing": missing}

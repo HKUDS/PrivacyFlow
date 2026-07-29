@@ -10,6 +10,7 @@ from gateway.detector_manager import DetectorManager
 from gateway.placeholder_parser import PLACEHOLDER_RE
 from gateway.redaction_engine import RedactionEngine, ToolArgumentsJSONError
 from gateway.server import create_app
+from gateway.upstream_protocol import ANTHROPIC_MESSAGES, OPENAI_CHAT_COMPLETIONS
 
 
 class FakeUpstream:
@@ -25,13 +26,13 @@ class FakeUpstream:
         raise NotImplementedError
 
 
-def _cfg(tmp_path):
+def _cfg(tmp_path, protocol: str = OPENAI_CHAT_COMPLETIONS):
     return GatewayConfig(
         database_path=str(tmp_path / "state.sqlite3"),
         audit_log_path=str(tmp_path / "audit.jsonl"),
         signing_secret="secret",
         local_api_keys={"local"},
-        upstream=UpstreamConfig(base_url="https://upstream", api_key="up"),
+        upstream=UpstreamConfig(base_url="https://upstream", api_key="up", protocol=protocol),
     )
 
 
@@ -240,8 +241,26 @@ def test_non_streaming_malformed_tool_arguments_return_safe_protocol_error(
     arguments,
     reason_code: str,
 ) -> None:
-    fake = FakeUpstream(
-        response_body={
+    protocol = ANTHROPIC_MESSAGES if endpoint == "/v1/messages" else OPENAI_CHAT_COMPLETIONS
+    if endpoint == "/v1/messages":
+        response_body = {
+            "id": "msg_bad",
+            "type": "message",
+            "role": "assistant",
+            "model": "claude-sonnet",
+            "content": [
+                {
+                    "type": "tool_use",
+                    "id": "toolu_bad",
+                    "name": "broken",
+                    "input": arguments,
+                }
+            ],
+            "stop_reason": "tool_use",
+            "usage": {"input_tokens": 1, "output_tokens": 1},
+        }
+    else:
+        response_body = {
             "choices": [
                 {
                     "message": {
@@ -258,8 +277,10 @@ def test_non_streaming_malformed_tool_arguments_return_safe_protocol_error(
                 }
             ]
         }
+    fake = FakeUpstream(
+        response_body=response_body
     )
-    client = TestClient(create_app(_cfg(tmp_path), fake))
+    client = TestClient(create_app(_cfg(tmp_path, protocol), fake))
     headers = {"x-api-key": "local"} if endpoint == "/v1/messages" else {"Authorization": "Bearer local"}
     request_body = {
         "model": "claude-sonnet" if endpoint == "/v1/messages" else "x",
@@ -274,7 +295,8 @@ def test_non_streaming_malformed_tool_arguments_return_safe_protocol_error(
     assert "APG_TOOL_ARGUMENTS_INVALID" in response.text or "not valid JSON" in response.text
     audit = (tmp_path / "audit.jsonl").read_text()
     assert '"phase": "response_tool_argument_error"' in audit
-    assert f'"reason_code": "{reason_code}"' in audit
+    expected_reason_code = "invalid_tool_arguments_type" if endpoint == "/v1/messages" else reason_code
+    assert f'"reason_code": "{expected_reason_code}"' in audit
     assert '{"value":' not in audit
 
 

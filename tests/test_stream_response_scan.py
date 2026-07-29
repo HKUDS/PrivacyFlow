@@ -18,6 +18,7 @@ from gateway.redaction_engine import (
     RedactionEngine,
 )
 from gateway.server import create_app
+from gateway.upstream_protocol import ANTHROPIC_MESSAGES, OPENAI_CHAT_COMPLETIONS
 
 
 class FakeUpstream:
@@ -74,13 +75,13 @@ class StaticStreamUpstream:
         return 200, {"content-type": "text/event-stream"}, self.chunks_factory(payload)
 
 
-def _cfg(tmp_path):
+def _cfg(tmp_path, protocol: str = OPENAI_CHAT_COMPLETIONS):
     return GatewayConfig(
         database_path=str(tmp_path / "state.sqlite3"),
         audit_log_path=str(tmp_path / "audit.jsonl"),
         signing_secret="secret",
         local_api_keys={"local"},
-        upstream=UpstreamConfig(base_url="https://upstream", api_key="up"),
+        upstream=UpstreamConfig(base_url="https://upstream", api_key="up", protocol=protocol),
     )
 
 
@@ -395,33 +396,62 @@ def test_malformed_streaming_tool_arguments_return_safe_error_and_specific_audit
         placeholder = PLACEHOLDER_RE.search(json.dumps(payload)).group(0)
 
         async def chunks():
-            event = {
-                "choices": [
+            if endpoint == "/v1/messages":
+                events = [
                     {
+                        "type": "content_block_start",
+                        "index": 0,
+                        "content_block": {
+                            "type": "tool_use",
+                            "id": "toolu_bad",
+                            "name": "use_key",
+                            "input": {},
+                        },
+                    },
+                    {
+                        "type": "content_block_delta",
                         "index": 0,
                         "delta": {
-                            "tool_calls": [
-                                {
-                                    "index": 0,
-                                    "id": "call_bad",
-                                    "type": "function",
-                                    "function": {
-                                        "name": "use_key",
-                                        "arguments": '{"api_key":"' + placeholder,
-                                    },
-                                }
-                            ]
+                            "type": "input_json_delta",
+                            "partial_json": '{"api_key":"' + placeholder,
                         },
-                        "finish_reason": "tool_calls",
-                    }
+                    },
+                    {"type": "content_block_stop", "index": 0},
                 ]
-            }
-            yield ("data: " + json.dumps(event) + "\n\n").encode()
-            yield b"data: [DONE]\n\n"
+                for event in events:
+                    yield (
+                        f"event: {event['type']}\n"
+                        f"data: {json.dumps(event)}\n\n"
+                    ).encode()
+            else:
+                event = {
+                    "choices": [
+                        {
+                            "index": 0,
+                            "delta": {
+                                "tool_calls": [
+                                    {
+                                        "index": 0,
+                                        "id": "call_bad",
+                                        "type": "function",
+                                        "function": {
+                                            "name": "use_key",
+                                            "arguments": '{"api_key":"' + placeholder,
+                                        },
+                                    }
+                                ]
+                            },
+                            "finish_reason": "tool_calls",
+                        }
+                    ]
+                }
+                yield ("data: " + json.dumps(event) + "\n\n").encode()
+                yield b"data: [DONE]\n\n"
 
         return chunks()
 
-    client = TestClient(create_app(_cfg(tmp_path), StaticStreamUpstream(factory)))
+    protocol = ANTHROPIC_MESSAGES if endpoint == "/v1/messages" else OPENAI_CHAT_COMPLETIONS
+    client = TestClient(create_app(_cfg(tmp_path, protocol), StaticStreamUpstream(factory)))
     headers = {"x-api-key": "local"} if endpoint == "/v1/messages" else {"Authorization": "Bearer local"}
     request_body = {
         "model": "claude-sonnet" if endpoint == "/v1/messages" else "x",
@@ -480,52 +510,91 @@ def test_anthropic_streaming_text_and_tool_args_materialize_locally(tmp_path) ->
         arguments = json.dumps({"api_key": placeholder})
 
         async def chunks():
+            initial_events = [
+                {
+                    "type": "message_start",
+                    "message": {
+                        "id": "msg_1",
+                        "type": "message",
+                        "role": "assistant",
+                        "model": "claude-sonnet",
+                        "content": [],
+                        "stop_reason": None,
+                        "usage": {"input_tokens": 4, "output_tokens": 0},
+                    },
+                },
+                {
+                    "type": "content_block_start",
+                    "index": 0,
+                    "content_block": {"type": "text", "text": ""},
+                },
+            ]
+            for event in initial_events:
+                yield (
+                    f"event: {event['type']}\n"
+                    f"data: {json.dumps(event)}\n\n"
+                ).encode()
             for char in placeholder:
-                event = {"choices": [{"index": 0, "delta": {"content": char}, "finish_reason": None}]}
-                yield ("data: " + json.dumps(event) + "\n\n").encode()
-            yield (
-                "data: "
-                + json.dumps(
-                    {
-                        "choices": [
-                            {
-                                "index": 0,
-                                "delta": {
-                                    "tool_calls": [
-                                        {"index": 0, "id": "call_0", "function": {"name": "use_"}}
-                                    ]
-                                },
-                                "finish_reason": None,
-                            }
-                        ]
-                    }
-                )
-                + "\n\n"
-            ).encode()
-            for offset, char in enumerate(arguments):
                 event = {
-                    "choices": [
-                        {
-                            "index": 0,
-                            "delta": {
-                                "tool_calls": [
-                                    {
-                                        "index": 0,
-                                        "function": {"name": "key" if offset == 0 else "", "arguments": char},
-                                    }
-                                ]
-                            },
-                            "finish_reason": None,
-                        }
-                    ]
+                    "type": "content_block_delta",
+                    "index": 0,
+                    "delta": {"type": "text_delta", "text": char},
                 }
-                yield ("data: " + json.dumps(event) + "\n\n").encode()
-            yield b'data: {"choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]}\n\n'
-            yield b"data: [DONE]\n\n"
+                yield (
+                    f"event: {event['type']}\n"
+                    f"data: {json.dumps(event)}\n\n"
+                ).encode()
+            middle_events = [
+                {"type": "content_block_stop", "index": 0},
+                {
+                    "type": "content_block_start",
+                    "index": 1,
+                    "content_block": {
+                        "type": "tool_use",
+                        "id": "toolu_1",
+                        "name": "use_key",
+                        "input": {},
+                    },
+                },
+            ]
+            for event in middle_events:
+                yield (
+                    f"event: {event['type']}\n"
+                    f"data: {json.dumps(event)}\n\n"
+                ).encode()
+            for char in arguments:
+                event = {
+                    "type": "content_block_delta",
+                    "index": 1,
+                    "delta": {"type": "input_json_delta", "partial_json": char},
+                }
+                yield (
+                    f"event: {event['type']}\n"
+                    f"data: {json.dumps(event)}\n\n"
+                ).encode()
+            final_events = [
+                {"type": "content_block_stop", "index": 1},
+                {
+                    "type": "message_delta",
+                    "delta": {"stop_reason": "tool_use", "stop_sequence": None},
+                    "usage": {"output_tokens": 4},
+                },
+                {"type": "message_stop"},
+            ]
+            for event in final_events:
+                yield (
+                    f"event: {event['type']}\n"
+                    f"data: {json.dumps(event)}\n\n"
+                ).encode()
 
         return chunks()
 
-    client = TestClient(create_app(_cfg(tmp_path), StaticStreamUpstream(factory)))
+    client = TestClient(
+        create_app(
+            _cfg(tmp_path, ANTHROPIC_MESSAGES),
+            StaticStreamUpstream(factory),
+        )
+    )
     body = _stream_request(
         client,
         "/v1/messages",
@@ -569,7 +638,12 @@ def test_malformed_anthropic_stream_returns_safe_error(tmp_path) -> None:
 
         return chunks()
 
-    client = TestClient(create_app(_cfg(tmp_path), StaticStreamUpstream(factory)))
+    client = TestClient(
+        create_app(
+            _cfg(tmp_path, ANTHROPIC_MESSAGES),
+            StaticStreamUpstream(factory),
+        )
+    )
     body = _stream_request(
         client,
         "/v1/messages",
