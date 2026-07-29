@@ -63,6 +63,7 @@ include = [
   "/CONTRIBUTING.md",
   "/LICENSE",
   "/README.md",
+  "/README_zh.md",
   "/SECURITY.md",
   "/assets",
   "/config",
