@@ -34,11 +34,6 @@
   <img src="assets/branding/apg-control-overview.png" width="100%" alt="APG Control overview with a synthetic provider configuration">
 </p>
 
-> [!IMPORTANT]
-> APG is pre-1.0 software. Keep the management interface on loopback, review the
-> [security boundary](#-security-boundary), and test your own Agent workflow
-> before using production credentials.
-
 ## Why APG?
 
 Coding agents routinely encounter API keys, passwords, personal information,
@@ -79,9 +74,11 @@ continue without directly exposing sensitive data to the cloud.
 
 ## 🛡️ How it works
 
-<p align="center">
-  <img src="assets/branding/apg-flow-en.svg" width="100%" alt="APG detects and replaces sensitive values locally before a cloud request, then verifies and restores them for the user or local tool">
-</p>
+APG handles both directions locally. Before a request leaves the device, it
+detects sensitive values and replaces them with signed placeholders or stable
+path aliases. When the model response returns, APG verifies those placeholders
+and restores the original values only in authorized local responses or
+structured tool arguments. The cloud model only works with the placeholders.
 
 Given this local input:
 

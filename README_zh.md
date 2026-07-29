@@ -34,11 +34,6 @@
   <img src="assets/branding/apg-control-overview.png" width="100%" alt="使用虚构上游配置的 APG Control 概览">
 </p>
 
-> [!IMPORTANT]
-> APG 目前仍处于 1.0 之前的 Alpha 阶段。请始终将管理界面限制在
-> loopback，阅读[安全边界](#security)，并先使用自己的 Agent 工作流进行测试，
-> 再接入生产凭据。
-
 ## 为什么需要 APG？
 
 编程 Agent 经常会在 `.env`、日志、配置文件、源代码和工具参数中遇到 API Key、
@@ -75,9 +70,9 @@ APG 把原值留在本地，只向模型提供稳定的占位符。模型通常�
 
 ## 🛡️ 工作原理
 
-<p align="center">
-  <img src="assets/branding/apg-flow-zh.svg" width="100%" alt="APG 在云端请求前于本地检测并替换敏感值，再为用户或本地工具验证并还原原值">
-</p>
+APG 在本地处理请求和响应两个方向。请求离开设备前，APG 会检测敏感值，并将其
+替换为签名占位符或稳定的路径别名；模型响应返回后，APG 会验证这些占位符，并仅
+在经授权的本地响应或结构化工具参数中还原原值。云端模型始终只接触占位符。
 
 以下本地输入：
 
