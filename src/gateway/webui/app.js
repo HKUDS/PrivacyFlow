@@ -122,7 +122,7 @@ function bindNavigation() {
 function bindActions() {
   $("#refresh-button").addEventListener("click", () => loadView(state.view, true));
   $("#privacy-control-enabled").addEventListener("change", updatePrivacyControl);
-  $$('[data-copy-connection]').forEach((button) => button.addEventListener("click", () => copyConnectionValue(button.dataset.copyConnection)));
+  $$('[data-copy-connection]').forEach((button) => button.addEventListener("click", () => copyConnectionValue(button.dataset.copyConnection, button)));
   $("#toggle-agent-key").addEventListener("click", toggleAgentKeyVisibility);
   $("#generate-agent-key").addEventListener("click", () => {
     confirmAction(
@@ -897,7 +897,7 @@ function syncVisibilityButtons() {
   setVisibilityButton($("#protected-show-raw"), state.protectedShowRaw, "显示受保护值原文", "隐藏受保护值原文");
 }
 
-async function copyConnectionValue(kind) {
+async function copyConnectionValue(kind, button) {
   const inputs = {
     "api-key": $("#agent-api-key"),
     "openai-base-url": $("#agent-openai-base-url"),
@@ -906,8 +906,23 @@ async function copyConnectionValue(kind) {
   const input = inputs[kind];
   if (!input.value) return;
   await copyText(input.value);
+  flashCopied(button);
   toast(kind === "api-key" ? "API Key 已复制" : "Base URL 已复制");
 }
+
+function flashCopied(button) {
+  if (!button) return;
+  clearTimeout(flashCopied.timers.get(button));
+  button.classList.add("is-copied");
+  button.innerHTML = iconMarkup("check-circle-2");
+  renderIcons(button);
+  flashCopied.timers.set(button, setTimeout(() => {
+    button.classList.remove("is-copied");
+    button.innerHTML = iconMarkup("copy");
+    renderIcons(button);
+  }, 1400));
+}
+flashCopied.timers = new WeakMap();
 
 async function copyText(value) {
   try {
@@ -936,7 +951,7 @@ function renderTrend(trend) {
 }
 
 function renderRisk(risk) {
-  const labels = {critical: "严重", high: "高", medium: "中", low: "低"};
+  const labels = Object.fromEntries(["critical", "high", "medium", "low"].map((key) => [key, riskLabel(key)]));
   const max = Math.max(1, ...Object.values(risk));
   $("#risk-breakdown").innerHTML = Object.entries(labels).map(([key, label]) => {
     const widthClass = risk[key] ? Math.max(1, Math.ceil(risk[key] / max * 10)) : 0;
@@ -1011,7 +1026,7 @@ function renderAuditOperationRows(target, operations, direction) {
       count: uiText("次数"),
       context: uiText("上下文"),
     };
-    return `<tr class="audit-operation-row ${failed ? "has-failure" : ""}"><td data-label="${escapeHtml(labels.time)}">${formatDateTime(operation.timestamp)}</td><td class="audit-map-cell" data-label="${escapeHtml(labels.mapping)}"><div class="operation-map audit-list-map">${mapping}</div><div class="operation-metadata"><span class="mapping-id">${escapeHtml(operation.protected_value_id)}</span>${operation.value_state !== "active" ? `<span class="operation-state-inline">${escapeHtml(valueStateLabel(operation.value_state))}</span>` : ""}</div></td><td class="audit-type" data-label="${escapeHtml(labels.type)}"><strong>${escapeHtml(operation.subtype || operation.kind || "-")}</strong><span class="badge ${escapeHtml(operation.risk || "low")}">${escapeHtml(operation.risk || "low")}</span></td><td class="audit-handling" data-label="${escapeHtml(labels.handling)}">${handling}</td><td data-label="${escapeHtml(labels.count)}"><strong>${formatNumber(operation.occurrence_count)}</strong></td><td class="audit-context" data-label="${escapeHtml(labels.context)}"><code>${escapeHtml(operation.endpoint || "-")}</code><span>${escapeHtml(operation.session || "-")}</span><code>${escapeHtml(operation.request_id)}</code></td></tr>`;
+    return `<tr class="audit-operation-row ${failed ? "has-failure" : ""}"><td data-label="${escapeHtml(labels.time)}">${formatDateTime(operation.timestamp)}</td><td class="audit-map-cell" data-label="${escapeHtml(labels.mapping)}"><div class="operation-map audit-list-map">${mapping}</div><div class="operation-metadata"><span class="mapping-id">${escapeHtml(operation.protected_value_id)}</span>${operation.value_state !== "active" ? `<span class="operation-state-inline">${escapeHtml(valueStateLabel(operation.value_state))}</span>` : ""}</div></td><td class="audit-type" data-label="${escapeHtml(labels.type)}"><strong>${escapeHtml(operation.subtype || operation.kind || "-")}</strong><span class="badge ${escapeHtml(operation.risk || "low")}">${escapeHtml(riskLabel(operation.risk || "low"))}</span></td><td class="audit-handling" data-label="${escapeHtml(labels.handling)}">${handling}</td><td data-label="${escapeHtml(labels.count)}"><strong>${formatNumber(operation.occurrence_count)}</strong></td><td class="audit-context" data-label="${escapeHtml(labels.context)}"><code>${escapeHtml(operation.endpoint || "-")}</code><span>${escapeHtml(operation.session || "-")}</span><code>${escapeHtml(operation.request_id)}</code></td></tr>`;
   }).join("");
   renderIcons(target);
 }
@@ -1091,7 +1106,7 @@ function renderAuditOperation(operation, direction) {
   const metadata = [
     operation.protected_value_id,
     operation.subtype || operation.kind,
-    operation.risk,
+    riskLabel(operation.risk),
     operation.detector,
     operation.tool_name ? `工具 ${operation.tool_name}` : null,
     operation.sink,
@@ -1893,7 +1908,7 @@ function renderHighlightedDetection(output, text, findings) {
     detectors.textContent = findingGroupModuleNames(group).join(" + ");
     content.append(title, detectors);
     const risk = document.createElement("b");
-    risk.textContent = group.risk;
+    risk.textContent = riskLabel(group.risk);
     row.append(number, content, risk);
     legend.append(row);
   });
@@ -2051,6 +2066,7 @@ function valueStateLabel(value) {
 }
 
 function stateLabel(value) { return ({active: "活跃", expired: "已过期", revoked: "已撤销"})[value] || value; }
+function riskLabel(value) { return ({critical: "严重", high: "高", medium: "中", low: "低"})[value] || value; }
 function moduleStatusLabel(value) {
   if (displayLocale() === "en-US") return value;
   return ({activated: "已启用", disabled: "已停用", managed: "内置", unavailable: "不可用"})[value] || value;
