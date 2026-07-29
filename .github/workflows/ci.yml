@@ -25,7 +25,6 @@ jobs:
       - run: python -m pip install -e '.[dev]'
       - run: ruff check .
       - run: pytest -m 'not integration'
-      - run: python -m e2e_agent_tests.scripts.run_all
 
   webui:
     name: WebUI syntax

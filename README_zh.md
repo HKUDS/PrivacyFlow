@@ -294,37 +294,16 @@ export APG_GC_INTERVAL_SECONDS=60
 
 ## ✅ 验证
 
-APG 包含多层验证：
+主分支保留标准回归测试：
 
 | 层级 | 目的 | 命令或证据 |
 | --- | --- | --- |
 | 单元与 API 回归 | 验证代理、检测器、映射、流式传输、WebUI 与安全行为 | `pytest -m 'not integration'` |
-| 确定性 Agent 测试 | 离线运行合成泄漏场景 | `python -m e2e_agent_tests.scripts.run_all` |
-| 真实 Agent 矩阵 | 验证原生 Claude Code 和 OpenCode 行为 | [`docs/live_validation_results.md`](docs/live_validation_results.md) |
-| 泄漏断言 | 检查上游、工作区、审计、最终答案和供应商 Key 边界 | [`docs/e2e_test_plan.md`](docs/e2e_test_plan.md) |
+| 联网本地模型集成 | 验证隔离运行环境下载和真实 Worker 推理 | `APG_RUN_LOCAL_MODEL_INTEGRATION=1 pytest -m integration tests/test_local_models_integration.py` |
 
-仓库内的真实测试证据均经过脱敏。真实 Agent 测试需要明确启用，并会消耗供应商容量。
-
-<details>
-<summary><strong>运行原生真实 Agent 矩阵</strong></summary>
-
-由于 APG 不做协议转换，每个 Agent 都必须使用格式匹配的上游配置运行：
-
-```bash
-python -m e2e_agent_tests.scripts.run_live_agents \
-  --launcher-config .apg/openai-chat-launcher.json \
-  --agents opencode \
-  --concurrency 4
-
-python -m e2e_agent_tests.scripts.run_live_agents \
-  --launcher-config .apg/anthropic-launcher.json \
-  --agents claude \
-  --concurrency 4
-```
-
-可以使用 `--model MODEL` 和 `--concurrency N` 限制或调整测试。
-
-</details>
+确定性 E2E、Claude Code/OpenCode 真实矩阵、泄漏断言和脱敏证据统一维护在
+[`dev` 分支](https://github.com/zzhtx258/Agent-Privacy-Gateway/tree/dev/e2e_agent_tests)。
+真实测试需要明确启用，并会消耗供应商容量。
 
 <a id="documentation"></a>
 
@@ -336,8 +315,8 @@ python -m e2e_agent_tests.scripts.run_live_agents \
 | [`docs/webui.md`](docs/webui.md) | 管理行为、持久化、原值查看和 UI 安全 |
 | [`docs/threat_model.md`](docs/threat_model.md) | 威胁、缓解措施、假设和残余风险 |
 | [`docs/harness_integration.md`](docs/harness_integration.md) | Agent 与工具运行框架接入 |
-| [`docs/e2e_test_plan.md`](docs/e2e_test_plan.md) | 确定性/真实场景与泄漏断言 |
-| [`docs/live_validation_results.md`](docs/live_validation_results.md) | 经过脱敏的真实 Agent 验证结果 |
+| [`dev` 验证套件](https://github.com/zzhtx258/Agent-Privacy-Gateway/tree/dev/e2e_agent_tests) | 确定性 E2E 和真实 Agent 矩阵 |
+| [`dev` 验证证据](https://github.com/zzhtx258/Agent-Privacy-Gateway/blob/dev/docs/live_validation_results.md) | 经过脱敏的真实 Agent 验证结果 |
 | [`docs/roadmap.md`](docs/roadmap.md) | 计划工作和待定设计 |
 
 ## 开发
@@ -366,7 +345,6 @@ APG_RUN_LOCAL_MODEL_INTEGRATION=1 pytest -m integration \
 | --- | --- |
 | [`src/gateway/`](src/gateway/) | 网关、检测、存储、代理、模型 Worker 和 WebUI |
 | [`tests/`](tests/) | 单元、API、流式传输、安全和 WebUI 回归测试 |
-| [`e2e_agent_tests/`](e2e_agent_tests/) | 确定性和真实 Agent 验证矩阵 |
 | [`docs/`](docs/) | 设计、运行、威胁模型和验证证据 |
 | [`examples/`](examples/) | 最小客户端与安全示例 |
 

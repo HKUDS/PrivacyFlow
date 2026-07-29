@@ -298,39 +298,17 @@ process user.
 
 ## ✅ Validation
 
-APG ships with multiple validation layers:
+The main branch keeps the standard regression suite:
 
 | Layer | Purpose | Command or evidence |
 | --- | --- | --- |
 | Unit and API regression | Proxy, detector, mapping, stream, UI, and security behavior | `pytest -m 'not integration'` |
-| Deterministic Agent harness | Offline synthetic leak scenarios | `python -m e2e_agent_tests.scripts.run_all` |
-| Live Agent matrix | Native Claude Code and OpenCode behavior | [`docs/live_validation_results.md`](docs/live_validation_results.md) |
-| Leak assertions | Upstream, workspace, audit, final-answer, and provider-key boundaries | [`docs/e2e_test_plan.md`](docs/e2e_test_plan.md) |
+| Networked local-model integration | Isolated runtime download and real Worker inference | `APG_RUN_LOCAL_MODEL_INTEGRATION=1 pytest -m integration tests/test_local_models_integration.py` |
 
-Checked-in live evidence is sanitized. Real-Agent runs are opt-in and consume
-provider capacity.
-
-<details>
-<summary><strong>Run the native live-Agent matrix</strong></summary>
-
-Because APG does not convert protocols, run each Agent with a matching saved
-upstream profile:
-
-```bash
-python -m e2e_agent_tests.scripts.run_live_agents \
-  --launcher-config .apg/openai-chat-launcher.json \
-  --agents opencode \
-  --concurrency 4
-
-python -m e2e_agent_tests.scripts.run_live_agents \
-  --launcher-config .apg/anthropic-launcher.json \
-  --agents claude \
-  --concurrency 4
-```
-
-Use `--model MODEL` and `--concurrency N` to narrow or tune a run.
-
-</details>
+The deterministic E2E harness, live Claude Code/OpenCode matrix, leak assertions,
+and sanitized evidence are maintained on the
+[`dev` branch](https://github.com/zzhtx258/Agent-Privacy-Gateway/tree/dev/e2e_agent_tests).
+Live runs are opt-in and consume provider capacity.
 
 ## 📚 Documentation
 
@@ -340,8 +318,8 @@ Use `--model MODEL` and `--concurrency N` to narrow or tune a run.
 | [`docs/webui.md`](docs/webui.md) | Management behavior, persistence, raw-value review, and UI security |
 | [`docs/threat_model.md`](docs/threat_model.md) | Threats, mitigations, assumptions, and residual risk |
 | [`docs/harness_integration.md`](docs/harness_integration.md) | Agent and tool-harness integration |
-| [`docs/e2e_test_plan.md`](docs/e2e_test_plan.md) | Deterministic/live scenarios and leak assertions |
-| [`docs/live_validation_results.md`](docs/live_validation_results.md) | Sanitized real-Agent validation results |
+| [`dev` validation suite](https://github.com/zzhtx258/Agent-Privacy-Gateway/tree/dev/e2e_agent_tests) | Deterministic E2E and live Agent matrix |
+| [`dev` validation evidence](https://github.com/zzhtx258/Agent-Privacy-Gateway/blob/dev/docs/live_validation_results.md) | Sanitized real-Agent validation results |
 | [`docs/roadmap.md`](docs/roadmap.md) | Planned work and open design areas |
 
 ## Development
@@ -370,7 +348,6 @@ APG_RUN_LOCAL_MODEL_INTEGRATION=1 pytest -m integration \
 | --- | --- |
 | [`src/gateway/`](src/gateway/) | Gateway, detection, storage, proxy, model worker, and WebUI |
 | [`tests/`](tests/) | Unit, API, stream, security, and WebUI regression tests |
-| [`e2e_agent_tests/`](e2e_agent_tests/) | Deterministic and live Agent validation matrix |
 | [`docs/`](docs/) | Design, operations, threat model, and validation evidence |
 | [`examples/`](examples/) | Minimal client and security examples |
 
