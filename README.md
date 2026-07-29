@@ -8,7 +8,7 @@
   <strong>English</strong> · <a href="README_zh.md">简体中文</a>
 </p>
 
-<p align="center"><strong>Keep secrets local. Let agents keep working.</strong></p>
+<p align="center"><strong>Keep secrets local. Keep agents working.</strong></p>
 
 <p align="center">
   A local privacy boundary for cloud coding agents and LLM clients.<br>
