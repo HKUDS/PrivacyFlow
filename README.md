@@ -11,7 +11,7 @@
 <p align="center"><strong>Keep secrets local. Keep agents working.</strong></p>
 
 <p align="center">
-  A local privacy boundary for cloud coding agents and LLM clients.<br>
+  A local privacy boundary for agents that use cloud LLMs.<br>
   Detect sensitive values, replace them before upload, and restore them only at authorized local sinks.
 </p>
 
@@ -39,6 +39,27 @@ means trusting every provider and intermediary that handles the request. Data
 policies vary; some services may retain or reuse requests for model improvement
 or training. Unofficial or personal API relays make retention, access, and reuse
 even harder to assess.
+
+### What providers say
+
+Data use depends on the product, account type, and privacy settings. On several
+consumer services, model-improvement data use remains enabled until the user
+turns it off; some safety-review and feedback exceptions still apply after an
+opt-out. The providers' own documentation also warns users not to submit
+sensitive or confidential information.[^provider-defaults]
+
+| Provider | Official policy |
+| --- | --- |
+| OpenAI | **ChatGPT and Codex content may be used for training unless the user opts out.** OpenAI also says not to share sensitive information in conversations. [Data-usage policy](https://help.openai.com/en/articles/5722486-api-data-usage-policies) · [ChatGPT privacy guidance](https://help.openai.com/en/articles/6783457-chatgpt-privacy-and-data-security) |
+| Anthropic | Claude consumer chats and coding sessions may be used when Model Improvement is enabled, feedback is submitted, or a conversation is flagged for safety review; flagged conversations may still be used for internal safety-model training after the general setting is disabled. Anthropic explicitly says: **“We encourage our users not to use our products and services to process personal data.”** [Consumer policy](https://privacy.claude.com/en/articles/10023555-how-do-you-use-personal-data-in-model-training) · [Commercial policy](https://privacy.claude.com/en/articles/7996885-how-do-you-use-personal-data-in-model-training) |
+| Google | **When Gemini Keep Activity is on, chats, files, screens, and photos may be used to improve services, including training generative AI models, with some data reviewed by humans.** Google warns users not to enter confidential information they would not want a reviewer to see or Google to use for improvement. Turning Keep Activity off prevents future chats from being used for general model training unless feedback is submitted, though chats are still retained for 72 hours for service and safety purposes. [Gemini Apps Privacy Hub](https://support.google.com/gemini/answer/13594961?hl=en) |
+| DeepSeek | DeepSeek's privacy policy permits operational and statistical analysis of dialogue content to improve algorithmic models, service intelligence, and understanding of user input. Its user agreement separately tells users **not to enter their own or other people's sensitive personal information**; continuing to use the service constitutes acceptance of the policy rather than a separate training opt-in. [Privacy policy](https://platform.deepseek.com/downloads/DeepSeek%20Privacy%20Policy.pdf) · [User agreement](https://platform.deepseek.com/downloads/DeepSeek%20User%20Agreement.pdf) |
+
+These policies do not mean that every provider trains on every request.
+But the providers' own warnings make the practical boundary clear: users should
+not assume that a cloud LLM is an appropriate place for plaintext personal data
+or secrets. APG enforces that boundary locally instead of relying on every user,
+agent, setting, and intermediary to handle sensitive values correctly.
 
 ### What users have reported
 
@@ -379,3 +400,5 @@ unsanitized Agent transcripts in issues or pull requests.
 Agent Privacy Gateway is licensed under the
 [Apache License 2.0](LICENSE). Bundled third-party notices are kept under
 [`docs/vendor/`](docs/vendor/).
+
+[^provider-defaults]: Business and API products often have stronger default data policies than consumer products. Refer to the terms for the specific provider, product, and account.

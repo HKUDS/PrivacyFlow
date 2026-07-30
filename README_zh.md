@@ -10,7 +10,7 @@
 
 <p align="center"><strong>让敏感信息留在本地，让 Agent 正常工作。</strong></p>
 
-<p align="center">面向云端编程 Agent 和 LLM 客户端的本地隐私边界。<br>在请求离开设备前检测并替换敏感值，只在经授权的本地出口还原原值。</p>
+<p align="center">为使用云端 LLM 的 Agent 提供本地隐私边界。<br>在请求离开设备前检测并替换敏感值，只在经授权的本地出口还原原值。</p>
 
 <p align="center">
   <a href="https://github.com/zzhtx258/Agent-Privacy-Gateway/actions/workflows/ci.yml"><img src="https://github.com/zzhtx258/Agent-Privacy-Gateway/actions/workflows/ci.yml/badge.svg" alt="CI 状态"></a>
@@ -30,6 +30,19 @@
 ## 为什么需要 APG？
 
 编程 Agent 经常会在 `.env`、日志、配置文件、源代码和工具参数中遇到 API Key、密码、个人信息、私有路径等敏感值。把这些原值直接发给云端模型，意味着必须信任请求链路上的模型供应商和所有中间服务。不同服务的数据政策并不相同，部分服务会留存请求，甚至将其用于模型改进或训练；如果使用来路不明的个人中转站，用户往往更难判断自己的数据最终去了哪里、由谁访问以及会被如何利用。
+
+### 提供商自己的说明
+
+数据如何使用取决于具体产品、账户类型和隐私设置。部分消费级服务会持续使用数据改进模型，直到用户主动关闭相关设置；即使已经退出，安全审查和反馈等情况仍可能例外。各提供商的官方文档也明确提醒用户不要提交敏感或机密信息。[^provider-defaults]
+
+| 提供商 | 官方说明 |
+| --- | --- |
+| OpenAI | **ChatGPT 和 Codex 中的内容可能被用于训练，除非用户主动退出。**OpenAI 还明确提醒用户不要在对话中分享敏感信息。[数据使用政策](https://help.openai.com/en/articles/5722486-api-data-usage-policies) · [ChatGPT 隐私说明](https://help.openai.com/en/articles/6783457-chatgpt-privacy-and-data-security) |
+| Anthropic | Claude 消费级产品中的聊天和编程会话可能在开启模型改进、提交反馈或被标记进行安全审查时使用；即使关闭常规模型改进设置，被标记的会话仍可能用于内部安全模型训练。Anthropic 明确表示：**“我们建议用户不要使用我们的产品和服务处理个人数据。”**[消费级产品政策](https://privacy.claude.com/en/articles/10023555-how-do-you-use-personal-data-in-model-training) · [商业产品政策](https://privacy.claude.com/en/articles/7996885-how-do-you-use-personal-data-in-model-training) |
+| Google | **开启 Gemini Keep Activity 后，聊天、文件、屏幕和照片可能被用于改进服务，包括训练生成式 AI 模型，部分数据还可能由人工审查。**Google 明确提醒用户不要输入不希望审查人员看到或被用于改进服务的机密信息。关闭 Keep Activity 后，未来聊天通常不再用于模型训练，但提交反馈时除外；这些聊天仍会为提供服务和保障安全而保留 72 小时。[Gemini Apps 隐私中心](https://support.google.com/gemini/answer/13594961?hl=zh-Hans) |
+| DeepSeek | DeepSeek 的隐私政策允许对对话内容进行运营和统计分析，以改进算法模型、服务智能以及对用户输入的理解。其用户协议另行要求用户**不要输入自己或他人的敏感个人信息**；继续使用服务即表示接受相关政策，而不是另行选择是否允许训练。[隐私政策](https://platform.deepseek.com/downloads/DeepSeek%20Privacy%20Policy.pdf) · [用户协议](https://platform.deepseek.com/downloads/DeepSeek%20User%20Agreement.pdf) |
+
+这些政策并不表示所有提供商都会训练每一条请求。但提供商自己的警告已经说明了实际边界：用户不应假设云端 LLM 适合接收明文个人数据或密钥。APG 在本地强制落实这条边界，而不是依赖每个用户、Agent、隐私设置和中间服务都能正确处理敏感值。
 
 ### 用户已经报告了什么
 
@@ -324,3 +337,5 @@ APG_RUN_LOCAL_MODEL_INTEGRATION=1 pytest -m integration \
 ## 许可证
 
 Agent Privacy Gateway 使用 [Apache License 2.0](LICENSE)。第三方依赖声明保存在 [`docs/vendor/`](docs/vendor/)。
+
+[^provider-defaults]: 商业版和 API 产品通常比消费级产品采用更严格的默认数据政策，具体以相应提供商、产品和账户条款为准。
