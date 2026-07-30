@@ -38,7 +38,8 @@ source code, and tool arguments. Sending those values directly to a cloud model
 means trusting every provider and intermediary that handles the request. Data
 policies vary; some services may retain or reuse requests for model improvement
 or training. Unofficial or personal API relays make retention, access, and reuse
-even harder to assess.
+even harder to assess. Moving entirely to local models often means either
+investing substantial compute resources or accepting less capable models.
 
 ### What providers say
 
