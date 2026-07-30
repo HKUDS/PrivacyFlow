@@ -40,6 +40,28 @@ policies vary; some services may retain or reuse requests for model improvement
 or training. Unofficial or personal API relays make retention, access, and reuse
 even harder to assess.
 
+### What users have reported
+
+The following public reports have not been confirmed by the providers and do
+not independently prove cross-user data leakage. Unexpected content may also
+result from hallucination, context contamination, client bugs, or tool input.
+They nevertheless illustrate a practical problem: once sensitive data is sent
+upstream, users lose control over which systems process it and whether it might
+reappear under unexpected conditions.
+
+| Platform | Public report |
+| --- | --- |
+| Claude | After asking Claude to organize local files and run a Git command, a user received an unrelated comparison of layoff candidates containing roles, salaries, and skills. [View the original post](https://x.com/manateelazycat/status/2076933787217428652) |
+| Claude Code | A user reported that unrelated production-server connection details and credentials appeared in a session, after which the Agent connected to the server and modified a third-party database. [View the issue](https://github.com/anthropics/claude-code/issues/72274) |
+| ChatGPT | Multiple users reported receiving responses unrelated to files they had uploaded. One response allegedly contained a document uploaded by a local lawyer. [View the discussion](https://news.ycombinator.com/item?id=43615756) |
+| Gemini | After uploading audio for transcription, a user received an unrelated business-meeting transcript containing names, corporate email addresses, contracts, and document links. The poster said some of the people and details could be verified. [View the original post](https://www.reddit.com/r/GeminiAI/comments/1v8700z/gemini_gave_me_someone_elses_transcript/) |
+
+APG does not need to assume that every anomaly is a data breach. It replaces
+sensitive values before a request leaves the device. If an upstream service
+experiences incorrect routing, logging, context contamination, or another
+unexpected failure, it sees placeholders rather than the user's API keys,
+passwords, or personal information.
+
 Exposing a secret can also interrupt the task itself. A safety-aligned model may
 warn the user to revoke a credential, refuse to continue, or avoid using the
 value—even when the intended operation is legitimate. The user is then forced
