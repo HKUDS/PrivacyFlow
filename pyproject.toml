@@ -28,10 +28,10 @@ dependencies = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/zzhtx258/Agent-Privacy-Gateway"
-Documentation = "https://github.com/zzhtx258/Agent-Privacy-Gateway/tree/main/docs"
-Issues = "https://github.com/zzhtx258/Agent-Privacy-Gateway/issues"
-Source = "https://github.com/zzhtx258/Agent-Privacy-Gateway"
+Homepage = "https://github.com/HKUDS/Agent-Privacy-Gateway"
+Documentation = "https://github.com/HKUDS/Agent-Privacy-Gateway/tree/main/docs"
+Issues = "https://github.com/HKUDS/Agent-Privacy-Gateway/issues"
+Source = "https://github.com/HKUDS/Agent-Privacy-Gateway"
 
 [project.optional-dependencies]
 dev = [

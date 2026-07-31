@@ -13,7 +13,7 @@
 <p align="center">为使用云端 LLM 的 Agent 提供本地隐私边界。<br>在请求离开设备前检测并替换敏感值，只在经授权的本地出口还原原值。</p>
 
 <p align="center">
-  <a href="https://github.com/zzhtx258/Agent-Privacy-Gateway/actions/workflows/ci.yml"><img src="https://github.com/zzhtx258/Agent-Privacy-Gateway/actions/workflows/ci.yml/badge.svg" alt="CI 状态"></a>
+  <a href="https://github.com/HKUDS/Agent-Privacy-Gateway/actions/workflows/ci.yml"><img src="https://github.com/HKUDS/Agent-Privacy-Gateway/actions/workflows/ci.yml/badge.svg" alt="CI 状态"></a>
   <a href="https://www.python.org/"><img src="https://img.shields.io/badge/Python-3.11%2B-3776AB?logo=python&logoColor=white" alt="Python 3.11 或更高版本"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-Apache--2.0-4C7A64" alt="Apache 2.0 许可证"></a>
   <img src="https://img.shields.io/badge/Status-Alpha-C47A19" alt="Alpha 状态">
@@ -110,7 +110,7 @@ and use key sk-example-not-a-real-key.
 要求：macOS、Linux 或 Windows，以及 Python 3.11 或更高版本。
 
 ```bash
-git clone https://github.com/zzhtx258/Agent-Privacy-Gateway.git
+git clone https://github.com/HKUDS/Agent-Privacy-Gateway.git
 cd Agent-Privacy-Gateway
 
 python3 -m venv .venv
