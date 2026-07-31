@@ -32,14 +32,18 @@
 
 ## Why APG?
 
-Coding agents routinely encounter API keys, passwords, personal information,
-private paths, and other sensitive values in `.env` files, logs, configuration,
-source code, and tool arguments. Sending those values directly to a cloud model
-means trusting every provider and intermediary that handles the request. Data
-policies vary; some services may retain or reuse requests for model improvement
-or training. Unofficial or personal API relays make retention, access, and reuse
-even harder to assess. Moving entirely to local models often means either
-investing substantial compute resources or accepting less capable models.
+When users rely on agents for real work, they often need those agents to read
+`.env` files, logs, configuration, source code, and tool arguments. Sometimes,
+they must directly provide the agent with API keys, passwords, personal
+information, private paths, or other sensitive values for the task. These values
+may be discovered by the agent or intentionally supplied by the user. Either way,
+the goal is for the agent to use them, not for the cloud LLM behind it to receive
+them in plaintext. Sending the original values to a cloud model means trusting
+every provider and intermediary that handles the request. Data policies vary;
+some services may retain or reuse requests for model improvement or training.
+Unofficial or personal API relays make retention, access, and reuse even harder
+to assess. Moving entirely to local models often means either investing
+substantial compute resources or accepting less capable models.
 
 ### What providers say
 
