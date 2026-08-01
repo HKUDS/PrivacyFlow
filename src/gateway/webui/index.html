@@ -93,20 +93,42 @@
               <div class="upstream-profile-toolbar">
                 <label><span>已保存配置</span><select id="upstream-profile-select"></select></label>
                 <div class="upstream-profile-actions">
-                  <button class="secondary-button icon-action-button" id="activate-upstream-profile" type="button" aria-label="启用所选配置" title="启用所选配置"><i data-lucide="power"></i></button>
                   <button class="secondary-button icon-action-button" id="new-upstream-profile" type="button" aria-label="新增上游配置" title="新增上游配置"><i data-lucide="plus"></i></button>
                   <button class="danger-button icon-action-button" id="delete-upstream-profile" type="button" aria-label="删除上游配置" title="删除上游配置"><i data-lucide="trash-2"></i></button>
                 </div>
               </div>
               <p class="upstream-target">当前 Base URL <strong class="mono" id="upstream-base-url"></strong></p>
-              <p class="upstream-protocol">上游 API 格式 <strong id="upstream-protocol-value"></strong></p>
+              <div class="upstream-connectivity-test" id="upstream-connectivity-test">
+                <label for="upstream-test-model"><span>测试模型（不会保存）</span></label>
+                <div class="upstream-test-controls">
+                  <div class="upstream-model-picker" id="upstream-model-picker" data-has-models="false">
+                    <input class="mono" id="upstream-test-model" type="text" autocomplete="off" spellcheck="false" maxlength="256" placeholder="例如：gpt-5.6-sol">
+                    <div class="upstream-model-select-shell" id="upstream-model-select-shell" hidden>
+                      <select class="mono" id="upstream-test-model-select" aria-label="选择测试模型"></select>
+                      <i class="upstream-model-select-icon" data-lucide="chevron-down" aria-hidden="true"></i>
+                    </div>
+                    <button class="upstream-model-list-toggle" id="show-upstream-model-list" type="button" aria-label="展开模型列表" title="展开模型列表" hidden><i data-lucide="chevron-down"></i></button>
+                  </div>
+                  <button class="secondary-button labeled-icon-button" id="fetch-upstream-models" type="button"><i data-lucide="list"></i><span>获取模型列表</span></button>
+                  <button class="secondary-button labeled-icon-button" id="test-upstream-connection" type="button"><i data-lucide="activity"></i><span>测试连通性</span></button>
+                </div>
+                <div class="upstream-test-result" id="upstream-test-result" role="status" aria-live="polite"></div>
+              </div>
               <button class="secondary-button icon-action-button is-hidden" id="edit-upstream-key" type="button" aria-label="编辑上游配置" title="编辑上游配置"><i data-lucide="pencil"></i></button>
             </div>
             <form class="upstream-key-form" id="upstream-key-form">
               <label><span>配置名称</span><input id="upstream-profile-name" type="text" autocomplete="off" maxlength="80" placeholder="例如：Anthropic 生产环境" required></label>
-              <label><span>上游 API 格式</span><select id="upstream-protocol" required><option value="" disabled>请选择格式</option><option value="openai_chat_completions">OpenAI Chat Completions</option><option value="openai_responses">OpenAI Responses</option><option value="anthropic_messages">Anthropic Messages</option></select></label>
               <label><span>上游 Base URL</span><input class="mono" id="upstream-base-url-input" type="url" autocomplete="url" spellcheck="false" placeholder="https://api.example.com/v1" required maxlength="2048"></label>
               <label><span>上游 API Key</span><input class="mono" id="upstream-api-key" type="password" autocomplete="new-password" spellcheck="false" maxlength="4096" placeholder="编辑时留空可保留现有密钥"></label>
+              <details class="upstream-endpoint-overrides">
+                <summary><i data-lucide="chevron-right"></i><span>高级设置（选填）</span></summary>
+                <p>只有该供应商无法从公共 Base URL 推导端点时才需要填写。</p>
+                <div>
+                  <label><span>Chat Completions 完整端点</span><input class="mono" id="upstream-endpoint-openai-chat-completions" type="url" autocomplete="off" spellcheck="false" maxlength="2048" placeholder="https://api.example.com/v1/chat/completions"></label>
+                  <label><span>Responses 完整端点</span><input class="mono" id="upstream-endpoint-openai-responses" type="url" autocomplete="off" spellcheck="false" maxlength="2048" placeholder="https://api.example.com/v1/responses"></label>
+                  <label><span>Anthropic Messages 完整端点</span><input class="mono" id="upstream-endpoint-anthropic-messages" type="url" autocomplete="off" spellcheck="false" maxlength="2048" placeholder="https://api.example.com/v1/messages"></label>
+                </div>
+              </details>
               <p class="form-error" id="upstream-key-error" role="alert"></p>
               <div class="upstream-form-actions">
                 <button class="secondary-button is-hidden" id="cancel-upstream-key" type="button">取消</button>
@@ -229,7 +251,6 @@
             <div class="configuration-actions">
               <button class="secondary-button icon-action-button" type="button" id="new-configuration" aria-label="新建检测器配置" title="新建检测器配置"><i data-lucide="plus"></i></button>
               <button class="secondary-button icon-action-button" type="button" id="duplicate-configuration" aria-label="复制检测器配置" title="复制检测器配置"><i data-lucide="copy"></i></button>
-              <button class="primary-button icon-action-button" type="button" id="activate-configuration" aria-label="启用检测器配置" title="启用检测器配置"><i data-lucide="power"></i></button>
             </div>
           </section>
 

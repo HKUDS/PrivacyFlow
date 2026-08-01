@@ -187,13 +187,16 @@ WebUI: http://127.0.0.1:8765/ui/
 Open the WebUI and:
 
 1. add a named upstream configuration;
-2. choose its exact API format;
-3. enter the provider Base URL and API key;
-4. save and enable the configuration;
-5. turn on the APG master switch.
+2. enter the provider Base URL and API key;
+3. save and enable the configuration;
+4. turn on the APG master switch.
 
 Provider keys are written to the local launcher configuration with mode `0600`
 where supported and are never returned by the management API.
+Every connection exposes the Chat Completions, Responses, and Anthropic Messages
+entrypoints by default. APG selects the matching native upstream route from the
+incoming endpoint and never converts between formats. If the provider does not
+support that format, APG returns the actual upstream error.
 
 ### 4. Point your Agent at APG
 
@@ -207,9 +210,13 @@ selection.
 | OpenAI Responses | `http://127.0.0.1:8765/v1` |
 | Anthropic Messages | `http://127.0.0.1:8765` |
 
-> [!CAUTION]
-> The Agent format must match the active upstream format exactly. APG does not
-> convert between Chat Completions, Responses, and Anthropic Messages.
+> [!NOTE]
+> APG does not convert between Chat Completions, Responses, and Anthropic
+> Messages. The Agent and upstream must support the same request format. To
+> manage and quickly switch connection profiles across different Agents and
+> model providers, consider using [CC Switch](https://github.com/farion1231/cc-switch)
+> alongside APG. CC Switch manages configurations; it is not APG's protocol
+> conversion layer.
 
 The repository-level `./apg` wrapper is also available for development
 checkouts. Installed environments should use the `apg` command.
@@ -223,6 +230,9 @@ APG accepts three API formats:
 | OpenAI Chat Completions | `POST /v1/chat/completions` |
 | OpenAI Responses | `POST /v1/responses` |
 | Anthropic Messages | `POST /v1/messages` |
+
+APG forwards each request in its original API format and does not translate it
+into another protocol.
 
 ## ✨ Features
 
@@ -247,6 +257,7 @@ materialization layers.
 
 - one-click APG master switch;
 - multiple named upstream configurations;
+- all three native API entrypoints on every upstream configuration;
 - random local Agent API-key generation;
 - bilingual English/Chinese WebUI;
 - detector presets, ordering, enablement, duplication, and advanced settings;

@@ -5,12 +5,19 @@ import os
 import re
 import sqlite3
 
+import httpx
 from fastapi.testclient import TestClient
 
 from gateway.config import GatewayConfig, UpstreamConfig, load_config
 from gateway.mapping_store import MappingStore
 from gateway.server import create_app
-from gateway.upstream_protocol import ANTHROPIC_MESSAGES, OPENAI_CHAT_COMPLETIONS
+from gateway.upstream_client import UpstreamClient
+from gateway.upstream_protocol import (
+    ANTHROPIC_MESSAGES,
+    DEFAULT_UPSTREAM_PROTOCOLS,
+    OPENAI_CHAT_COMPLETIONS,
+    OPENAI_RESPONSES,
+)
 
 
 class AdminFakeUpstream:
@@ -178,11 +185,11 @@ def test_webui_assets_and_admin_api_require_no_authentication(tmp_path) -> None:
         assert 'system.strict_mode ? "开启" : "关闭"' in app_js.text
         assert "确认后临时显示，关闭显示即清除。" in page.text
         assert "upstream-base-url-input" in page.text
-        assert 'id="upstream-protocol"' in page.text
-        assert '<option value="" disabled>请选择格式</option>' in page.text
-        assert 'value="openai_chat_completions"' in page.text
-        assert 'value="openai_responses"' in page.text
-        assert 'value="anthropic_messages"' in page.text
+        assert 'name="upstream-protocol"' not in page.text
+        assert 'id="upstream-protocol-value"' not in page.text
+        assert "支持的 API 格式" not in page.text
+        assert 'id="upstream-test-protocol"' not in page.text
+        assert 'id="upstream-effective-endpoints"' not in page.text
         assert "const showingDefaults = editing && editingProfile && !editingProfile.persisted;" in app_js.text
         assert 'setup.classList.toggle("is-editing", editing);' in app_js.text
         assert "@media (min-width: 1100px)" in styles.text
@@ -190,7 +197,7 @@ def test_webui_assets_and_admin_api_require_no_authentication(tmp_path) -> None:
         assert "nameInput.placeholder = showingDefaults" in app_js.text
         assert "baseUrlInput.placeholder = showingDefaults" in app_js.text
         assert "!selected.persisted" in app_js.text
-        assert "#upstream-protocol:invalid { color: var(--muted); }" in styles.text
+        assert ".upstream-protocol-options" not in styles.text
         assert "input::placeholder, textarea::placeholder { color: var(--muted); opacity: 1; }" in styles.text
         assert "data-connection-protocol" not in page.text
         assert "agent-openai-base-url" in page.text
@@ -201,6 +208,29 @@ def test_webui_assets_and_admin_api_require_no_authentication(tmp_path) -> None:
         assert 'api("/connection/api-key", {method: "POST"})' in app_js.text
         assert "Generate random API key" in i18n_js.text
         assert 'api("/upstream-configuration"' in app_js.text
+        assert 'id="test-upstream-connection"' in page.text
+        assert 'id="fetch-upstream-models"' in page.text
+        assert 'id="upstream-test-model-select"' in page.text
+        assert 'id="upstream-model-select-shell"' in page.text
+        assert 'data-lucide="chevron-down"' in page.text
+        assert ".upstream-model-list-toggle[hidden] { display: none; }" in styles.text
+        assert 'id="upstream-test-model-options"' not in page.text
+        assert 'list="upstream-test-model-options"' not in page.text
+        assert 'api("/upstream-configuration/test"' in app_js.text
+        assert 'api("/upstream-configuration/models")' in app_js.text
+        assert "renderUpstreamProtocolResults" in app_js.text
+        assert "正在自动测试三种 API 格式…" in app_js.text
+        assert "Automatically testing all three API formats" in i18n_js.text
+        assert "APG_UPSTREAM_PROTOCOL_MISMATCH" in app_js.text
+        assert app_js.text.index('<option value="__manual__">') < app_js.text.index('${models.map((model)')
+        assert '$("#fetch-upstream-models").disabled = !selected?.active;' in app_js.text
+        assert '$("#test-upstream-connection").disabled = !selected?.active;' in app_js.text
+        assert 'resetUpstreamTestResult("请先启用所选配置后再测试。")' in app_js.text
+        assert "Activate the selected configuration before testing it." in i18n_js.text
+        assert "Fetch models" in i18n_js.text
+        assert "Fetching the model list from the active upstream" in i18n_js.text
+        assert "Open model list" in i18n_js.text
+        assert "Effective endpoint" in i18n_js.text
         assert 'data-locale="zh"' in page.text
         assert 'data-locale="en"' in page.text
         assert page.text.index("/ui/assets/i18n.js") < page.text.index("/ui/assets/app.js")
@@ -382,7 +412,12 @@ def test_webui_assets_and_admin_api_require_no_authentication(tmp_path) -> None:
         assert "mapping-retention-enabled" in page.text
         assert "upstream-profile-select" in page.text
         assert "new-upstream-profile" in page.text
-        assert "activate-upstream-profile" in page.text
+        assert "activate-upstream-profile" not in page.text
+        assert "activate-configuration" not in page.text
+        assert 'switchUpstreamProfile(event.target.value)' in app_js.text
+        assert 'activateDetectorConfiguration(configurationId)' in app_js.text
+        assert ".icon-action-button {\n  width: 36px;\n  min-width: 36px;\n  height: 36px;\n  min-height: 36px;\n  padding: 0;\n}" in styles.text
+        assert ".row-action.icon-row-button { width: 30px; min-width: 30px; height: 30px; min-height: 30px; padding: 0; }" in styles.text
         assert "#upstream-status { width: max-content; max-width: 100%; justify-self: end; justify-content: center; flex-wrap: nowrap; white-space: nowrap;" in styles.text
         assert "minmax(220px, .85fr) max-content;" in styles.text
         assert "#edit-upstream-key { grid-column: 4; grid-row: 2; justify-self: end;" in styles.text
@@ -558,7 +593,7 @@ def test_webui_can_persist_and_hot_apply_first_run_upstream_key(tmp_path, monkey
             headers={"Authorization": "Bearer agent-key"},
             json={"model": "test", "messages": [{"role": "user", "content": "hello"}]},
         )
-        assert mismatched_response.status_code == 501
+        assert mismatched_response.status_code == 200
 
         response = client.post(
             "/v1/messages",
@@ -584,6 +619,305 @@ def test_webui_can_persist_and_hot_apply_first_run_upstream_key(tmp_path, monkey
     assert "saved-provider-key" not in audit_text
 
 
+def test_webui_upstream_connectivity_test_checks_all_native_protocols_and_reports_safe_failures(tmp_path) -> None:
+    class ConnectivityUpstream(AdminFakeUpstream):
+        def __init__(self) -> None:
+            self.calls = []
+
+        async def request_json(self, method, path, payload=None):
+            self.calls.append((method, path, payload))
+            return 503, {
+                "content-type": "application/json",
+                "x-request-id": "up_req_test",
+                "set-cookie": "must-not-be-returned",
+            }, {
+                "error": {
+                    "type": "server_error",
+                    "code": "concurrency_limit_exceeded",
+                    "message": "Concurrency limit exceeded, retry later.",
+                }
+            }
+
+    upstream = ConnectivityUpstream()
+    base = _config(tmp_path)
+    cfg = GatewayConfig(
+        **{
+            **base.__dict__,
+            "upstream": UpstreamConfig(
+                base_url="https://upstream.example/v1",
+                api_key="provider-key",
+                protocol=OPENAI_RESPONSES,
+                strip_local_v1=True,
+            ),
+        }
+    )
+    with TestClient(create_app(cfg, upstream)) as client:
+        response = client.post(
+            "/api/admin/upstream-configuration/test",
+            headers=_admin_headers(),
+            json={"model": "gpt-test"},
+        )
+        assert response.status_code == 200
+        result = response.json()
+        assert result["ok"] is False
+        assert result["all_ok"] is False
+        assert result["supported_protocols"] == []
+        assert [item["protocol"] for item in result["results"]] == list(DEFAULT_UPSTREAM_PROTOCOLS)
+        for item in result["results"]:
+            assert item["status_code"] == 503
+            assert item["target_endpoint"] == f"https://upstream.example{item['endpoint']}"
+            assert item["error"] == {
+                "type": "server_error",
+                "code": "concurrency_limit_exceeded",
+                "message": "Concurrency limit exceeded, retry later.",
+            }
+            assert item["upstream_trace_headers"] == {"x-request-id": "up_req_test"}
+        assert upstream.calls == [
+            (
+                "POST",
+                "/v1/chat/completions",
+                {
+                    "model": "gpt-test",
+                    "messages": [{"role": "user", "content": "Reply exactly with OK."}],
+                    "max_tokens": 8,
+                    "stream": False,
+                },
+            ),
+            (
+                "POST",
+                "/v1/responses",
+                {
+                    "model": "gpt-test",
+                    "input": "Reply exactly with OK.",
+                    "max_output_tokens": 16,
+                    "stream": False,
+                },
+            ),
+            (
+                "POST",
+                "/v1/messages",
+                {
+                    "model": "gpt-test",
+                    "messages": [{"role": "user", "content": "Reply exactly with OK."}],
+                    "max_tokens": 8,
+                    "stream": False,
+                },
+            ),
+        ]
+
+    audit_text = (tmp_path / "audit.jsonl").read_text(encoding="utf-8")
+    assert "test_upstream_connection" in audit_text
+    assert "Concurrency limit exceeded" not in audit_text
+    assert "provider-key" not in response.text
+
+
+def test_webui_upstream_connectivity_rejects_http_success_with_wrong_protocol_shape(tmp_path) -> None:
+    class MismatchedUpstream(AdminFakeUpstream):
+        async def request_json(self, method, path, payload=None):
+            return 200, {"content-type": "application/json"}, {
+                "choices": [{"message": {"role": "assistant", "content": "OK"}}]
+            }
+
+    with TestClient(create_app(_config(tmp_path), MismatchedUpstream())) as client:
+        response = client.post(
+            "/api/admin/upstream-configuration/test",
+            headers=_admin_headers(),
+            json={"model": "gpt-test"},
+        )
+
+    assert response.status_code == 200
+    result = response.json()
+    assert result["ok"] is True
+    assert result["all_ok"] is False
+    assert result["supported_protocols"] == [OPENAI_CHAT_COMPLETIONS]
+    by_protocol = {item["protocol"]: item for item in result["results"]}
+    assert by_protocol[OPENAI_CHAT_COMPLETIONS]["ok"] is True
+    for protocol in (OPENAI_RESPONSES, ANTHROPIC_MESSAGES):
+        assert by_protocol[protocol]["ok"] is False
+        assert by_protocol[protocol]["status_code"] == 200
+        assert by_protocol[protocol]["error"]["code"] == "APG_UPSTREAM_PROTOCOL_MISMATCH"
+
+
+def test_webui_upstream_model_list_returns_only_safe_model_ids(tmp_path) -> None:
+    class ModelListUpstream(AdminFakeUpstream):
+        def __init__(self) -> None:
+            self.calls = []
+
+        async def request_json(self, method, path, payload=None):
+            self.calls.append((method, path, payload))
+            return 200, {
+                "content-type": "application/json",
+                "x-request-id": "up_models_test",
+                "set-cookie": "must-not-be-returned",
+            }, {
+                "data": [
+                    {"id": "gpt-a", "private_metadata": "must-not-be-returned"},
+                    {"model": "gpt-b"},
+                    {"name": "gpt-c"},
+                    {"id": "gpt-a"},
+                    {"id": "bad\nmodel"},
+                    {"id": "x" * 257},
+                    {"unrecognized": "ignored"},
+                ],
+                "provider_secret": "must-not-be-returned",
+            }
+
+    upstream = ModelListUpstream()
+    base = _config(tmp_path)
+    cfg = GatewayConfig(
+        **{
+            **base.__dict__,
+            "upstream": UpstreamConfig(
+                base_url="https://upstream.example/v1",
+                api_key="provider-key",
+                protocol=OPENAI_RESPONSES,
+                strip_local_v1=True,
+            ),
+        }
+    )
+    with TestClient(create_app(cfg, upstream)) as client:
+        response = client.get(
+            "/api/admin/upstream-configuration/models",
+            headers=_admin_headers(),
+        )
+        assert response.status_code == 200
+        result = response.json()
+        assert result == {
+            "ok": True,
+            "endpoint": "/v1/models",
+            "target_endpoint": "https://upstream.example/v1/models",
+            "status_code": 200,
+            "latency_ms": result["latency_ms"],
+            "models": ["gpt-a", "gpt-b", "gpt-c"],
+            "truncated": False,
+            "upstream_trace_headers": {"x-request-id": "up_models_test"},
+            "error": None,
+        }
+        assert upstream.calls == [("GET", "/v1/models", None)]
+        assert "must-not-be-returned" not in response.text
+        assert "provider-key" not in response.text
+
+    audit_text = (tmp_path / "audit.jsonl").read_text(encoding="utf-8")
+    model_list_event = next(
+        event
+        for event in (json.loads(line) for line in audit_text.splitlines())
+        if event.get("action") == "list_upstream_models"
+    )
+    assert model_list_event["model_count"] == 3
+    assert "gpt-a" not in audit_text
+    assert "provider-key" not in audit_text
+
+
+def test_webui_upstream_model_list_uses_standard_v1_route_for_root_base_url(tmp_path) -> None:
+    captured: dict[str, str] = {}
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        captured["url"] = str(request.url)
+        return httpx.Response(
+            200,
+            headers={"x-request-id": "models_v1_route"},
+            json={"data": [{"id": "gpt-test"}]},
+        )
+
+    base = _config(tmp_path)
+    upstream_config = UpstreamConfig(
+        base_url="https://upstream.example",
+        api_key="provider-key",
+        protocol=OPENAI_RESPONSES,
+        strip_local_v1=True,
+    )
+    upstream = UpstreamClient(upstream_config, transport=httpx.MockTransport(handler))
+    cfg = GatewayConfig(**{**base.__dict__, "upstream": upstream_config})
+
+    with TestClient(create_app(cfg, upstream)) as client:
+        response = client.get(
+            "/api/admin/upstream-configuration/models",
+            headers=_admin_headers(),
+        )
+
+    assert response.status_code == 200
+    assert response.json()["target_endpoint"] == "https://upstream.example/v1/models"
+    assert response.json()["models"] == ["gpt-test"]
+    assert captured["url"] == "https://upstream.example/v1/models"
+
+
+def test_webui_full_chat_completions_endpoint_resolves_models_and_test_as_siblings(tmp_path) -> None:
+    captured: list[tuple[str, str]] = []
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        captured.append((request.method, str(request.url)))
+        if request.method == "GET":
+            return httpx.Response(200, json={"data": [{"id": "openai/gpt-test"}]})
+        if request.url.path.endswith("/responses"):
+            return httpx.Response(200, json={"id": "resp_test", "object": "response", "output": []})
+        if request.url.path.endswith("/messages"):
+            return httpx.Response(200, json={"id": "msg_test", "type": "message", "role": "assistant", "content": []})
+        return httpx.Response(
+            200,
+            json={"choices": [{"message": {"role": "assistant", "content": "OK"}}]},
+        )
+
+    base = _config(tmp_path)
+    upstream_config = UpstreamConfig(
+        base_url="https://openrouter.ai/api/v1/chat/completions",
+        api_key="provider-key",
+        protocol=OPENAI_CHAT_COMPLETIONS,
+        strip_local_v1=True,
+    )
+    upstream = UpstreamClient(upstream_config, transport=httpx.MockTransport(handler))
+    cfg = GatewayConfig(**{**base.__dict__, "upstream": upstream_config})
+
+    with TestClient(create_app(cfg, upstream)) as client:
+        models = client.get("/api/admin/upstream-configuration/models", headers=_admin_headers())
+        connectivity = client.post(
+            "/api/admin/upstream-configuration/test",
+            headers=_admin_headers(),
+            json={"model": "openai/gpt-test"},
+        )
+
+    assert models.status_code == 200
+    assert models.json()["target_endpoint"] == "https://openrouter.ai/api/v1/models"
+    assert models.json()["models"] == ["openai/gpt-test"]
+    assert connectivity.status_code == 200
+    assert connectivity.json()["ok"] is True
+    assert connectivity.json()["all_ok"] is True
+    assert [item["target_endpoint"] for item in connectivity.json()["results"]] == [
+        "https://openrouter.ai/api/v1/chat/completions",
+        "https://openrouter.ai/api/v1/responses",
+        "https://openrouter.ai/api/v1/messages",
+    ]
+    assert captured == [
+        ("GET", "https://openrouter.ai/api/v1/models"),
+        ("POST", "https://openrouter.ai/api/v1/chat/completions"),
+        ("POST", "https://openrouter.ai/api/v1/responses"),
+        ("POST", "https://openrouter.ai/api/v1/messages"),
+    ]
+
+
+def test_webui_upstream_model_list_rejects_non_json_success_response(tmp_path) -> None:
+    class NonJsonModelListUpstream(AdminFakeUpstream):
+        async def request_json(self, method, path, payload=None):
+            return 200, {"content-type": "text/html; charset=utf-8"}, {
+                "error": {"message": "Upstream returned non-JSON response"}
+            }
+
+    with TestClient(create_app(_config(tmp_path), NonJsonModelListUpstream())) as client:
+        response = client.get(
+            "/api/admin/upstream-configuration/models",
+            headers=_admin_headers(),
+        )
+
+    assert response.status_code == 200
+    result = response.json()
+    assert result["ok"] is False
+    assert result["models"] == []
+    assert result["error"] == {
+        "type": "UpstreamResponseFormatError",
+        "code": "APG_UPSTREAM_NON_JSON",
+        "message": "The upstream model-list endpoint returned a non-JSON response.",
+    }
+
+
 def test_default_upstream_store_survives_app_restart(tmp_path, monkeypatch) -> None:
     monkeypatch.delenv("APG_LAUNCHER_CONFIG_PATH", raising=False)
     launcher_path = tmp_path / "launcher.json"
@@ -603,7 +937,9 @@ def test_default_upstream_store_survives_app_restart(tmp_path, monkeypatch) -> N
                 "profile_id": "runtime_default",
                 "name": "本地持久配置",
                 "protocol": ANTHROPIC_MESSAGES,
+                "protocols": list(DEFAULT_UPSTREAM_PROTOCOLS),
                 "base_url": "https://persisted.example/anthropic",
+                "endpoint_overrides": {},
                 "api_key": "",
             },
         )
@@ -631,7 +967,9 @@ def test_default_upstream_store_survives_app_restart(tmp_path, monkeypatch) -> N
                 "id": saved_body["active_profile_id"],
                 "name": "本地持久配置",
                 "protocol": ANTHROPIC_MESSAGES,
+                "protocols": list(DEFAULT_UPSTREAM_PROTOCOLS),
                 "base_url": "https://persisted.example/anthropic",
+                "endpoint_overrides": {},
                 "has_api_key": True,
                 "active": True,
                 "persisted": True,
@@ -1119,6 +1457,43 @@ def test_admin_projects_stream_summary_counters(tmp_path) -> None:
 
         overview = client.get("/api/admin/overview", headers=_admin_headers()).json()
         assert overview["metrics"]["materializations_24h"] == 8
+
+
+def test_admin_exposes_safe_upstream_stream_failure_details(tmp_path) -> None:
+    cfg = _config(tmp_path)
+    request_id = "req_0123456789ab"
+    with TestClient(create_app(cfg, AdminFakeUpstream())) as client:
+        client.app.state.admin_service.audit.log(
+            {
+                "request_id": request_id,
+                "session_id": "sess_upstream_failure",
+                "endpoint": "/v1/responses",
+                "phase": "response_stream_complete",
+                "stream": True,
+                "termination": "failed",
+                "upstream_error_event": "response.failed",
+                "upstream_error_type": "server_error",
+                "upstream_error_code": "concurrency_limit_exceeded",
+                "upstream_trace_headers": {"x-request-id": "up_req_123"},
+            }
+        )
+
+        summary = client.get(
+            "/api/admin/audit/requests?activity=error",
+            headers=_admin_headers(),
+        ).json()["requests"][0]
+        assert summary["request_id"] == request_id
+        assert summary["status"] == "error"
+
+        detail = client.get(
+            f"/api/admin/audit/requests/{request_id}",
+            headers=_admin_headers(),
+        ).json()
+        assert detail["termination"] == "failed"
+        assert detail["upstream_error_event"] == "response.failed"
+        assert detail["upstream_error_type"] == "server_error"
+        assert detail["upstream_error_code"] == "concurrency_limit_exceeded"
+        assert detail["upstream_trace_headers"] == {"x-request-id": "up_req_123"}
 
 
 def test_audit_operation_storage_merges_occurrences_and_caps_distinct_details(tmp_path) -> None:

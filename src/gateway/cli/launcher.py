@@ -4,15 +4,18 @@ import argparse
 import json
 import os
 import secrets
+import sys
 import tempfile
 from collections.abc import Mapping, MutableMapping, Sequence
 from pathlib import Path
 from typing import Any
-from urllib.parse import urlparse
+from urllib.parse import urlparse, urlunparse
 
 from gateway.upstream_protocol import (
+    DEFAULT_UPSTREAM_PROTOCOLS,
     OPENAI_CHAT_COMPLETIONS,
     SUPPORTED_UPSTREAM_PROTOCOLS,
+    UPSTREAM_PROTOCOL_ENDPOINTS,
     canonical_upstream_protocol,
 )
 
@@ -39,8 +42,9 @@ def main(argv: Sequence[str] | None = None) -> None:
     apply_launcher_environment(config)
     host = os.environ.get("APG_HOST", "127.0.0.1")
     port = os.environ.get("APG_PORT", "8765")
+    webui_url = f"http://{host}:{port}/ui/"
     print("Agent Privacy Gateway")
-    print(f"WebUI: http://{host}:{port}/ui/")
+    print(f"WebUI: {terminal_hyperlink(webui_url)}")
     if (
         config["_resolved_upstream_protocol"] not in SUPPORTED_UPSTREAM_PROTOCOLS
         or not config["_resolved_upstream_base_url"]
@@ -52,6 +56,22 @@ def main(argv: Sequence[str] | None = None) -> None:
     from gateway.server import main as server_main
 
     server_main()
+
+
+def terminal_hyperlink(
+    url: str,
+    *,
+    stream: Any | None = None,
+    environ: Mapping[str, str] | None = None,
+) -> str:
+    """Render a clickable OSC 8 link in terminals, with a plain-text fallback."""
+    output_stream = sys.stdout if stream is None else stream
+    environment = os.environ if environ is None else environ
+    safe_url = "".join(char if ord(char) >= 32 and ord(char) != 127 else "�" for char in url)
+    is_tty = bool(getattr(output_stream, "isatty", lambda: False)())
+    if safe_url != url or not is_tty or environment.get("TERM", "").lower() == "dumb":
+        return safe_url
+    return f"\033]8;;{safe_url}\033\\{safe_url}\033]8;;\033\\"
 
 
 def prepare_launcher_config(
@@ -145,11 +165,15 @@ def save_launcher_upstream_api_key(path: Path, api_key: str) -> None:
         ),
         None,
     )
-    save_launcher_upstream_configuration(
+    save_launcher_upstream_profile(
         path,
-        str((active or {}).get("protocol", "")),
-        str((active or {}).get("base_url", "")),
-        api_key,
+        profile_id=str((active or {}).get("id", "")),
+        name=str((active or {}).get("name") or DEFAULT_UPSTREAM_PROFILE_NAME),
+        protocol=str((active or {}).get("protocol", "")),
+        protocols=(active or {}).get("protocols"),
+        base_url=str((active or {}).get("base_url", "")),
+        api_key=api_key,
+        endpoint_overrides=(active or {}).get("endpoint_overrides"),
     )
 
 
@@ -179,9 +203,13 @@ def save_launcher_upstream_profile(
     protocol: str,
     base_url: str,
     api_key: str,
+    protocols: Sequence[str] | None = None,
+    endpoint_overrides: Mapping[str, str] | None = None,
 ) -> dict[str, Any]:
     normalized_protocol = normalize_upstream_protocol(protocol)
+    normalized_protocols = list(DEFAULT_UPSTREAM_PROTOCOLS)
     normalized_base_url = normalize_upstream_base_url(base_url)
+    normalized_overrides = normalize_upstream_endpoint_overrides(endpoint_overrides or {})
     normalized_name = normalize_upstream_profile_name(name)
     config = prepare_launcher_config(path, environ={})
     profiles = [dict(profile) for profile in config["upstream_profiles"]]
@@ -196,8 +224,10 @@ def save_launcher_upstream_profile(
         "id": resolved_id,
         "name": normalized_name,
         "protocol": normalized_protocol,
+        "protocols": normalized_protocols,
         "base_url": normalized_base_url,
         "api_key": normalized_key,
+        "endpoint_overrides": normalized_overrides,
     }
     profiles = [profile if item["id"] == resolved_id else item for item in profiles]
     if existing is None:
@@ -262,7 +292,45 @@ def normalize_upstream_protocol(protocol: str) -> str:
     return normalized
 
 
+def normalize_upstream_protocols(protocols: Sequence[str]) -> list[str]:
+    normalized: list[str] = []
+    for protocol in protocols:
+        value = normalize_upstream_protocol(str(protocol))
+        if value not in normalized:
+            normalized.append(value)
+    if not normalized:
+        raise LauncherConfigError("Select at least one upstream API format.")
+    return normalized
+
+
 def normalize_upstream_base_url(base_url: str) -> str:
+    normalized = _validate_upstream_url(base_url)
+    parsed = urlparse(normalized)
+    path = parsed.path.rstrip("/")
+    terminal_suffixes = sorted(
+        {endpoint.removeprefix("/v1") for endpoint in UPSTREAM_PROTOCOL_ENDPOINTS.values()} | {"/models"},
+        key=len,
+        reverse=True,
+    )
+    for suffix in terminal_suffixes:
+        if path.endswith(suffix):
+            path = path[: -len(suffix)].rstrip("/")
+            break
+    return urlunparse((parsed.scheme, parsed.netloc, path, "", "", "")).rstrip("/")
+
+
+def normalize_upstream_endpoint_overrides(overrides: Mapping[str, str]) -> dict[str, str]:
+    normalized: dict[str, str] = {}
+    for raw_protocol, raw_url in overrides.items():
+        url = str(raw_url).strip()
+        if not url:
+            continue
+        protocol = normalize_upstream_protocol(str(raw_protocol))
+        normalized[protocol] = _validate_upstream_url(url)
+    return normalized
+
+
+def _validate_upstream_url(base_url: str) -> str:
     normalized = base_url.strip().rstrip("/")
     if not normalized or len(normalized) > 2048:
         raise LauncherConfigError("The upstream Base URL must contain between 1 and 2048 characters.")
@@ -294,13 +362,28 @@ def _normalize_upstream_profiles(config: dict[str, Any]) -> tuple[list[dict[str,
                 continue
             profile_id = str(raw.get("id") or f"up_{secrets.token_urlsafe(12)}")
             name = str(raw.get("name") or f"配置 {index + 1}")
+            protocols = list(DEFAULT_UPSTREAM_PROTOCOLS)
             protocol = canonical_upstream_protocol(str(raw.get("protocol", "")))
+            if protocol not in SUPPORTED_UPSTREAM_PROTOCOLS:
+                protocol = OPENAI_CHAT_COMPLETIONS
+            raw_overrides = raw.get("endpoint_overrides", {})
+            if not isinstance(raw_overrides, dict):
+                raw_overrides = {}
+                changed = True
+            endpoint_overrides = {
+                canonical_upstream_protocol(str(key)): str(value).strip().rstrip("/")
+                for key, value in raw_overrides.items()
+                if canonical_upstream_protocol(str(key)) in SUPPORTED_UPSTREAM_PROTOCOLS
+                and str(value).strip()
+            }
             profile = {
                 "id": profile_id,
                 "name": name,
                 "protocol": protocol,
+                "protocols": protocols,
                 "base_url": str(raw.get("base_url", "")).rstrip("/"),
                 "api_key": str(raw.get("api_key", "")).strip(),
+                "endpoint_overrides": endpoint_overrides,
             }
             if profile != raw:
                 changed = True
@@ -320,8 +403,10 @@ def _normalize_upstream_profiles(config: dict[str, Any]) -> tuple[list[dict[str,
                     "id": f"up_{secrets.token_urlsafe(12)}",
                     "name": DEFAULT_UPSTREAM_PROFILE_NAME,
                     "protocol": legacy_protocol,
+                    "protocols": list(DEFAULT_UPSTREAM_PROTOCOLS),
                     "base_url": legacy_base_url,
                     "api_key": legacy_api_key,
+                    "endpoint_overrides": {},
                 }
             )
         changed = True

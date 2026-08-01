@@ -105,7 +105,6 @@ button:focus-visible { outline: 2px solid var(--blue); outline-offset: 2px; }
 .upstream-key-form label { min-width: 0; }
 .upstream-target { min-width: 0; margin: 0 0 10px; color: var(--muted); font-size: 10px; }
 .upstream-target strong { display: block; max-width: 300px; margin-top: 4px; color: var(--ink); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.upstream-protocol strong { margin-left: 5px; color: var(--ink); }
 .upstream-key-form .form-error { grid-column: 1 / -1; margin: 0; }
 .upstream-form-actions { grid-column: 1 / -1; display: flex; justify-content: flex-end; gap: 8px; }
 .agent-access { margin-bottom: 20px; border: 1px solid var(--line); border-left: 3px solid var(--green); border-radius: 6px; background: var(--surface); display: grid; grid-template-columns: minmax(180px, .55fr) minmax(0, 1.45fr); }
@@ -208,8 +207,6 @@ input, select, textarea { width: 100%; border: 1px solid var(--line-strong); bor
 input, select { height: 38px; padding: 0 11px; }
 textarea { resize: vertical; min-height: 142px; padding: 11px; line-height: 1.5; }
 input::placeholder, textarea::placeholder { color: var(--muted); opacity: 1; }
-#upstream-protocol:invalid { color: var(--muted); }
-#upstream-protocol option { color: var(--ink); }
 input:focus, select:focus, textarea:focus { border-color: var(--green); box-shadow: 0 0 0 3px rgba(22, 121, 75, .1); }
 .result-meta { min-height: 42px; display: flex; align-items: center; justify-content: space-between; color: var(--muted); font-size: 11px; }
 .visibility-button { width: 38px; height: 38px; flex: 0 0 38px; border: 1px solid var(--line-strong); border-radius: 5px; padding: 0; color: var(--ink); background: var(--surface); display: grid; place-items: center; }
@@ -577,8 +574,8 @@ input:focus, select:focus, textarea:focus { border-color: var(--green); box-shad
   .upstream-setup:not(.is-editing) #upstream-description { grid-column: 1; grid-row: 2; }
   .upstream-setup:not(.is-editing) .upstream-profile-toolbar { grid-column: 2; grid-row: 1 / span 2; max-width: none; }
   .upstream-setup:not(.is-editing) .upstream-target { grid-column: 3; grid-row: 1; margin: 0; }
-  .upstream-setup:not(.is-editing) .upstream-protocol { grid-column: 3; grid-row: 2; margin: 0; }
   .upstream-setup:not(.is-editing) #edit-upstream-key { grid-column: 4; grid-row: 2; justify-self: end; margin: 0; }
+  .upstream-setup:not(.is-editing) .upstream-connectivity-test { grid-column: 1 / -1; grid-row: 3; }
 }
 
 @media (max-width: 1050px) {
@@ -609,6 +606,7 @@ input:focus, select:focus, textarea:focus { border-color: var(--green); box-shad
   .upstream-setup-copy { border-right: 0; border-bottom: 1px solid var(--line); }
   .upstream-key-form { grid-template-columns: 1fr; }
   .upstream-key-form .form-error, .upstream-form-actions { grid-column: 1; }
+  .upstream-endpoint-overrides > div { grid-template-columns: 1fr; }
 }
 
 @media (max-width: 760px) {
@@ -681,7 +679,7 @@ input:focus, select:focus, textarea:focus { border-color: var(--green); box-shad
   .configuration-toolbar { align-items: stretch; flex-direction: column; }
   .configuration-picker { width: 100%; }
   .configuration-picker select { padding-right: 34px; font-size: 14px; }
-  .configuration-actions { display: grid; grid-template-columns: repeat(3, 38px); justify-content: start; }
+  .configuration-actions { display: grid; grid-template-columns: repeat(2, 38px); justify-content: start; }
   .configuration-actions .primary-button { grid-column: auto; }
   .configuration-heading { flex-direction: column; }
   .configuration-identity input { max-width: 100%; font-size: 16px; text-overflow: ellipsis; }
@@ -1140,18 +1138,121 @@ summary { border-radius: var(--r-sm); }
   padding: 0;
   font-size: var(--fs-sm);
 }
-/* Base URL and protocol are a matched pair; stack both label-over-value. */
-.upstream-target,
-.upstream-protocol { color: var(--muted); font-size: var(--fs-xs); }
-.upstream-target strong,
-.upstream-protocol strong {
+.upstream-target { color: var(--muted); font-size: var(--fs-xs); }
+.upstream-target strong {
   display: block;
   margin: 4px 0 0;
   color: var(--ink);
   font-size: var(--fs-sm);
   line-height: var(--lh-snug);
+  font-family: var(--font-mono);
 }
-.upstream-target strong { font-family: var(--font-mono); }
+.upstream-endpoint-overrides { grid-column: 1 / -1; padding-top: 2px; }
+.upstream-endpoint-overrides > summary { width: max-content; color: var(--green-dark); cursor: pointer; list-style: none; display: flex; align-items: center; gap: 5px; font-size: var(--fs-xs); font-weight: 700; }
+.upstream-endpoint-overrides > summary::-webkit-details-marker { display: none; }
+.upstream-endpoint-overrides > summary .lucide { width: 14px; height: 14px; transition: transform .15s; }
+.upstream-endpoint-overrides[open] > summary .lucide { transform: rotate(90deg); }
+.upstream-endpoint-overrides > p { margin: 8px 0; color: var(--muted); font-size: var(--fs-micro); }
+.upstream-endpoint-overrides > div { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; }
+.upstream-connectivity-test {
+  grid-column: 1 / -1;
+  min-width: 0;
+  margin-top: 8px;
+  padding-top: 14px;
+  border-top: 1px solid var(--line);
+}
+.upstream-connectivity-test > label > span {
+  color: var(--muted);
+  font-size: var(--fs-xs);
+  font-weight: 600;
+}
+.upstream-test-controls {
+  margin-top: 7px;
+  display: grid;
+  grid-template-columns: minmax(220px, 1fr) max-content max-content;
+  gap: 8px;
+}
+.upstream-test-controls > select { min-width: 0; }
+.upstream-model-picker {
+  position: relative;
+  min-width: 0;
+}
+.upstream-model-picker input,
+.upstream-model-select-shell,
+.upstream-model-select-shell select { min-width: 0; width: 100%; }
+.upstream-model-select-shell { position: relative; }
+.upstream-model-select-shell select {
+  appearance: none;
+  -webkit-appearance: none;
+  padding-right: 40px;
+  cursor: pointer;
+}
+.upstream-model-select-icon {
+  position: absolute;
+  top: 50%;
+  right: 12px;
+  width: 17px;
+  height: 17px;
+  color: var(--muted);
+  pointer-events: none;
+  transform: translateY(-50%);
+}
+.upstream-model-list-toggle {
+  position: absolute;
+  top: 0;
+  right: 0;
+  display: inline-flex;
+  width: 36px;
+  height: 36px;
+  padding: 0;
+  align-items: center;
+  justify-content: center;
+  color: var(--muted);
+  border: 0;
+  border-left: 1px solid var(--line-strong);
+  border-radius: 0 var(--r-sm) var(--r-sm) 0;
+  background: transparent;
+}
+.upstream-model-list-toggle[hidden] { display: none; }
+.upstream-model-list-toggle:hover:not(:disabled) { color: var(--green-dark); background: var(--green-soft); }
+.upstream-model-list-toggle:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
+.upstream-model-list-toggle svg { width: 17px; height: 17px; }
+.upstream-model-picker[data-has-models="true"] > input { padding-right: 46px; }
+.upstream-test-result {
+  min-height: 18px;
+  margin-top: 8px;
+  color: var(--muted);
+  font-family: var(--font-mono);
+  font-size: var(--fs-xs);
+  line-height: var(--lh-snug);
+  overflow-wrap: anywhere;
+}
+.upstream-test-result.is-success { color: var(--green-dark); }
+.upstream-test-result.is-error { color: var(--coral-dark); }
+.upstream-test-result.is-running { color: var(--blue); }
+.upstream-protocol-results {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+  font-family: var(--font-sans);
+}
+.upstream-protocol-result {
+  min-width: 0;
+  padding: 10px 12px;
+  border-radius: var(--r-sm);
+  background: var(--surface-soft);
+  box-shadow: inset 0 0 0 1px var(--line);
+}
+.upstream-protocol-result.is-success { color: var(--green-dark); background: var(--green-soft); box-shadow: inset 0 0 0 1px var(--green-line); }
+.upstream-protocol-result.is-error { color: var(--coral-dark); background: var(--coral-soft); box-shadow: inset 0 0 0 1px var(--coral-line); }
+.upstream-protocol-result-heading,
+.upstream-protocol-result-heading > span { display: flex; align-items: center; gap: 7px; }
+.upstream-protocol-result-heading { justify-content: space-between; }
+.upstream-protocol-result-heading .lucide { width: 16px; height: 16px; flex: 0 0 auto; }
+.upstream-protocol-result-heading strong { color: var(--ink); font-size: var(--fs-xs); }
+.upstream-protocol-result-heading em { font-size: var(--fs-micro); font-style: normal; font-weight: 700; }
+.upstream-protocol-result small { display: block; margin-top: 6px; overflow-wrap: anywhere; color: var(--muted); font-family: var(--font-mono); font-size: var(--fs-micro); line-height: var(--lh-snug); }
+.upstream-protocol-result .upstream-protocol-result-error { color: currentColor; font-family: var(--font-sans); }
 
 /* Deleting a saved upstream is destructive but not the primary action here. */
 .upstream-profile-actions .danger-button {
@@ -1614,6 +1715,7 @@ label > span {
   min-width: 36px;
   height: 36px;
   min-height: 36px;
+  padding: 0;
 }
 .visibility-button {
   width: 36px;
@@ -1632,7 +1734,7 @@ label > span {
 }
 .row-action:hover:not(:disabled) { background: var(--green-soft); }
 .row-action.danger:hover:not(:disabled) { background: var(--coral-soft); }
-.row-action.icon-row-button { width: 30px; min-width: 30px; height: 30px; min-height: 30px; }
+.row-action.icon-row-button { width: 30px; min-width: 30px; height: 30px; min-height: 30px; padding: 0; }
 .row-action.icon-row-button .lucide { width: 16px; height: 16px; }
 .labeled-icon-button .lucide { width: 16px; height: 16px; }
 
@@ -2054,6 +2156,8 @@ label > span {
   .upstream-key-form,
   .agent-access-heading,
   .agent-access-fields { padding: 16px; }
+  .upstream-test-controls { grid-template-columns: 1fr; }
+  .upstream-test-controls button { width: 100%; }
   .metric-card { min-height: 108px; padding: 16px; }
   .metric-card strong { font-size: var(--fs-2xl); }
   .dashboard-grid { margin-top: 12px; }
@@ -2074,7 +2178,7 @@ label > span {
   .local-runtime-section { padding: 0; }
   .audit-filter-bar { grid-template-columns: 1fr; }
   .protected-heading .toolbar-actions { grid-template-columns: minmax(0, 1fr) 36px 36px; }
-  .configuration-actions { grid-template-columns: repeat(3, 36px); }
+  .configuration-actions { grid-template-columns: repeat(2, 36px); }
   .configuration-save-actions #delete-configuration { flex: 0 0 36px; }
   .audit-operation-table td::before,
   .protected-values-table td::before {

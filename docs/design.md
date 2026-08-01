@@ -78,7 +78,7 @@ Tool arguments are never treated as visible prose. Chat and Anthropic streaming 
 
 This stateful guarantee covers OpenAI Chat Completions, OpenAI Responses, and Anthropic Messages. Unknown text-bearing Responses delta types fail closed. It does not cover Gemini, MCP, provider-hosted tool execution, custom transports, or raw values written by an agent into its own local transcript after APG has released a trusted tool argument.
 
-Upstream configuration treats those wire formats as separate capabilities: `openai_chat_completions`, `openai_responses`, and `anthropic_messages`. APG never translates between them. Each local endpoint is available only when the active upstream profile declares the identical format; otherwise APG returns a sanitized `501`. This keeps provider-specific message roles, content blocks, tool semantics, streaming events, errors, usage fields, and optional features native rather than silently dropping or approximating them.
+Every upstream profile optimistically exposes `openai_chat_completions`, `openai_responses`, and `anthropic_messages` while sharing one Base URL and credential. APG selects the native upstream route from the incoming local endpoint and never translates between formats. If the provider does not implement that route, its actual upstream error is returned. This keeps provider-specific message roles, content blocks, tool semantics, streaming events, errors, usage fields, and optional features native rather than silently dropping or approximating them.
 
 ## Future MCP And Runtime Tracing
 

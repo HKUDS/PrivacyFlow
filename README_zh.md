@@ -138,12 +138,12 @@ WebUI: http://127.0.0.1:8765/ui/
 打开 WebUI，然后：
 
 1. 新增一个具名上游配置；
-2. 选择它实际使用的 API 格式；
-3. 填写供应商 Base URL 和 API Key；
-4. 保存并启用该配置；
-5. 打开 APG 总开关。
+2. 填写供应商 Base URL 和 API Key；
+3. 保存并启用该配置；
+4. 打开 APG 总开关。
 
 在支持文件权限的系统中，供应商密钥会以 `0600` 权限写入本地启动配置；管理 API 永远不会返回供应商密钥。
+每个连接默认开放 Chat Completions、Responses 和 Anthropic Messages 三种入口。APG 根据收到请求的本地端点选择匹配的原生上游端点，不会在格式之间转换；如果供应商不支持该格式，APG 会返回实际上游错误。
 
 ### 4. 将 Agent 指向 APG
 
@@ -155,8 +155,8 @@ WebUI: http://127.0.0.1:8765/ui/
 | OpenAI Responses | `http://127.0.0.1:8765/v1` |
 | Anthropic Messages | `http://127.0.0.1:8765` |
 
-> [!CAUTION]
-> Agent 的请求格式必须与当前启用的上游格式完全一致。APG 不会在 Chat Completions、Responses 和 Anthropic Messages 之间进行转换。
+> [!NOTE]
+> APG 不会在 Chat Completions、Responses 和 Anthropic Messages 之间转换协议，Agent 与上游必须支持相同的请求格式。如需管理并快速切换不同 Agent 和模型服务商的连接配置，推荐将 APG 与 [CC Switch](https://github.com/farion1231/cc-switch) 搭配使用。CC Switch 用于管理配置，并不是 APG 的协议转换层。
 
 在开发检出目录中也可以使用仓库根目录下的 `./apg` 包装脚本。安装后的环境应使用 `apg` 命令。
 
@@ -171,6 +171,8 @@ APG 支持三种 API 格式：
 | OpenAI Chat Completions | `POST /v1/chat/completions` |
 | OpenAI Responses | `POST /v1/responses` |
 | Anthropic Messages | `POST /v1/messages` |
+
+APG 始终按请求原有的 API 格式转发，不会将其转换成另一种协议。
 
 ## ✨ 功能
 

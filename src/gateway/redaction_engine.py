@@ -40,6 +40,7 @@ _ENV_ASSIGNMENT_RE = re.compile(
     re.IGNORECASE,
 )
 _PEM_END_RE = re.compile(r"-----END (?:RSA |OPENSSH |EC |DSA )?PRIVATE KEY-----")
+_AUDIT_IDENTIFIER_RE = re.compile(r"[A-Za-z0-9._:@/-]{1,128}")
 
 
 class StreamProtocolError(ValueError):
@@ -122,6 +123,9 @@ class StreamAuditSummary:
     stream_parse_errors: int = 0
     tool_argument_json_errors: Counter[str] = field(default_factory=Counter)
     termination: str = "completed"
+    upstream_error_event: str | None = None
+    upstream_error_type: str | None = None
+    upstream_error_code: str | None = None
     audit_operations: list[dict[str, Any]] = field(default_factory=list)
     audit_operations_omitted: int = 0
     _audit_operation_indexes: dict[tuple[tuple[str, str], ...], int] = field(default_factory=dict, repr=False)
@@ -161,6 +165,28 @@ class StreamAuditSummary:
         else:
             self.stream_parse_errors += 1
 
+    def record_upstream_error(self, event_type: str, payload: dict[str, Any]) -> None:
+        response = payload.get("response")
+        response_error = response.get("error") if isinstance(response, dict) else None
+        top_level_error = payload.get("error")
+        error = response_error if isinstance(response_error, dict) else top_level_error
+        error = error if isinstance(error, dict) else {}
+        self.termination = "failed"
+        self.upstream_error_event = self._safe_identifier(event_type, "error")
+        self.upstream_error_type = self._safe_identifier(
+            error.get("type") or payload.get("error_type") or event_type,
+            "unspecified",
+        )
+        self.upstream_error_code = self._safe_identifier(
+            error.get("code") or payload.get("code"),
+            "unspecified",
+        )
+
+    @staticmethod
+    def _safe_identifier(value: Any, default: str) -> str:
+        normalized = str(value or "").strip()
+        return normalized if _AUDIT_IDENTIFIER_RE.fullmatch(normalized) else default
+
     def to_dict(self) -> dict[str, Any]:
         return {
             "folded": self.folded,
@@ -170,6 +196,9 @@ class StreamAuditSummary:
             "stream_parse_errors": self.stream_parse_errors,
             "tool_argument_json_errors": dict(self.tool_argument_json_errors),
             "termination": self.termination,
+            "upstream_error_event": self.upstream_error_event,
+            "upstream_error_type": self.upstream_error_type,
+            "upstream_error_code": self.upstream_error_code,
             "_audit_operations": self.audit_operations,
             "audit_operations_omitted": self.audit_operations_omitted,
         }
@@ -1634,6 +1663,14 @@ class RedactionEngine:
                         normal_end = True
                     continue
 
+                if event_type in {"response.failed", "error"}:
+                    safe_payload, events = scan_complete_payload(payload)
+                    summary.record(events)
+                    summary.record_upstream_error(event_type, payload)
+                    normal_end = True
+                    yield event_bytes(event, safe_payload)
+                    return
+
                 if event_type.endswith(".delta") and isinstance(payload.get("delta"), str):
                     raise StreamProtocolError("unknown_responses_text_delta")
 
@@ -1647,6 +1684,7 @@ class RedactionEngine:
             for key in list(tool_buffers):
                 for item in flush_tool(key):
                     yield item
+            summary.termination = "upstream_disconnected"
             normal_end = True
         except StreamProtocolError as exc:
             summary.record_protocol_error(exc)

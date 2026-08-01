@@ -13,6 +13,7 @@ from gateway.server import create_app
 from gateway.upstream_client import UpstreamClient
 from gateway.upstream_protocol import (
     ANTHROPIC_MESSAGES,
+    DEFAULT_UPSTREAM_PROTOCOLS,
     OPENAI_CHAT_COMPLETIONS,
     OPENAI_RESPONSES,
 )
@@ -27,6 +28,10 @@ def test_upstream_client_forwards_native_anthropic_payload_and_response() -> Non
         captured["body"] = json.loads(request.content)
         return httpx.Response(
             200,
+            headers={
+                "x-request-id": "req_safe_123",
+                "set-cookie": "private-cookie=secret",
+            },
             json={
                 "id": "msg_1",
                 "type": "message",
@@ -45,7 +50,7 @@ def test_upstream_client_forwards_native_anthropic_payload_and_response() -> Non
         ),
         transport=httpx.MockTransport(handler),
     )
-    status, _, body = asyncio.run(
+    status, response_headers, body = asyncio.run(
         client.request_json(
             "POST",
             "/v1/messages",
@@ -58,6 +63,8 @@ def test_upstream_client_forwards_native_anthropic_payload_and_response() -> Non
     )
 
     assert status == 200
+    assert response_headers["x-request-id"] == "req_safe_123"
+    assert "set-cookie" not in response_headers
     assert captured["url"] == "https://provider.example/anthropic/v1/messages"
     headers = captured["headers"]
     assert isinstance(headers, dict)
@@ -67,6 +74,57 @@ def test_upstream_client_forwards_native_anthropic_payload_and_response() -> Non
     assert captured["body"]["messages"] == [{"role": "user", "content": [{"type": "text", "text": "hello"}]}]
     assert body["type"] == "message"
     assert body["content"] == [{"type": "text", "text": "ok"}]
+
+
+def test_upstream_client_resolves_api_root_and_full_endpoint_urls() -> None:
+    root_client = UpstreamClient(
+        UpstreamConfig(
+            base_url="https://openrouter.ai/api/v1",
+            api_key="provider-key",
+            protocol=OPENAI_CHAT_COMPLETIONS,
+            strip_local_v1=True,
+        )
+    )
+    assert root_client.resolve_upstream_url("/chat/completions") == "https://openrouter.ai/api/v1/chat/completions"
+    assert root_client.resolve_upstream_url("/models") == "https://openrouter.ai/api/v1/models"
+
+    endpoint_client = UpstreamClient(
+        UpstreamConfig(
+            base_url="https://openrouter.ai/api/v1/chat/completions",
+            api_key="provider-key",
+            protocol=OPENAI_CHAT_COMPLETIONS,
+            strip_local_v1=True,
+        )
+    )
+    assert endpoint_client.resolve_upstream_url("/chat/completions") == "https://openrouter.ai/api/v1/chat/completions"
+    assert endpoint_client.resolve_upstream_url("/v1/models") == "https://openrouter.ai/api/v1/models"
+
+
+def test_upstream_client_selects_native_auth_and_endpoint_override_from_request_path() -> None:
+    captured: list[tuple[str, dict[str, str]]] = []
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        captured.append((str(request.url), dict(request.headers)))
+        return httpx.Response(200, json={"ok": True})
+
+    client = UpstreamClient(
+        UpstreamConfig(
+            base_url="https://provider.example/v1",
+            api_key="provider-key",
+            protocol=OPENAI_CHAT_COMPLETIONS,
+            endpoint_overrides={ANTHROPIC_MESSAGES: "https://anthropic.example/custom/messages"},
+        ),
+        transport=httpx.MockTransport(handler),
+    )
+    asyncio.run(client.request_json("POST", "/v1/responses", {"model": "gpt-test"}))
+    asyncio.run(client.request_json("POST", "/v1/messages", {"model": "claude-test"}))
+
+    assert captured[0][0] == "https://provider.example/v1/responses"
+    assert captured[0][1]["authorization"] == "Bearer provider-key"
+    assert "x-api-key" not in captured[0][1]
+    assert captured[1][0] == "https://anthropic.example/custom/messages"
+    assert captured[1][1]["x-api-key"] == "provider-key"
+    assert "authorization" not in captured[1][1]
 
 
 class _FormatRecordingUpstream:
@@ -97,7 +155,7 @@ class _FormatRecordingUpstream:
         }
 
 
-def test_openai_responses_format_only_accepts_responses_endpoint(tmp_path) -> None:
+def test_responses_primary_profile_exposes_all_native_endpoints(tmp_path) -> None:
     upstream = _FormatRecordingUpstream()
     config = GatewayConfig(
         database_path=str(tmp_path / "state.sqlite3"),
@@ -126,21 +184,19 @@ def test_openai_responses_format_only_accepts_responses_endpoint(tmp_path) -> No
             headers=headers,
             json={"model": "gpt-test", "messages": [{"role": "user", "content": "hello"}]},
         )
-        assert chat.status_code == 501
-        assert chat.json()["error"]["code"] == "APG_UPSTREAM_PROTOCOL_UNSUPPORTED"
+        assert chat.status_code == 200
 
         messages = client.post(
             "/v1/messages",
             headers=headers,
             json={"model": "claude-test", "max_tokens": 64, "messages": [{"role": "user", "content": "hello"}]},
         )
-        assert messages.status_code == 501
-        assert messages.json()["type"] == "error"
+        assert messages.status_code == 200
 
-    assert upstream.calls == ["/v1/responses"]
+    assert upstream.calls == ["/v1/responses", "/v1/chat/completions", "/v1/messages"]
 
 
-def test_openai_chat_completions_format_only_accepts_chat_endpoint(tmp_path) -> None:
+def test_chat_primary_profile_exposes_all_native_endpoints(tmp_path) -> None:
     upstream = _FormatRecordingUpstream()
     config = GatewayConfig(
         database_path=str(tmp_path / "state.sqlite3"),
@@ -168,21 +224,102 @@ def test_openai_chat_completions_format_only_accepts_chat_endpoint(tmp_path) -> 
             headers={"Authorization": "Bearer agent-key"},
             json={"model": "gpt-test", "input": "hello"},
         )
-        assert responses.status_code == 501
-        assert responses.json()["error"]["code"] == "APG_UPSTREAM_PROTOCOL_UNSUPPORTED"
+        assert responses.status_code == 200
 
         messages = client.post(
             "/v1/messages",
             headers={"x-api-key": "agent-key"},
             json={"model": "claude-test", "max_tokens": 64, "messages": [{"role": "user", "content": "hello"}]},
         )
-        assert messages.status_code == 501
-        assert messages.json()["type"] == "error"
+        assert messages.status_code == 200
 
-    assert upstream.calls == ["/v1/chat/completions"]
+    assert upstream.calls == ["/v1/chat/completions", "/v1/responses", "/v1/messages"]
 
 
-def test_anthropic_messages_format_only_accepts_messages_endpoint(tmp_path) -> None:
+def test_upstream_profile_defaults_to_all_native_formats(tmp_path) -> None:
+    upstream = _FormatRecordingUpstream()
+    config = GatewayConfig(
+        database_path=str(tmp_path / "state.sqlite3"),
+        audit_log_path=str(tmp_path / "audit.jsonl"),
+        signing_secret="test-signing-secret",
+        local_api_keys={"agent-key"},
+        strict_mode=True,
+        upstream=UpstreamConfig(
+            base_url="https://provider.example/v1",
+            api_key="provider-key",
+            protocol=OPENAI_CHAT_COMPLETIONS,
+        ),
+    )
+    headers = {"Authorization": "Bearer agent-key"}
+
+    with TestClient(create_app(config, upstream)) as client:
+        configured = client.put(
+            "/api/admin/upstream-configuration",
+            json={
+                "profile_id": "runtime_default",
+                "name": "Multi format",
+                "base_url": "https://provider.example/v1",
+                "api_key": "",
+            },
+        )
+        assert configured.status_code == 200
+        assert configured.json()["protocols"] == list(DEFAULT_UPSTREAM_PROTOCOLS)
+
+        assert client.post(
+            "/v1/chat/completions",
+            headers=headers,
+            json={"model": "gpt-test", "messages": [{"role": "user", "content": "hello"}]},
+        ).status_code == 200
+        assert client.post(
+            "/v1/responses",
+            headers=headers,
+            json={"model": "gpt-test", "input": "hello"},
+        ).status_code == 200
+        assert client.post(
+            "/v1/messages",
+            headers={"x-api-key": "agent-key"},
+            json={"model": "claude-test", "max_tokens": 64, "messages": [{"role": "user", "content": "hello"}]},
+        ).status_code == 200
+
+    assert upstream.calls == ["/v1/chat/completions", "/v1/responses", "/v1/messages"]
+
+
+def test_unsupported_native_format_returns_actual_upstream_error(tmp_path) -> None:
+    class UnsupportedResponsesUpstream:
+        async def request_json(self, method, path, payload=None):
+            assert path == "/v1/responses"
+            return 404, {"content-type": "application/json"}, {
+                "error": {
+                    "code": "route_not_found",
+                    "message": "This provider does not implement the Responses endpoint.",
+                }
+            }
+
+    config = GatewayConfig(
+        database_path=str(tmp_path / "state.sqlite3"),
+        audit_log_path=str(tmp_path / "audit.jsonl"),
+        signing_secret="test-signing-secret",
+        local_api_keys={"agent-key"},
+        strict_mode=True,
+        upstream=UpstreamConfig(
+            base_url="https://provider.example/v1",
+            api_key="provider-key",
+            protocol=OPENAI_CHAT_COMPLETIONS,
+        ),
+    )
+
+    with TestClient(create_app(config, UnsupportedResponsesUpstream())) as client:
+        response = client.post(
+            "/v1/responses",
+            headers={"Authorization": "Bearer agent-key"},
+            json={"model": "gpt-test", "input": "hello"},
+        )
+
+    assert response.status_code == 404
+    assert response.json()["error"]["code"] == "route_not_found"
+
+
+def test_anthropic_primary_profile_exposes_all_native_endpoints(tmp_path) -> None:
     upstream = _FormatRecordingUpstream()
     config = GatewayConfig(
         database_path=str(tmp_path / "state.sqlite3"),
@@ -211,18 +348,16 @@ def test_anthropic_messages_format_only_accepts_messages_endpoint(tmp_path) -> N
             headers={"Authorization": "Bearer agent-key"},
             json={"model": "gpt-test", "messages": [{"role": "user", "content": "hello"}]},
         )
-        assert chat.status_code == 501
-        assert chat.json()["error"]["code"] == "APG_UPSTREAM_PROTOCOL_UNSUPPORTED"
+        assert chat.status_code == 200
 
         responses = client.post(
             "/v1/responses",
             headers={"Authorization": "Bearer agent-key"},
             json={"model": "gpt-test", "input": "hello"},
         )
-        assert responses.status_code == 501
-        assert responses.json()["error"]["code"] == "APG_UPSTREAM_PROTOCOL_UNSUPPORTED"
+        assert responses.status_code == 200
 
-    assert upstream.calls == ["/v1/messages"]
+    assert upstream.calls == ["/v1/messages", "/v1/chat/completions", "/v1/responses"]
 
 
 class _ChunkStream(httpx.AsyncByteStream):
@@ -304,25 +439,6 @@ def test_anthropic_agent_materializes_tools_through_native_anthropic_upstream(tm
     headers = {"Authorization": "Bearer agent-key"}
 
     with TestClient(create_app(config, upstream)) as client:
-        unsupported_responses = client.post(
-            "/v1/responses",
-            headers=headers,
-            json={"model": "claude-test", "input": "hello"},
-        )
-        assert unsupported_responses.status_code == 501
-        assert unsupported_responses.json()["error"]["code"] == "APG_UPSTREAM_PROTOCOL_UNSUPPORTED"
-
-        unsupported_chat = client.post(
-            "/v1/chat/completions",
-            headers=headers,
-            json={
-                "model": "claude-test",
-                "messages": [{"role": "user", "content": f"Validate {raw_secret}"}],
-            },
-        )
-        assert unsupported_chat.status_code == 501
-        assert unsupported_chat.json()["error"]["code"] == "APG_UPSTREAM_PROTOCOL_UNSUPPORTED"
-
         anthropic_response = client.post(
             "/v1/messages",
             headers={**headers, "anthropic-version": "2023-06-01"},

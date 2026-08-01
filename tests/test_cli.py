@@ -16,7 +16,44 @@ from gateway.cli import (
     save_launcher_upstream_configuration,
     save_launcher_upstream_profile,
 )
-from gateway.upstream_protocol import ANTHROPIC_MESSAGES, OPENAI_CHAT_COMPLETIONS
+from gateway.cli.launcher import terminal_hyperlink
+from gateway.upstream_protocol import (
+    ANTHROPIC_MESSAGES,
+    DEFAULT_UPSTREAM_PROTOCOLS,
+    OPENAI_CHAT_COMPLETIONS,
+    OPENAI_RESPONSES,
+)
+
+
+class _TTYStream:
+    def isatty(self) -> bool:
+        return True
+
+
+class _PlainStream:
+    def isatty(self) -> bool:
+        return False
+
+
+def test_terminal_hyperlink_is_clickable_on_a_tty() -> None:
+    url = "http://127.0.0.1:8765/ui/"
+
+    assert terminal_hyperlink(url, stream=_TTYStream(), environ={"TERM": "xterm-256color"}) == (
+        f"\033]8;;{url}\033\\{url}\033]8;;\033\\"
+    )
+
+
+def test_terminal_hyperlink_falls_back_to_plain_text() -> None:
+    url = "http://127.0.0.1:8765/ui/"
+
+    assert terminal_hyperlink(url, stream=_PlainStream(), environ={}) == url
+    assert terminal_hyperlink(url, stream=_TTYStream(), environ={"TERM": "dumb"}) == url
+
+
+def test_terminal_hyperlink_does_not_embed_control_characters() -> None:
+    assert terminal_hyperlink("http://127.0.0.1:8765/ui/\033bad", stream=_TTYStream(), environ={}) == (
+        "http://127.0.0.1:8765/ui/�bad"
+    )
 
 
 def test_first_start_creates_private_reusable_config_without_prompting_for_upstream_key(tmp_path: Path) -> None:
@@ -203,3 +240,47 @@ def test_multiple_upstream_profiles_can_be_saved_activated_and_deleted(tmp_path:
     stored = json.loads(path.read_text(encoding="utf-8"))
     assert [profile["id"] for profile in stored["upstream_profiles"]] == [second["id"]]
     assert stored["active_upstream_profile_id"] == second["id"]
+
+
+def test_upstream_profile_migrates_single_protocol_and_normalizes_full_endpoint(tmp_path: Path) -> None:
+    path = tmp_path / ".apg" / "launcher.json"
+    path.parent.mkdir(parents=True)
+    path.write_text(
+        json.dumps(
+            {
+                "signing_secret": "signing-secret",
+                "local_api_key": "local-key",
+                "upstream_profiles": [
+                    {
+                        "id": "legacy",
+                        "name": "Legacy",
+                        "protocol": OPENAI_RESPONSES,
+                        "base_url": "https://provider.example/api/v1",
+                        "api_key": "provider-key",
+                    }
+                ],
+                "active_upstream_profile_id": "legacy",
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    prepared = prepare_launcher_config(path, environ={})
+    assert prepared["upstream_profiles"][0]["protocols"] == list(DEFAULT_UPSTREAM_PROTOCOLS)
+    assert prepared["upstream_profiles"][0]["endpoint_overrides"] == {}
+
+    saved = save_launcher_upstream_profile(
+        path,
+        profile_id="legacy",
+        name="Multi format",
+        protocol=OPENAI_CHAT_COMPLETIONS,
+        protocols=[OPENAI_CHAT_COMPLETIONS, OPENAI_RESPONSES],
+        base_url="https://provider.example/api/v1/chat/completions",
+        api_key="",
+        endpoint_overrides={OPENAI_RESPONSES: "https://responses.example/custom/responses"},
+    )
+    assert saved["protocols"] == list(DEFAULT_UPSTREAM_PROTOCOLS)
+    assert saved["base_url"] == "https://provider.example/api/v1"
+    assert saved["endpoint_overrides"] == {
+        OPENAI_RESPONSES: "https://responses.example/custom/responses"
+    }

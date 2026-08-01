@@ -19,8 +19,18 @@ def _placeholder_of_kind(text: str, kind: str) -> str:
 
 
 class ResponsesStreamUpstream:
-    def __init__(self, factory) -> None:
+    def __init__(
+        self,
+        factory,
+        *,
+        headers: dict[str, str] | None = None,
+        status: int = 200,
+        content_type: str = "text/event-stream",
+    ) -> None:
         self.factory = factory
+        self.headers = dict(headers or {})
+        self.status = status
+        self.content_type = content_type
         self.calls = []
 
     async def request_json(self, method, path, payload=None):
@@ -29,7 +39,7 @@ class ResponsesStreamUpstream:
 
     async def stream_request(self, method, path, payload=None):
         self.calls.append((method, path, payload))
-        return 200, {"content-type": "text/event-stream"}, self.factory(payload)
+        return self.status, {"content-type": self.content_type, **self.headers}, self.factory(payload)
 
 
 class MutableResponsesUpstream:
@@ -108,6 +118,123 @@ def test_responses_stream_injects_instructions_and_restores_split_placeholder(tm
     assert PROTECTED_VALUE not in body
     assert 'event: response.output_text.delta' in body
     assert 'event: response.completed' in body
+
+
+def test_responses_stream_audits_upstream_failure_and_trace_without_sensitive_message(tmp_path) -> None:
+    async def chunks():
+        yield _event(
+            "response.failed",
+            {
+                "response": {
+                    "id": "resp_failed",
+                    "status": "failed",
+                    "error": {
+                        "type": "server_error",
+                        "code": "concurrency_limit_exceeded",
+                        "message": f"Concurrency limit exceeded for {SECRET}",
+                    },
+                }
+            },
+        )
+
+    upstream = ResponsesStreamUpstream(
+        lambda _: chunks(),
+        headers={
+            "x-request-id": "up_req_123",
+            "authorization": "Bearer must-not-be-recorded",
+        },
+    )
+    client = TestClient(create_app(_cfg(tmp_path), upstream))
+    with client.stream(
+        "POST",
+        "/v1/responses",
+        headers={"Authorization": "Bearer local"},
+        json={"model": "x", "stream": True, "input": "hello"},
+    ) as response:
+        body = response.read().decode()
+        assert response.headers["x-request-id"] == "up_req_123"
+
+    assert "response.failed" in body
+    assert SECRET not in body
+    rows = [json.loads(line) for line in (tmp_path / "audit.jsonl").read_text().splitlines()]
+    complete = next(row for row in rows if row.get("phase") == "response_stream_complete")
+    assert complete["termination"] == "failed"
+    assert complete["upstream_error_event"] == "response.failed"
+    assert complete["upstream_error_type"] == "server_error"
+    assert complete["upstream_error_code"] == "concurrency_limit_exceeded"
+    assert complete["upstream_trace_headers"] == {"x-request-id": "up_req_123"}
+    audit_text = (tmp_path / "audit.jsonl").read_text()
+    assert SECRET not in audit_text
+    assert "must-not-be-recorded" not in audit_text
+
+
+def test_responses_stream_eof_without_terminal_event_is_audited_as_disconnected(tmp_path) -> None:
+    async def chunks():
+        yield _event("response.created", {"response": {"id": "resp_1", "status": "in_progress", "output": []}})
+
+    client = TestClient(create_app(_cfg(tmp_path), ResponsesStreamUpstream(lambda _: chunks())))
+    _stream(client, {"model": "x", "stream": True, "input": "hello"})
+    rows = [json.loads(line) for line in (tmp_path / "audit.jsonl").read_text().splitlines()]
+    complete = next(row for row in rows if row.get("phase") == "response_stream_complete")
+    assert complete["termination"] == "upstream_disconnected"
+
+
+def test_responses_stream_top_level_error_event_is_audited_as_failed(tmp_path) -> None:
+    async def chunks():
+        yield _event(
+            "error",
+            {
+                "code": "rate_limit_exceeded",
+                "message": "Please retry later",
+            },
+        )
+
+    client = TestClient(create_app(_cfg(tmp_path), ResponsesStreamUpstream(lambda _: chunks())))
+    body = _stream(client, {"model": "x", "stream": True, "input": "hello"})
+    assert "rate_limit_exceeded" in body
+    rows = [json.loads(line) for line in (tmp_path / "audit.jsonl").read_text().splitlines()]
+    complete = next(row for row in rows if row.get("phase") == "response_stream_complete")
+    assert complete["termination"] == "failed"
+    assert complete["upstream_error_event"] == "error"
+    assert complete["upstream_error_type"] == "error"
+    assert complete["upstream_error_code"] == "rate_limit_exceeded"
+
+
+def test_responses_stream_preserves_non_success_json_error_and_audits_code(tmp_path) -> None:
+    async def chunks():
+        yield json.dumps(
+            {
+                "error": {
+                    "type": "server_error",
+                    "code": "concurrency_limit_exceeded",
+                    "message": "Please retry later",
+                }
+            }
+        ).encode()
+
+    upstream = ResponsesStreamUpstream(
+        lambda _: chunks(),
+        status=503,
+        content_type="application/json",
+        headers={"x-request-id": "up_req_503"},
+    )
+    client = TestClient(create_app(_cfg(tmp_path), upstream))
+    with client.stream(
+        "POST",
+        "/v1/responses",
+        headers={"Authorization": "Bearer local"},
+        json={"model": "x", "stream": True, "input": "hello"},
+    ) as response:
+        assert response.status_code == 503
+        assert response.headers["x-request-id"] == "up_req_503"
+        response_body = json.loads(response.read())
+        assert response_body["error"]["code"] == "concurrency_limit_exceeded"
+
+    rows = [json.loads(line) for line in (tmp_path / "audit.jsonl").read_text().splitlines()]
+    complete = next(row for row in rows if row.get("phase") == "response_stream_complete")
+    assert complete["termination"] == "failed"
+    assert complete["upstream_error_type"] == "server_error"
+    assert complete["upstream_error_code"] == "concurrency_limit_exceeded"
 
 
 def test_responses_stream_buffers_and_materializes_interleaved_function_arguments(tmp_path) -> None:

@@ -52,7 +52,7 @@ const state = {
 const $ = (selector, root = document) => root.querySelector(selector);
 const $$ = (selector, root = document) => [...root.querySelectorAll(selector)];
 const escapeHtml = (value) => String(value ?? "").replace(/[&<>'"]/g, (char) => ({"&":"&amp;","<":"&lt;",">":"&gt;","'":"&#39;",'"':"&quot;"}[char]));
-const DYNAMIC_ICONS = new Set(["arrow-right", "ban", "brain-circuit", "check-circle-2", "copy", "download", "eye", "eye-off", "folder-tree", "gauge", "grip-vertical", "hard-drive", "package-check", "pencil", "plus", "power", "regex-reference", "rotate-cw", "search", "server-cog", "trash-2", "wrench"]);
+const DYNAMIC_ICONS = new Set(["arrow-right", "ban", "brain-circuit", "check-circle-2", "circle-x", "copy", "download", "eye", "eye-off", "folder-tree", "gauge", "grip-vertical", "hard-drive", "package-check", "pencil", "plus", "power", "regex-reference", "rotate-cw", "search", "server-cog", "trash-2", "wrench"]);
 
 document.addEventListener("DOMContentLoaded", init);
 
@@ -132,14 +132,15 @@ function bindActions() {
     );
   });
   $("#upstream-key-form").addEventListener("submit", saveUpstreamApiKey);
-  $("#upstream-profile-select").addEventListener("change", (event) => {
-    state.upstreamSelectedProfileId = event.target.value;
-    renderUpstreamConfiguration();
-  });
-  $("#activate-upstream-profile").addEventListener("click", activateSelectedUpstreamProfile);
+  $("#fetch-upstream-models").addEventListener("click", fetchUpstreamModels);
+  $("#test-upstream-connection").addEventListener("click", testUpstreamConnection);
+  $("#upstream-test-model-select").addEventListener("change", selectUpstreamTestModel);
+  $("#show-upstream-model-list").addEventListener("click", showUpstreamModelList);
+  $("#upstream-profile-select").addEventListener("change", (event) => switchUpstreamProfile(event.target.value));
   $("#new-upstream-profile").addEventListener("click", () => {
     state.upstreamEditing = true;
     state.upstreamEditingProfileId = "";
+    resetUpstreamTestResult();
     renderUpstreamConfiguration();
     $("#upstream-profile-name").focus();
   });
@@ -150,6 +151,7 @@ function bindActions() {
   $("#edit-upstream-key").addEventListener("click", () => {
     state.upstreamEditing = true;
     state.upstreamEditingProfileId = state.upstreamSelectedProfileId || state.upstream?.active_profile_id || "";
+    resetUpstreamTestResult();
     renderUpstreamConfiguration();
     setTimeout(() => (state.upstream?.base_url ? $("#upstream-api-key") : $("#upstream-base-url-input")).focus(), 30);
   });
@@ -158,6 +160,7 @@ function bindActions() {
     state.upstreamEditingProfileId = "";
     $("#upstream-api-key").value = "";
     $("#upstream-key-error").textContent = "";
+    resetUpstreamTestResult();
     renderUpstreamConfiguration();
   });
   $("#audit-query").addEventListener("input", debounce(() => loadAudit().catch(handleError), 280));
@@ -175,7 +178,6 @@ function bindActions() {
   $("#configuration-select").addEventListener("change", (event) => selectDetectorConfiguration(event.target.value));
   $("#new-configuration").addEventListener("click", openConfigurationCreator);
   $("#duplicate-configuration").addEventListener("click", duplicateDetectorConfiguration);
-  $("#activate-configuration").addEventListener("click", activateDetectorConfiguration);
   $("#save-configuration").addEventListener("click", saveDetectorConfiguration);
   $("#delete-configuration").addEventListener("click", deleteDetectorConfiguration);
   $("#add-module").addEventListener("click", () => openModuleEditor(null));
@@ -747,25 +749,31 @@ function renderUpstreamConfiguration() {
     ? "配置已在本机保存，密钥不会回显。"
     : "填写 Base URL 和 API Key。";
   $("#upstream-base-url").textContent = state.upstream.base_url || "待填写";
-  $("#upstream-protocol-value").textContent = UPSTREAM_PROTOCOL_LABELS[state.upstream.protocol] || "待选择";
   $("#upstream-profile-select").innerHTML = profiles.length
     ? profiles.map((profile) => `<option value="${escapeHtml(profile.id)}"${profile.id === state.upstreamSelectedProfileId ? " selected" : ""}>${escapeHtml(uiText(`${profile.name}${profile.active ? "（当前）" : ""}`))}</option>`).join("")
     : '<option value="">暂无配置</option>';
-  $("#activate-upstream-profile").disabled = !selected || selected.active;
   $("#delete-upstream-profile").disabled = !selected || !selected.persisted;
+  $("#fetch-upstream-models").disabled = !selected?.active;
+  $("#test-upstream-connection").disabled = !selected?.active;
+  if (selected && !selected.active) {
+    resetUpstreamTestResult("请先启用所选配置后再测试。");
+  }
   const editingProfile = state.upstreamEditingProfileId
     ? profiles.find((profile) => profile.id === state.upstreamEditingProfileId)
     : null;
   const showingDefaults = editing && editingProfile && !editingProfile.persisted;
   const nameInput = $("#upstream-profile-name");
-  const protocolInput = $("#upstream-protocol");
   const baseUrlInput = $("#upstream-base-url-input");
   nameInput.value = editing && !showingDefaults ? (editingProfile?.name || "") : "";
   nameInput.placeholder = showingDefaults ? (editingProfile.name || "例如：Anthropic 生产环境") : "例如：Anthropic 生产环境";
-  protocolInput.value = editing && !showingDefaults ? (editingProfile?.protocol || "") : "";
   baseUrlInput.value = editing && !showingDefaults ? (editingProfile?.base_url || "") : "";
   baseUrlInput.placeholder = showingDefaults ? (editingProfile.base_url || "https://api.example.com/v1") : "https://api.example.com/v1";
+  const endpointOverrides = editing && !showingDefaults ? (editingProfile?.endpoint_overrides || {}) : {};
+  $("#upstream-endpoint-openai-chat-completions").value = endpointOverrides.openai_chat_completions || "";
+  $("#upstream-endpoint-openai-responses").value = endpointOverrides.openai_responses || "";
+  $("#upstream-endpoint-anthropic-messages").value = endpointOverrides.anthropic_messages || "";
   $("#upstream-key-form").classList.toggle("is-hidden", !editing);
+  $("#upstream-connectivity-test").classList.toggle("is-hidden", !configured || editing);
   $("#edit-upstream-key").classList.toggle("is-hidden", !configured || editing);
   $("#cancel-upstream-key").classList.toggle("is-hidden", !configured);
 }
@@ -774,18 +782,12 @@ async function saveUpstreamApiKey(event) {
   event.preventDefault();
   const baseUrlInput = $("#upstream-base-url-input");
   const name = $("#upstream-profile-name").value.trim();
-  const protocol = $("#upstream-protocol").value;
   const input = $("#upstream-api-key");
   const baseUrl = baseUrlInput.value.trim().replace(/\/+$/, "");
   const apiKey = input.value.trim();
   if (!name) {
     $("#upstream-key-error").textContent = "请输入配置名称。";
     $("#upstream-profile-name").focus();
-    return;
-  }
-  if (!Object.hasOwn(UPSTREAM_PROTOCOL_LABELS, protocol)) {
-    $("#upstream-key-error").textContent = "请选择上游 API 格式。";
-    $("#upstream-protocol").focus();
     return;
   }
   let parsedBaseUrl = null;
@@ -804,14 +806,26 @@ async function saveUpstreamApiKey(event) {
   button.disabled = true;
   $("#upstream-key-error").textContent = "";
   try {
+    const endpointOverrides = {
+      openai_chat_completions: $("#upstream-endpoint-openai-chat-completions").value.trim(),
+      openai_responses: $("#upstream-endpoint-openai-responses").value.trim(),
+      anthropic_messages: $("#upstream-endpoint-anthropic-messages").value.trim(),
+    };
     state.upstream = await api("/upstream-configuration", {
       method: "PUT",
-      body: JSON.stringify({profile_id: state.upstreamEditingProfileId, name, protocol, base_url: baseUrl, api_key: apiKey}),
+      body: JSON.stringify({
+        profile_id: state.upstreamEditingProfileId,
+        name,
+        base_url: baseUrl,
+        api_key: apiKey,
+        endpoint_overrides: endpointOverrides,
+      }),
     });
     input.value = "";
     state.upstreamEditing = false;
     state.upstreamEditingProfileId = "";
     state.upstreamSelectedProfileId = state.upstream.active_profile_id || "";
+    resetUpstreamTestResult();
     renderUpstreamConfiguration();
     await refreshPrivacyControl();
     toast(state.upstream.persistent ? "上游连接配置已安全保存并启用" : "上游连接配置已在当前进程中启用");
@@ -822,6 +836,167 @@ async function saveUpstreamApiKey(event) {
   }
 }
 
+async function fetchUpstreamModels() {
+  const selected = selectedUpstreamProfile();
+  if (!selected?.active) {
+    resetUpstreamTestResult("请先启用所选配置后再测试。", "is-error");
+    return;
+  }
+  const fetchButton = $("#fetch-upstream-models");
+  const testButton = $("#test-upstream-connection");
+  const resultNode = $("#upstream-test-result");
+  const profileId = selected.id;
+  fetchButton.disabled = true;
+  testButton.disabled = true;
+  resultNode.className = "upstream-test-result is-running";
+  resultNode.textContent = uiText("正在从当前上游获取模型列表…");
+  try {
+    const result = await api("/upstream-configuration/models");
+    if (selectedUpstreamProfile()?.id !== profileId) return;
+    const options = Array.isArray(result.models) ? result.models : [];
+    setUpstreamModelOptions(options);
+    const trace = Object.entries(result.upstream_trace_headers || {}).map(([key, value]) => `${key}: ${value}`).join(" · ");
+    const target = `${uiText("实际端点")} ${result.target_endpoint}`;
+    if (result.ok && options.length) {
+      resultNode.className = "upstream-test-result is-success";
+      const truncated = result.truncated ? ` · ${uiText("仅显示前 500 个模型")}` : "";
+      resultNode.textContent = `${uiText("已获取")} ${options.length} ${uiText("个模型，点击下拉列表选择")} · ${result.latency_ms} ms · ${target}${truncated}${trace ? ` · ${trace}` : ""}`;
+      $("#upstream-test-model-select").focus();
+    } else if (result.ok) {
+      resultNode.className = "upstream-test-result";
+      resultNode.textContent = `${uiText("上游未返回可用模型，请手动输入模型名称")} · ${result.latency_ms} ms · ${target}${trace ? ` · ${trace}` : ""}`;
+    } else {
+      const error = result.error || {};
+      const status = result.status_code ? `HTTP ${result.status_code}` : uiText("未收到 HTTP 响应");
+      const reason = [error.code, error.type, error.message].filter(Boolean).join(" · ");
+      resultNode.className = "upstream-test-result is-error";
+      resultNode.textContent = `${uiText("获取模型列表失败")} · ${status} · ${result.latency_ms} ms · ${target}${reason ? ` · ${reason}` : ""}${trace ? ` · ${trace}` : ""}`;
+    }
+  } catch (error) {
+    resultNode.className = "upstream-test-result is-error";
+    resultNode.textContent = error.message || uiText("获取模型列表失败");
+  } finally {
+    const active = Boolean(selectedUpstreamProfile()?.active);
+    fetchButton.disabled = !active;
+    testButton.disabled = !active;
+  }
+}
+
+async function testUpstreamConnection() {
+  const selected = selectedUpstreamProfile();
+  if (!selected?.active) {
+    resetUpstreamTestResult("请先启用所选配置后再测试。", "is-error");
+    return;
+  }
+  const modelControl = activeUpstreamModelControl();
+  const model = modelControl.value.trim();
+  const button = $("#test-upstream-connection");
+  const resultNode = $("#upstream-test-result");
+  if (!model) {
+    resultNode.className = "upstream-test-result is-error";
+    resultNode.textContent = uiText("请输入测试模型。此字段仅用于本次测试，不会保存。");
+    modelControl.focus();
+    return;
+  }
+  button.disabled = true;
+  resultNode.className = "upstream-test-result is-running";
+  resultNode.textContent = uiText("正在自动测试三种 API 格式…");
+  try {
+    const test = await api("/upstream-configuration/test", {
+      method: "POST",
+      body: JSON.stringify({model}),
+    });
+    renderUpstreamProtocolResults(test.results || []);
+  } catch (error) {
+    resultNode.className = "upstream-test-result is-error";
+    resultNode.textContent = error.message || uiText("测试失败。");
+  } finally {
+    button.disabled = false;
+  }
+}
+
+function renderUpstreamProtocolResults(results) {
+  const resultNode = $("#upstream-test-result");
+  resultNode.className = "upstream-test-result upstream-protocol-results";
+  resultNode.innerHTML = results.map((result) => {
+    const error = result.error || {};
+    const status = result.status_code ? `HTTP ${result.status_code}` : uiText("未收到 HTTP 响应");
+    const target = `${uiText("实际端点")} ${result.target_endpoint || "—"}`;
+    const trace = Object.entries(result.upstream_trace_headers || {}).map(([key, value]) => `${key}: ${value}`).join(" · ");
+    const mismatch = error.code === "APG_UPSTREAM_PROTOCOL_MISMATCH"
+      ? uiText("HTTP 成功，但响应结构不符合该 API 格式。")
+      : "";
+    const reason = mismatch || [error.code, error.type, error.message].filter(Boolean).join(" · ");
+    return `<div class="upstream-protocol-result ${result.ok ? "is-success" : "is-error"}">
+      <div class="upstream-protocol-result-heading">
+        <span>${iconMarkup(result.ok ? "check-circle-2" : "circle-x")}<strong>${escapeHtml(UPSTREAM_PROTOCOL_LABELS[result.protocol] || result.protocol)}</strong></span>
+        <em>${escapeHtml(uiText(result.ok ? "可用" : "不可用"))}</em>
+      </div>
+      <small>${escapeHtml(`${status} · ${result.latency_ms} ms · ${target}${trace ? ` · ${trace}` : ""}`)}</small>
+      ${reason ? `<small class="upstream-protocol-result-error">${escapeHtml(reason)}</small>` : ""}
+    </div>`;
+  }).join("");
+  renderIcons(resultNode);
+}
+
+function resetUpstreamTestResult(message = "", className = "") {
+  const resultNode = $("#upstream-test-result");
+  resultNode.className = `upstream-test-result${className ? ` ${className}` : ""}`;
+  resultNode.textContent = message ? uiText(message) : "";
+  setUpstreamModelOptions([]);
+}
+
+function setUpstreamModelOptions(models) {
+  const picker = $("#upstream-model-picker");
+  const input = $("#upstream-test-model");
+  const select = $("#upstream-test-model-select");
+  const selectShell = $("#upstream-model-select-shell");
+  const listToggle = $("#show-upstream-model-list");
+  const current = input.value.trim();
+  picker.dataset.hasModels = String(models.length > 0);
+  select.innerHTML = models.length
+    ? `<option value="" disabled>${escapeHtml(uiText("请选择测试模型"))}</option><option value="__manual__">${escapeHtml(uiText("手动输入模型名称…"))}</option>${models.map((model) => `<option value="${escapeHtml(model)}">${escapeHtml(model)}</option>`).join("")}`
+    : "";
+  if (!models.length) {
+    input.hidden = false;
+    selectShell.hidden = true;
+    listToggle.hidden = true;
+    return;
+  }
+  select.value = models.includes(current) ? current : "";
+  input.hidden = true;
+  selectShell.hidden = false;
+  listToggle.hidden = true;
+}
+
+function selectUpstreamTestModel(event) {
+  const select = event.currentTarget;
+  if (select.value === "__manual__") {
+    const input = $("#upstream-test-model");
+    input.hidden = false;
+    $("#upstream-model-select-shell").hidden = true;
+    $("#show-upstream-model-list").hidden = false;
+    input.focus();
+    return;
+  }
+  if (select.value) $("#upstream-test-model").value = select.value;
+}
+
+function showUpstreamModelList() {
+  const input = $("#upstream-test-model");
+  const select = $("#upstream-test-model-select");
+  const available = [...select.options].map((option) => option.value);
+  select.value = available.includes(input.value.trim()) ? input.value.trim() : "";
+  input.hidden = true;
+  $("#upstream-model-select-shell").hidden = false;
+  $("#show-upstream-model-list").hidden = true;
+  select.focus();
+}
+
+function activeUpstreamModelControl() {
+  return $("#upstream-model-select-shell").hidden ? $("#upstream-test-model") : $("#upstream-test-model-select");
+}
+
 function selectedUpstreamProfile() {
   return (state.upstream?.profiles || []).find((profile) => profile.id === state.upstreamSelectedProfileId) || null;
 }
@@ -829,11 +1004,29 @@ function selectedUpstreamProfile() {
 async function activateSelectedUpstreamProfile() {
   const profile = selectedUpstreamProfile();
   if (!profile || profile.active) return;
-  state.upstream = await api(`/upstream-configuration/${encodeURIComponent(profile.id)}/activate`, {method: "POST"});
-  state.upstreamSelectedProfileId = state.upstream.active_profile_id || "";
+  const select = $("#upstream-profile-select");
+  select.disabled = true;
+  try {
+    state.upstream = await api(`/upstream-configuration/${encodeURIComponent(profile.id)}/activate`, {method: "POST"});
+    state.upstreamSelectedProfileId = state.upstream.active_profile_id || "";
+    resetUpstreamTestResult();
+    renderUpstreamConfiguration();
+    await refreshPrivacyControl();
+    toast(`${uiText("已切换上游配置")}：${profile.name}`);
+  } catch (error) {
+    state.upstreamSelectedProfileId = state.upstream?.active_profile_id || "";
+    renderUpstreamConfiguration();
+    handleError(error);
+  } finally {
+    select.disabled = false;
+  }
+}
+
+function switchUpstreamProfile(profileId) {
+  state.upstreamSelectedProfileId = profileId;
+  resetUpstreamTestResult();
   renderUpstreamConfiguration();
-  await refreshPrivacyControl();
-  toast(`已启用上游配置：${profile.name}`);
+  activateSelectedUpstreamProfile();
 }
 
 async function deleteSelectedUpstreamProfile() {
@@ -843,6 +1036,7 @@ async function deleteSelectedUpstreamProfile() {
   state.upstreamSelectedProfileId = state.upstream.active_profile_id || state.upstream.profiles?.[0]?.id || "";
   state.upstreamEditing = !state.upstream.profiles?.length;
   state.upstreamEditingProfileId = "";
+  resetUpstreamTestResult();
   renderUpstreamConfiguration();
   await refreshPrivacyControl();
   toast(`已删除上游配置：${profile.name}`);
@@ -1067,10 +1261,18 @@ async function openAuditRequestDetail(requestId) {
 
 function renderAuditRequestDetail(detail) {
   const status = detail.termination || (detail.status_code && detail.status_code >= 400 ? "error" : "completed");
+  const upstreamTrace = Object.entries(detail.upstream_trace_headers || {})
+    .map(([key, value]) => `${key}: ${value}`)
+    .join(" · ");
   const fields = [
     ["时间", formatDateTime(detail.timestamp)], ["端点", detail.endpoint || "-"], ["请求", detail.request_id],
     ["会话", detail.session || "-"], ["状态", auditStatusLabel(status)], ["原文", detail.raw_values_included ? "临时显示" : "已隐藏"],
   ];
+  if (detail.upstream_error_code || detail.upstream_error_type) {
+    fields.push(["上游错误", detail.upstream_error_code || detail.upstream_error_type]);
+  }
+  if (detail.upstream_error_event) fields.push(["上游事件", detail.upstream_error_event]);
+  if (upstreamTrace) fields.push(["上游请求标识", upstreamTrace]);
   let content = `<dl class="detail-grid">${fields.map(([key, value]) => `<dt>${escapeHtml(key)}</dt><dd>${escapeHtml(value)}</dd>`).join("")}</dl>`;
   if (detail.legacy_summary_only) {
     content += `<div class="audit-legacy-note"><strong>无逐项详情</strong><span>该请求来自旧版安全审计，只保留了汇总记录。</span></div>`;
@@ -1200,7 +1402,11 @@ function renderEventRows(target, events, compact) {
 function openEventDetail(event) {
   $("#modal-kicker").textContent = "AUDIT EVENT";
   $("#modal-title").textContent = event.id;
+  const upstreamTrace = Object.entries(event.upstream_trace_headers || {}).map(([key, value]) => `${key}: ${value}`).join(" · ");
   const fields = [["时间", formatDateTime(event.timestamp)],["阶段", event.phase],["端点", event.endpoint || "-"],["请求", event.request_id || "-"],["会话", event.session],["状态", event.termination || event.status || "recorded"]];
+  if (event.upstream_error_code || event.upstream_error_type) fields.push(["上游错误", event.upstream_error_code || event.upstream_error_type]);
+  if (event.upstream_error_event) fields.push(["上游事件", event.upstream_error_event]);
+  if (upstreamTrace) fields.push(["上游请求标识", upstreamTrace]);
   $("#modal-body").innerHTML = `<dl class="detail-grid">${fields.map(([key, value]) => `<dt>${escapeHtml(key)}</dt><dd>${escapeHtml(value)}</dd>`).join("")}</dl><div class="detail-detections"><p class="section-kicker">SAFE DETECTIONS</p>${event.detections.length ? `<div class="finding-list">${event.detections.map((item) => `<div class="finding-row"><span>${escapeHtml(item.subtype || item.type)}</span><strong>${escapeHtml(item.action || item.result_code || "recorded")}</strong></div>`).join("")}</div>` : `<span class="muted">该事件没有检测项。</span>`}</div>`;
   $("#detail-modal").showModal();
 }
@@ -1348,9 +1554,9 @@ function selectDetectorConfiguration(configurationId) {
   if (!configurationId || configurationId === state.detectorConfiguration?.id) return;
   if (detectorConfigurationDirty()) {
     $("#configuration-select").value = state.detectorConfiguration.id;
-    return confirmAction("放弃未保存更改", "切换配置将丢弃当前草稿。", () => loadDetectorConfiguration(configurationId));
+    return confirmAction(uiText("放弃未保存更改"), uiText("切换配置将丢弃当前草稿并立即启用所选配置。"), () => activateDetectorConfiguration(configurationId));
   }
-  loadDetectorConfiguration(configurationId).catch(handleError);
+  activateDetectorConfiguration(configurationId);
 }
 
 function renderDetectorConfiguration() {
@@ -1362,11 +1568,9 @@ function renderDetectorConfiguration() {
   $("#configuration-timeout").value = configuration.flow_timeout_ms ?? "";
   for (const id of ["configuration-name", "configuration-description", "configuration-timeout"]) $("#" + id).disabled = readonly;
   $("#configuration-status").innerHTML = `${configuration.is_active ? '<span class="badge green">当前启用</span>' : ""}${configuration.readonly ? '<span class="configuration-readonly-note">默认预设不可编辑，请复制或新建自定义配置。模块开关仍可直接调整。</span>' : ""}`;
-  $("#activate-configuration").disabled = configuration.is_active || detectorConfigurationDirty();
-  setIconButton($("#activate-configuration"), configuration.is_active ? "check-circle-2" : "power", configuration.is_active ? "当前检测器配置" : "启用检测器配置");
   setIconButton($("#duplicate-configuration"), "copy", readonly ? "复制并编辑检测器配置" : "复制检测器配置");
   $("#save-configuration").disabled = readonly || !detectorConfigurationDirty();
-  $("#delete-configuration").disabled = readonly || configuration.is_active;
+  $("#delete-configuration").disabled = readonly;
   $("#add-module").disabled = readonly;
   renderDetectorModules();
   $("#detection-output").innerHTML = `<span class="muted">等待测试</span>`;
@@ -1416,7 +1620,6 @@ function updateConfigurationFields(event) {
 
 function renderDetectorSaveState() {
   $("#save-configuration").disabled = state.detectorDraft.readonly || !detectorConfigurationDirty();
-  $("#activate-configuration").disabled = state.detectorDraft.is_active || detectorConfigurationDirty();
 }
 
 function detectorConfigurationPayload(configuration) {
@@ -1447,24 +1650,37 @@ async function saveDetectorConfiguration() {
   } catch (error) { handleError(error); }
 }
 
-async function activateDetectorConfiguration() {
-  if (detectorConfigurationDirty()) return toast("请先保存当前草稿", true);
+async function activateDetectorConfiguration(configurationId) {
+  const previousId = state.detectorConfiguration?.id || state.detectorCatalog?.active_configuration_id || "";
+  const select = $("#configuration-select");
+  select.disabled = true;
   try {
-    const data = await api(`/detector-configurations/${encodeURIComponent(state.detectorDraft.id)}/activate`, {method: "POST"});
+    const data = await api(`/detector-configurations/${encodeURIComponent(configurationId)}/activate`, {method: "POST"});
     await refreshDetectorCatalog(data.id);
     await loadDetectorConfiguration(data.id);
     state.loaded.delete("overview");
-    toast("检测器配置已启用");
-  } catch (error) { handleError(error); }
+    toast(`${uiText("已切换检测器配置")}：${uiText(data.name)}`);
+  } catch (error) {
+    if (previousId) select.value = previousId;
+    handleError(error);
+  } finally {
+    select.disabled = false;
+  }
 }
 
 function deleteDetectorConfiguration() {
   const configuration = state.detectorDraft;
-  if (configuration.readonly || configuration.is_active) return;
+  if (configuration.readonly) return;
   confirmAction("删除检测器配置", `${configuration.name} 将被永久删除。`, async () => {
-    await api(`/detector-configurations/${encodeURIComponent(configuration.id)}`, {method: "DELETE"});
-    await refreshDetectorCatalog(state.detectorCatalog.active_configuration_id);
-    await loadDetectorConfiguration(state.detectorCatalog.active_configuration_id);
+    if (configuration.is_active) {
+      const fallback = state.detectorCatalog.templates?.find((item) => item.id !== configuration.id);
+      if (!fallback) throw new Error(uiText("没有可用于接替的默认检测器配置。"));
+      await api(`/detector-configurations/${encodeURIComponent(fallback.id)}/activate`, {method: "POST"});
+    }
+    const catalog = await api(`/detector-configurations/${encodeURIComponent(configuration.id)}`, {method: "DELETE"});
+    state.detectorCatalog = catalog;
+    renderConfigurationOptions();
+    await loadDetectorConfiguration(catalog.active_configuration_id);
     toast("检测器配置已删除");
   });
 }
@@ -1486,18 +1702,16 @@ async function createDetectorConfiguration(event) {
   try {
     const data = await api("/detector-configurations", {method: "POST", body: JSON.stringify({name: form.get("name"), source_id: form.get("source_id")})});
     $("#configuration-modal").close();
-    await refreshDetectorCatalog(data.id);
-    await loadDetectorConfiguration(data.id);
-    toast("检测器配置已创建");
+    await activateDetectorConfiguration(data.id);
+    toast(uiText("检测器配置已创建并启用"));
   } catch (error) { $("#configuration-error").textContent = error.message; }
 }
 
 async function duplicateDetectorConfiguration() {
   try {
     const data = await api("/detector-configurations", {method: "POST", body: JSON.stringify({source_id: state.detectorDraft.id})});
-    await refreshDetectorCatalog(data.id);
-    await loadDetectorConfiguration(data.id);
-    toast("已创建可编辑副本");
+    await activateDetectorConfiguration(data.id);
+    toast(uiText("已创建并启用可编辑副本"));
   } catch (error) { handleError(error); }
 }
 
@@ -2053,12 +2267,12 @@ function highestRisk(detections) {
 
 function statusClass(status) {
   if (["completed", "safe", "200", "201"].includes(status)) return "green";
-  if (status.includes("error") || status === "revoked") return "red";
+  if (["failed", "upstream_disconnected", "client_disconnected"].includes(status) || status.includes("error") || status === "revoked") return "red";
   return "neutral";
 }
 
 function auditStatusLabel(value) {
-  return ({completed: "已完成", in_progress: "进行中", recorded: "已记录", error: "异常", protocol_error: "协议错误", client_disconnected: "连接中断"})[value] || value || "已记录";
+  return ({completed: "已完成", in_progress: "进行中", recorded: "已记录", error: "异常", failed: "上游失败", protocol_error: "协议错误", client_disconnected: "客户端连接中断", upstream_disconnected: "上游连接中断"})[value] || value || "已记录";
 }
 
 function valueStateLabel(value) {
