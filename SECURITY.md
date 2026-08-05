@@ -11,7 +11,7 @@ Please do not open a public issue for a suspected vulnerability.
 
 Use GitHub's private vulnerability reporting feature for this repository:
 
-<https://github.com/zzhtx258/Agent-Privacy-Gateway/security/advisories/new>
+<https://github.com/HKUDS/Agent-Privacy-Gateway/security/advisories/new>
 
 Include:
 

@@ -354,9 +354,9 @@ Live runner 只负责构造失败和记录工具轨迹；每个 Agent 在所有�
 发布前必须同时满足：
 
 - 全量 pytest 通过。
-- 确定性 E2E `14/14` 通过。
-- Chat、Anthropic、Responses 黑盒流探针通过。
-- `retry_materialization` 在 Claude Code 和 OpenCode 均通过。
+- `dev` 分支的确定性 E2E `14/14` 通过。
+- `dev` 分支的 Chat、Anthropic、Responses 黑盒流探针通过。
+- `dev` 分支的 `retry_materialization` 在 Claude Code 和 OpenCode 均通过。
 - upstream、audit、final、generated files 无 canary。
 - final 和 generated files 无 APG marker。
 - provider key 文件扫描无命中。

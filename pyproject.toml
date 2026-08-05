@@ -28,10 +28,10 @@ dependencies = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/zzhtx258/Agent-Privacy-Gateway"
-Documentation = "https://github.com/zzhtx258/Agent-Privacy-Gateway/tree/main/docs"
-Issues = "https://github.com/zzhtx258/Agent-Privacy-Gateway/issues"
-Source = "https://github.com/zzhtx258/Agent-Privacy-Gateway"
+Homepage = "https://github.com/HKUDS/Agent-Privacy-Gateway"
+Documentation = "https://github.com/HKUDS/Agent-Privacy-Gateway/tree/main/docs"
+Issues = "https://github.com/HKUDS/Agent-Privacy-Gateway/issues"
+Source = "https://github.com/HKUDS/Agent-Privacy-Gateway"
 
 [project.optional-dependencies]
 dev = [
@@ -49,7 +49,7 @@ build-backend = "hatchling.build"
 
 [tool.pytest.ini_options]
 pythonpath = ["src", "."]
-testpaths = ["tests", "e2e_agent_tests/tests"]
+testpaths = ["tests"]
 addopts = "--strict-markers"
 markers = [
   "integration: explicit networked tests that install optional dependencies or download models",
@@ -68,7 +68,6 @@ include = [
   "/assets",
   "/config",
   "/docs",
-  "/e2e_agent_tests",
   "/examples",
   "/pyproject.toml",
   "/src",
@@ -78,9 +77,6 @@ include = [
 [tool.ruff]
 target-version = "py311"
 line-length = 140
-extend-exclude = [
-  "docs/live_agent_evidence.js",
-]
 
 [tool.ruff.lint]
 select = ["E4", "E7", "E9", "F", "B"]

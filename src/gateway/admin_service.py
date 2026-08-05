@@ -165,7 +165,12 @@ class AdminService:
             error = bool(
                 group["parse_errors"]
                 or group["status_code"] >= 400
-                or group["termination"] in {"protocol_error", "client_disconnected"}
+                or group["termination"] in {
+                    "failed",
+                    "protocol_error",
+                    "client_disconnected",
+                    "upstream_disconnected",
+                }
                 or group["error_phase"]
             )
             if error:
@@ -299,6 +304,10 @@ class AdminService:
             "session": _short_identifier(group["session_id"], "Session"),
             "status_code": group["status_code"] or None,
             "termination": group["termination"] or None,
+            "upstream_error_event": group["upstream_error_event"] or None,
+            "upstream_error_type": group["upstream_error_type"] or None,
+            "upstream_error_code": group["upstream_error_code"] or None,
+            "upstream_trace_headers": dict(group["upstream_trace_headers"]),
             "parse_errors": group["parse_errors"],
             "raw_values_included": include_raw,
             "details_available": bool(operations),
@@ -386,6 +395,10 @@ class AdminService:
                     "last_timestamp": timestamp,
                     "status_code": 0,
                     "termination": "",
+                    "upstream_error_event": "",
+                    "upstream_error_type": "",
+                    "upstream_error_code": "",
+                    "upstream_trace_headers": {},
                     "risks": set(),
                     "replacement_count": 0,
                     "materialization_count": 0,
@@ -408,6 +421,14 @@ class AdminService:
                 group["status_code"] = status
             if event.get("termination"):
                 group["termination"] = str(event["termination"])
+            for field in ("upstream_error_event", "upstream_error_type", "upstream_error_code"):
+                if event.get(field):
+                    group[field] = str(event[field])
+            trace_headers = event.get("upstream_trace_headers")
+            if isinstance(trace_headers, dict):
+                for key, value in trace_headers.items():
+                    if isinstance(key, str) and isinstance(value, str):
+                        group["upstream_trace_headers"][key] = value
             group["saw_stream"] = bool(group["saw_stream"] or event.get("stream") or event.get("phase") == "response_stream_complete")
             group["parse_errors"] = max(group["parse_errors"], int(event.get("parse_errors", 0) or 0))
             group["operation_details_omitted"] += int(event.get("audit_operations_omitted", 0) or 0)
@@ -587,6 +608,12 @@ class AdminService:
             "status": scrubbed.get("status"),
             "stream": bool(scrubbed.get("stream", False)),
             "termination": scrubbed.get("termination"),
+            "upstream_error_event": scrubbed.get("upstream_error_event"),
+            "upstream_error_type": scrubbed.get("upstream_error_type"),
+            "upstream_error_code": scrubbed.get("upstream_error_code"),
+            "upstream_trace_headers": scrubbed.get("upstream_trace_headers")
+            if isinstance(scrubbed.get("upstream_trace_headers"), dict)
+            else {},
             "action": scrubbed.get("action"),
             "result_code": scrubbed.get("result_code") or scrubbed.get("code"),
             "detections": detections,

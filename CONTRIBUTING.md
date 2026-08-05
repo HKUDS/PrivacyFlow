@@ -24,7 +24,6 @@ ruff check .
 pytest -m 'not integration'
 node --check src/gateway/webui/app.js
 node --check src/gateway/webui/i18n.js
-python -m e2e_agent_tests.scripts.run_all
 ```
 
 The local-model integration test installs packages and downloads a public test
@@ -35,9 +34,10 @@ APG_RUN_LOCAL_MODEL_INTEGRATION=1 pytest -m integration \
   tests/test_local_models_integration.py
 ```
 
-Real Agent tests consume external provider capacity and must not run in ordinary
-CI. If a change requires them, keep artifacts outside the repository until they
-have passed the leak assertions and been exported in sanitized form.
+The deterministic E2E harness and live Agent matrix are maintained on the
+`dev` branch. Real Agent tests consume external provider capacity and must not
+run in ordinary CI. Keep raw artifacts outside the repository and commit only
+evidence that has passed the leak assertions and been sanitized.
 
 ## Pull requests
 

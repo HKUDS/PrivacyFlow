@@ -10,13 +10,10 @@
 
 <p align="center"><strong>让敏感信息留在本地，让 Agent 正常工作。</strong></p>
 
-<p align="center">
-  面向云端编程 Agent 和 LLM 客户端的本地隐私边界。<br>
-  在请求离开设备前检测并替换敏感值，只在经授权的本地出口还原原值。
-</p>
+<p align="center">为使用云端 LLM 的 Agent 提供本地隐私边界。<br>在请求离开设备前检测并替换敏感值，只在经授权的本地出口还原原值。</p>
 
 <p align="center">
-  <a href="https://github.com/zzhtx258/Agent-Privacy-Gateway/actions/workflows/ci.yml"><img src="https://github.com/zzhtx258/Agent-Privacy-Gateway/actions/workflows/ci.yml/badge.svg" alt="CI 状态"></a>
+  <a href="https://github.com/HKUDS/Agent-Privacy-Gateway/actions/workflows/ci.yml"><img src="https://github.com/HKUDS/Agent-Privacy-Gateway/actions/workflows/ci.yml/badge.svg" alt="CI 状态"></a>
   <a href="https://www.python.org/"><img src="https://img.shields.io/badge/Python-3.11%2B-3776AB?logo=python&logoColor=white" alt="Python 3.11 或更高版本"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-Apache--2.0-4C7A64" alt="Apache 2.0 许可证"></a>
   <img src="https://img.shields.io/badge/Status-Alpha-C47A19" alt="Alpha 状态">
@@ -25,58 +22,61 @@
 <p align="center">
   <a href="#quick-start">快速开始</a> ·
   <a href="#how-it-works">工作原理</a> ·
-  <a href="#protocols">协议支持</a> ·
+  <a href="#api-formats">API 格式</a> ·
   <a href="#security">安全边界</a> ·
   <a href="#documentation">文档</a>
 </p>
 
-<p align="center">
-  <img src="assets/branding/apg-control-overview.png" width="100%" alt="使用虚构上游配置的 APG Control 概览">
-</p>
-
-> [!IMPORTANT]
-> APG 目前仍处于 1.0 之前的 Alpha 阶段。请始终将管理界面限制在
-> loopback，阅读[安全边界](#security)，并先使用自己的 Agent 工作流进行测试，
-> 再接入生产凭据。
-
 ## 为什么需要 APG？
 
-编程 Agent 经常需要读取 `.env`、日志、配置文件、源代码、本地路径和工具参数。
-完全禁止这些上下文会显著降低 Agent 的能力，而把所有原始值发送给云端模型又会
-造成不必要的数据暴露。
+用户在让 Agent 处理真实任务时，经常需要它读取 `.env`、日志、配置文件、源代码和工具参数，或者直接把 API Key、密码、个人信息、私有路径等敏感值交给它使用。这些值既可能由 Agent 在执行任务时发现，也可能由用户主动提供；但用户希望的是让 Agent 完成任务，而不是让背后的云端 LLM 接触这些原值。把原值直接发给云端模型，意味着必须信任请求链路上的模型供应商和所有中间服务。不同服务的数据政策并不相同，部分服务会留存请求，甚至将其用于模型改进或训练；如果使用来路不明的个人中转站，用户往往更难判断自己的数据最终去了哪里、由谁访问以及会被如何利用。而完全转向本地模型，往往意味着投入大量计算资源，或接受能力更弱的模型。
 
-APG 在 Agent 与模型之间建立一道本地边界：
+### 提供商自己的说明
 
-| 本地检测 | 上传前保护 | 保持原生协议 | 本地还原 |
-| --- | --- | --- | --- |
-| 检测凭据、个人信息、本地路径和高熵值 | 使用签名占位符和稳定路径别名替换原值 | Chat Completions、Responses 与 Anthropic Messages 始终是独立的传输格式 | 仅在本地答案和结构化工具参数中还原通过验证的值 |
+数据如何使用取决于具体产品、账户类型和隐私设置。部分消费级服务会持续使用数据改进模型，直到用户主动关闭相关设置；即使已经退出，安全审查和反馈等情况仍可能例外。各提供商的官方文档也明确提醒用户不要提交敏感或机密信息。[^provider-defaults]
+
+| 提供商 | 官方说明 |
+| --- | --- |
+| OpenAI | **ChatGPT 和 Codex 中的内容可能被用于训练，除非用户主动退出。** OpenAI 还明确提醒用户不要在对话中分享敏感信息。[数据使用政策](https://help.openai.com/en/articles/5722486-api-data-usage-policies) · [ChatGPT 隐私说明](https://help.openai.com/en/articles/6783457-chatgpt-privacy-and-data-security) |
+| Anthropic | Claude 消费级产品中的聊天和编程会话可能在开启模型改进、提交反馈或被标记进行安全审查时使用；即使关闭常规模型改进设置，被标记的会话仍可能用于内部安全模型训练。Anthropic 明确表示：**“我们建议用户不要使用我们的产品和服务处理个人数据。”** [消费级产品政策](https://privacy.claude.com/en/articles/10023555-how-do-you-use-personal-data-in-model-training) · [商业产品政策](https://privacy.claude.com/en/articles/7996885-how-do-you-use-personal-data-in-model-training) |
+| Google | **开启 Gemini Keep Activity 后，聊天、文件、屏幕和照片可能被用于改进服务，包括训练生成式 AI 模型，部分数据还可能由人工审查。** Google 明确提醒用户不要输入不希望审查人员看到或被用于改进服务的机密信息。关闭 Keep Activity 后，未来聊天通常不再用于模型训练，但提交反馈时除外；这些聊天仍会为提供服务和保障安全而保留 72 小时。[Gemini Apps 隐私中心](https://support.google.com/gemini/answer/13594961?hl=zh-Hans) |
+| DeepSeek | DeepSeek 的隐私政策允许对对话内容进行运营和统计分析，以改进算法模型、服务智能以及对用户输入的理解。其用户协议另行要求用户**不要输入自己或他人的敏感个人信息**；继续使用服务即表示接受相关政策，而不是另行选择是否允许训练。[隐私政策](https://platform.deepseek.com/downloads/DeepSeek%20Privacy%20Policy.pdf) · [用户协议](https://platform.deepseek.com/downloads/DeepSeek%20User%20Agreement.pdf) |
+
+这些政策并不表示所有提供商都会训练每一条请求。但提供商自己的警告已经说明了实际边界：用户不应假设云端 LLM 适合接收明文个人数据或密钥。APG 在本地强制落实这条边界，而不是依赖每个用户、Agent、隐私设置和中间服务都能正确处理敏感值。
+
+### 用户已经报告了什么
+
+下面这些公开报告尚未得到服务商确认，不能单独证明发生了跨用户数据泄漏。异常内容也可能来自模型幻觉、上下文污染、客户端故障或工具输入。但它们反映了一个现实问题：敏感信息一旦被发送到上游，用户就无法继续控制它经过哪些系统，以及是否会在异常情况下再次出现。
+
+| 平台 | 公开报告 |
+| --- | --- |
+| Claude | 用户让 Claude 整理本地文件并执行 Git 命令后，Claude 突然生成了与当前任务无关的裁员候选人比较，其中包含岗位、薪资和技能等信息。[查看原帖](https://x.com/manateelazycat/status/2076933787217428652) |
+| Claude Code | 用户报告称，会话中突然出现了陌生生产服务器的连接信息和凭据，随后 Agent 连接该服务器并修改了第三方数据库。[查看 Issue](https://github.com/anthropics/claude-code/issues/72274) |
+| ChatGPT | 多名用户表示，上传自己的文件后收到了明显与文件无关的答复；其中一份内容疑似来自当地律师上传的文档。[查看讨论](https://news.ycombinator.com/item?id=43615756) |
+| Gemini | 用户上传音频进行转录后，Gemini 返回了一场无关商业会议的内容，其中包含姓名、公司邮箱、合同和文档链接。发帖者称部分人物和信息可以被核实。[查看原帖](https://www.reddit.com/r/GeminiAI/comments/1v8700z/gemini_gave_me_someone_elses_transcript/) |
+
+APG 不需要假设每一次异常都是数据泄漏。它选择在请求离开设备前替换敏感值：即使上游发生错误路由、日志留存、上下文污染或其他不可预期的问题，云端接触到的也只是占位符，而不是用户的 API Key、密码或个人信息。
+
+直接暴露密钥还可能妨碍任务进行。经过安全对齐的模型可能要求用户撤销密钥、拒绝继续处理，或刻意避开这些值，即使用户的操作本身完全合理。用户只能手动替换、复制或管理敏感数据，增加操作成本，也让本应自动完成的流程重新依赖人工介入。
+
+APG 把原值留在本地，只向模型提供稳定的占位符。模型通常只需要知道“这里有一个密钥”以及“应该在哪里使用它”，并不需要知道密钥的具体内容。APG 仅在经过授权的本地目标中验证并还原原值，使任务能够继续执行，同时避免把敏感信息直接暴露给云端模型。
+
+| 本地检测 | 上传前保护 | 本地还原 |
+| --- | --- | --- |
+| 检测凭据、个人信息、本地路径和高熵值 | 使用签名占位符和稳定路径别名替换原值 | 仅在本地答案和结构化工具参数中还原通过验证的值 |
 
 ### APG 有什么不同
 
-- **无感保护**——模型使用稳定的占位符继续工作，用户无需手动解码即可在本地看到
-  经授权还原的原值。
-- **原生输入，原生输出**——APG 不在不同 API 格式之间转换请求、响应、流式事件、
-  工具调用或供应商错误。
-- **本地控制平面**——供应商凭据、受保护值映射、检测器配置、审计记录和可选模型
-  均保存在本机。
-- **防止伪造占位符**——还原前会验证签名、会话、工作区、映射状态、有效期、
-  撤销状态和目标出口。
-- **行为可检查**——可以试跑检测器、查看受保护映射，并在不把原值写入日志的
-  前提下审计每次替换与还原。
-- **面向真实 Agent 验证**——仓库包含确定性测试，以及带明确泄漏断言的
-  Claude Code/OpenCode 真实矩阵。
+- **无感保护**——模型使用稳定的占位符继续工作，用户无需手动解码即可在本地看到经授权还原的原值。
+- **本地控制平面**——供应商凭据、受保护值映射、检测器配置、审计记录和可选模型均保存在本机。
+- **防止伪造占位符**——还原前会验证签名、会话、工作区、映射状态、有效期、撤销状态和目标出口。
+- **行为可检查**——可以试跑检测器、查看受保护映射，并在不把原值写入日志的前提下审计每次替换与还原。
 
 <a id="how-it-works"></a>
 
 ## 🛡️ 工作原理
 
-```mermaid
-flowchart LR
-    A["Agent 或 LLM 客户端"] -->|"原生请求"| B["APG<br/>本地检测与替换"]
-    B -->|"签名占位符"| C["云端模型"]
-    C -->|"原生响应"| D["APG<br/>本地验证与还原"]
-    D -->|"答案或结构化工具参数"| E["用户或本地工具"]
-```
+APG 在本地处理请求和响应两个方向。请求离开设备前，APG 会检测敏感值，并将其替换为签名占位符或稳定的路径别名；模型响应返回后，APG 会验证这些占位符，并仅在经授权的本地响应或结构化工具参数中还原原值。云端模型始终只接触占位符。
 
 以下本地输入：
 
@@ -92,11 +92,14 @@ Email <APG:v1:pii:...>, open /workspace/project-hash,
 and use key <APG:v1:secret:...>.
 ```
 
-如果模型需要使用受保护值，它只需原样保留占位符。APG 会验证该占位符，并仅在
-经授权的本地响应或解码后的结构化工具参数中还原原值。原始值不会被还原到
-上游或模型可见的流量中。
+模型返回占位符后，经授权的本地结果为：
 
-无效、被修改、已过期、已撤销或跨会话使用的占位符都会以 fail-closed 方式处理。
+```text
+Email alice@example.test, open /Users/alice/private/project,
+and use key sk-example-not-a-real-key.
+```
+
+如果模型需要使用受保护值，它只需原样保留占位符。APG 会验证该占位符，并仅在经授权的本地响应或解码后的结构化工具参数中还原原值。原始值不会被还原到上游或模型可见的流量中。
 
 <a id="quick-start"></a>
 
@@ -107,7 +110,7 @@ and use key <APG:v1:secret:...>.
 要求：macOS、Linux 或 Windows，以及 Python 3.11 或更高版本。
 
 ```bash
-git clone https://github.com/zzhtx258/Agent-Privacy-Gateway.git
+git clone https://github.com/HKUDS/Agent-Privacy-Gateway.git
 cd Agent-Privacy-Gateway
 
 python3 -m venv .venv
@@ -123,8 +126,7 @@ python -m pip install -e .
 apg
 ```
 
-首次启动会创建 `.apg/launcher.json`、随机本地 Agent API Key 和签名密钥。
-APG 会打印 loopback WebUI 地址：
+首次启动会创建 `.apg/launcher.json`、随机本地 Agent API Key 和签名密钥。APG 会打印 loopback WebUI 地址：
 
 ```text
 Agent Privacy Gateway
@@ -136,18 +138,16 @@ WebUI: http://127.0.0.1:8765/ui/
 打开 WebUI，然后：
 
 1. 新增一个具名上游配置；
-2. 选择它实际使用的 API 格式；
-3. 填写供应商 Base URL 和 API Key；
-4. 保存并启用该配置；
-5. 打开 APG 总开关。
+2. 填写供应商 Base URL 和 API Key；
+3. 保存并启用该配置；
+4. 打开 APG 总开关。
 
-在支持文件权限的系统中，供应商密钥会以 `0600` 权限写入本地启动配置；
-管理 API 永远不会返回供应商密钥。
+在支持文件权限的系统中，供应商密钥会以 `0600` 权限写入本地启动配置；管理 API 永远不会返回供应商密钥。
+每个连接默认开放 Chat Completions、Responses 和 Anthropic Messages 三种入口。APG 根据收到请求的本地端点选择匹配的原生上游端点，不会在格式之间转换；如果供应商不支持该格式，APG 会返回实际上游错误。
 
 ### 4. 将 Agent 指向 APG
 
-从 WebUI 的 **Agent 接入**区域复制 Base URL 和自动生成的本地 API Key。
-模型仍然由用户在 Agent 中选择——APG 不负责决定 Agent 使用哪个模型。
+从 WebUI 的 **Agent 接入**区域复制 Base URL 和自动生成的本地 API Key。模型仍然由用户在 Agent 中选择——APG 不负责决定 Agent 使用哪个模型。
 
 | Agent 请求格式 | APG Base URL |
 | --- | --- |
@@ -155,27 +155,24 @@ WebUI: http://127.0.0.1:8765/ui/
 | OpenAI Responses | `http://127.0.0.1:8765/v1` |
 | Anthropic Messages | `http://127.0.0.1:8765` |
 
-> [!CAUTION]
-> Agent 的请求格式必须与当前启用的上游格式完全一致。APG 不会在
-> Chat Completions、Responses 和 Anthropic Messages 之间进行转换。
+> [!NOTE]
+> APG 不会在 Chat Completions、Responses 和 Anthropic Messages 之间转换协议，Agent 与上游必须支持相同的请求格式。如需管理并快速切换不同 Agent 和模型服务商的连接配置，推荐将 APG 与 [CC Switch](https://github.com/farion1231/cc-switch) 搭配使用。CC Switch 用于管理配置，并不是 APG 的协议转换层。
 
-在开发检出目录中也可以使用仓库根目录下的 `./apg` 包装脚本。安装后的环境
-应使用 `apg` 命令。
+在开发检出目录中也可以使用仓库根目录下的 `./apg` 包装脚本。安装后的环境应使用 `apg` 命令。
 
-<a id="protocols"></a>
+<a id="api-formats"></a>
 
-## 🔌 原生协议支持
+## 🔌 支持的 API 格式
 
-APG 有意将三种支持的格式完全分开：
+APG 支持三种 API 格式：
 
-| 格式 | 本地端点 | 上游请求 | 流式事件与错误 |
-| --- | --- | --- | --- |
-| OpenAI Chat Completions | `POST /v1/chat/completions` | Chat Completions JSON | 保持 Chat Completions SSE 与错误格式 |
-| OpenAI Responses | `POST /v1/responses` | Responses JSON | 保持 Responses 事件与错误格式 |
-| Anthropic Messages | `POST /v1/messages` | Anthropic Messages JSON | 保持 Anthropic 事件与错误格式 |
+| 格式 | 本地端点 |
+| --- | --- |
+| OpenAI Chat Completions | `POST /v1/chat/completions` |
+| OpenAI Responses | `POST /v1/responses` |
+| Anthropic Messages | `POST /v1/messages` |
 
-这样可以避免在消息角色、内容块、推理字段、工具调用表示、用量信息、结束原因、
-事件类型和供应商特有错误之间进行有损映射。
+APG 始终按请求原有的 API 格式转发，不会将其转换成另一种协议。
 
 ## ✨ 功能
 
@@ -192,8 +189,7 @@ APG 有意将三种支持的格式完全分开：
 - 标明每项发现来源模块的检测器试跑；
 - 检测器失败时可配置 fail-open 或 fail-close。
 
-风险等级仅用于审计元数据，不会改变受保护数据的替换方式。实际强制执行发生在
-策略、映射、占位符和还原层，而不是由模型置信度决定。
+风险等级仅用于审计元数据，不会改变受保护数据的替换方式。实际强制执行发生在策略、映射、占位符和还原层，而不是由模型置信度决定。
 
 ### 控制与可观测性
 
@@ -204,21 +200,17 @@ APG 有意将三种支持的格式完全分开：
 - 检测器预设、排序、启停、复制和高级设置；
 - 受保护值查看、撤销和保留策略；
 - 替换与还原审计视图；
-- 仓库内经过脱敏的真实 Agent 验证证据；
 - 支持桌面与移动端的响应式管理界面。
 
 ### 可选本地模型
 
-**本地模型管理**页面接受 Hugging Face 仓库/URL 或已有的本地模型目录。
-点击**添加并准备**会依次执行：
+**本地模型管理**页面接受 Hugging Face 仓库/URL 或已有的本地模型目录。点击**添加并准备**会依次执行：
 
 ```text
 检查 → 准备隔离运行环境 → 下载 → 真实推理验证
 ```
 
-APG 不会把 PyTorch 安装到自己的运行环境中。它会在 `.apg/runtimes/`
-创建版本化环境，将受管模型数据保存在 `.apg/models/`，并通过私有 JSON Lines
-协议与本地 Worker 通信。远程自定义代码始终禁用，本地模型目录对 APG 保持只读。
+APG 不会把 PyTorch 安装到自己的运行环境中。它会在 `.apg/runtimes/` 创建版本化环境，将受管模型数据保存在 `.apg/models/`，并通过私有 JSON Lines 协议与本地 Worker 通信。远程自定义代码始终禁用，本地模型目录对 APG 保持只读。
 
 <a id="security"></a>
 
@@ -234,14 +226,11 @@ APG 只保护确实经过 APG 的流量。它有意采用比沙箱或端点安�
 | 将映射、配置、模型和审计状态保存在本地 | 取代密钥管理器、网络策略、EDR 或操作系统沙箱 |
 | 记录经过脱敏的替换和还原操作 | 让暴露到远程的管理端点变得安全 |
 
-管理 API 和 WebUI 有意**不设置应用层身份验证**，因此必须仅限 loopback 访问。
-切勿公开端口 `8765`、反向代理管理路由，或将 APG 绑定到不可信网络。
+管理 API 和 WebUI 有意**不设置应用层身份验证**，因此必须仅限 loopback 访问。切勿公开端口 `8765`、反向代理管理路由，或将 APG 绑定到不可信网络。
 
-遭受提示注入的模型仍可能请求本地工具把已还原的敏感值发送给攻击者。Agent
-运行框架必须自行限制工具执行和出站目标。
+遭受提示注入的模型仍可能请求本地工具把已还原的敏感值发送给攻击者。Agent 运行框架必须自行限制工具执行和出站目标。
 
-请阅读完整的[设计与威胁模型](docs/design.md)、
-[WebUI 安全说明](docs/webui.md)和[安全政策](SECURITY.md)。
+请阅读完整的[设计与威胁模型](docs/design.md)、[WebUI 安全说明](docs/webui.md)和[安全政策](SECURITY.md)。
 
 ## ⚙️ 配置与本地状态
 
@@ -289,42 +278,16 @@ export APG_GC_INTERVAL_SECONDS=60
 | `models/` | APG 管理的 Hugging Face 缓存 |
 | `runtimes/` | 隔离模型运行环境 |
 
-在支持文件权限的系统中，包含敏感信息的文件会使用严格权限创建。请将状态目录
-放在加密存储上，并限制为只有 APG 进程用户可以访问。
+在支持文件权限的系统中，包含敏感信息的文件会使用严格权限创建。请将状态目录放在加密存储上，并限制为只有 APG 进程用户可以访问。
 
 ## ✅ 验证
 
-APG 包含多层验证：
+主分支保留标准回归测试：
 
 | 层级 | 目的 | 命令或证据 |
 | --- | --- | --- |
 | 单元与 API 回归 | 验证代理、检测器、映射、流式传输、WebUI 与安全行为 | `pytest -m 'not integration'` |
-| 确定性 Agent 测试 | 离线运行合成泄漏场景 | `python -m e2e_agent_tests.scripts.run_all` |
-| 真实 Agent 矩阵 | 验证原生 Claude Code 和 OpenCode 行为 | [`docs/live_validation_results.md`](docs/live_validation_results.md) |
-| 泄漏断言 | 检查上游、工作区、审计、最终答案和供应商 Key 边界 | [`docs/e2e_test_plan.md`](docs/e2e_test_plan.md) |
-
-仓库内的真实测试证据均经过脱敏。真实 Agent 测试需要明确启用，并会消耗供应商容量。
-
-<details>
-<summary><strong>运行原生真实 Agent 矩阵</strong></summary>
-
-由于 APG 不做协议转换，每个 Agent 都必须使用格式匹配的上游配置运行：
-
-```bash
-python -m e2e_agent_tests.scripts.run_live_agents \
-  --launcher-config .apg/openai-chat-launcher.json \
-  --agents opencode \
-  --concurrency 4
-
-python -m e2e_agent_tests.scripts.run_live_agents \
-  --launcher-config .apg/anthropic-launcher.json \
-  --agents claude \
-  --concurrency 4
-```
-
-可以使用 `--model MODEL` 和 `--concurrency N` 限制或调整测试。
-
-</details>
+| 联网本地模型集成 | 验证隔离运行环境下载和真实 Worker 推理 | `APG_RUN_LOCAL_MODEL_INTEGRATION=1 pytest -m integration tests/test_local_models_integration.py` |
 
 <a id="documentation"></a>
 
@@ -336,8 +299,6 @@ python -m e2e_agent_tests.scripts.run_live_agents \
 | [`docs/webui.md`](docs/webui.md) | 管理行为、持久化、原值查看和 UI 安全 |
 | [`docs/threat_model.md`](docs/threat_model.md) | 威胁、缓解措施、假设和残余风险 |
 | [`docs/harness_integration.md`](docs/harness_integration.md) | Agent 与工具运行框架接入 |
-| [`docs/e2e_test_plan.md`](docs/e2e_test_plan.md) | 确定性/真实场景与泄漏断言 |
-| [`docs/live_validation_results.md`](docs/live_validation_results.md) | 经过脱敏的真实 Agent 验证结果 |
 | [`docs/roadmap.md`](docs/roadmap.md) | 计划工作和待定设计 |
 
 ## 开发
@@ -366,19 +327,17 @@ APG_RUN_LOCAL_MODEL_INTEGRATION=1 pytest -m integration \
 | --- | --- |
 | [`src/gateway/`](src/gateway/) | 网关、检测、存储、代理、模型 Worker 和 WebUI |
 | [`tests/`](tests/) | 单元、API、流式传输、安全和 WebUI 回归测试 |
-| [`e2e_agent_tests/`](e2e_agent_tests/) | 确定性和真实 Agent 验证矩阵 |
 | [`docs/`](docs/) | 设计、运行、威胁模型和验证证据 |
 | [`examples/`](examples/) | 最小客户端与安全示例 |
 
 ## 参与贡献
 
-欢迎贡献。请先阅读 [`CONTRIBUTING.md`](CONTRIBUTING.md) 和
-[`CODE_OF_CONDUCT.md`](CODE_OF_CONDUCT.md)，大型架构或协议变更请先提交 issue。
+欢迎贡献。请先阅读 [`CONTRIBUTING.md`](CONTRIBUTING.md) 和 [`CODE_OF_CONDUCT.md`](CODE_OF_CONDUCT.md)，大型架构或协议变更请先提交 issue。
 
-请勿在 issue 或 pull request 中包含真实凭据、受保护值、私有路径或未经脱敏的
-Agent 对话记录。
+请勿在 issue 或 pull request 中包含真实凭据、受保护值、私有路径或未经脱敏的 Agent 对话记录。
 
 ## 许可证
 
-Agent Privacy Gateway 使用 [Apache License 2.0](LICENSE)。
-第三方依赖声明保存在 [`docs/vendor/`](docs/vendor/)。
+Agent Privacy Gateway 使用 [Apache License 2.0](LICENSE)。第三方依赖声明保存在 [`docs/vendor/`](docs/vendor/)。
+
+[^provider-defaults]: 商业版和 API 产品通常比消费级产品采用更严格的默认数据政策，具体以相应提供商、产品和账户条款为准。

@@ -21,6 +21,7 @@ class UpstreamConfig:
     protocol: str = OPENAI_CHAT_COMPLETIONS
     timeout_seconds: float = 60.0
     strip_local_v1: bool = False
+    endpoint_overrides: dict[str, str] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -68,6 +69,13 @@ def load_config(path: str | None = None) -> GatewayConfig:
         protocol=upstream_protocol,
         timeout_seconds=float(os.getenv("APG_UPSTREAM_TIMEOUT", upstream_raw.get("timeout_seconds", 60.0))),
         strip_local_v1=_env_bool("APG_UPSTREAM_STRIP_LOCAL_V1", upstream_raw.get("strip_local_v1", False)),
+        endpoint_overrides={
+            canonical_upstream_protocol(str(key)): str(value).strip().rstrip("/")
+            for key, value in dict(upstream_raw.get("endpoint_overrides", {})).items()
+            if canonical_upstream_protocol(str(key)) in SUPPORTED_UPSTREAM_PROTOCOLS and str(value).strip()
+        }
+        if isinstance(upstream_raw.get("endpoint_overrides", {}), dict)
+        else {},
     )
     if upstream.protocol not in {"", *SUPPORTED_UPSTREAM_PROTOCOLS}:
         raise RuntimeError(

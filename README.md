@@ -11,12 +11,12 @@
 <p align="center"><strong>Keep secrets local. Keep agents working.</strong></p>
 
 <p align="center">
-  A local privacy boundary for cloud coding agents and LLM clients.<br>
+  A local privacy boundary for agents that use cloud LLMs.<br>
   Detect sensitive values, replace them before upload, and restore them only at authorized local sinks.
 </p>
 
 <p align="center">
-  <a href="https://github.com/zzhtx258/Agent-Privacy-Gateway/actions/workflows/ci.yml"><img src="https://github.com/zzhtx258/Agent-Privacy-Gateway/actions/workflows/ci.yml/badge.svg" alt="CI status"></a>
+  <a href="https://github.com/HKUDS/Agent-Privacy-Gateway/actions/workflows/ci.yml"><img src="https://github.com/HKUDS/Agent-Privacy-Gateway/actions/workflows/ci.yml/badge.svg" alt="CI status"></a>
   <a href="https://www.python.org/"><img src="https://img.shields.io/badge/Python-3.11%2B-3776AB?logo=python&logoColor=white" alt="Python 3.11 or newer"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-Apache--2.0-4C7A64" alt="Apache 2.0 license"></a>
   <img src="https://img.shields.io/badge/Status-Alpha-C47A19" alt="Alpha status">
@@ -25,38 +25,89 @@
 <p align="center">
   <a href="#-quick-start">Quick Start</a> ·
   <a href="#-how-it-works">How It Works</a> ·
-  <a href="#-native-protocol-support">Protocols</a> ·
+  <a href="#-supported-api-formats">API Formats</a> ·
   <a href="#-security-boundary">Security</a> ·
   <a href="#-documentation">Docs</a>
 </p>
 
-<p align="center">
-  <img src="assets/branding/apg-control-overview.png" width="100%" alt="APG Control overview with a synthetic provider configuration">
-</p>
-
-> [!IMPORTANT]
-> APG is pre-1.0 software. Keep the management interface on loopback, review the
-> [security boundary](#-security-boundary), and test your own Agent workflow
-> before using production credentials.
-
 ## Why APG?
 
-Coding agents routinely inspect `.env` files, logs, configuration, source code,
-local paths, and tool arguments. Blocking that context makes an Agent less
-useful; sending every raw value to a cloud model creates unnecessary exposure.
+When users rely on agents for real work, they often need those agents to read
+`.env` files, logs, configuration, source code, and tool arguments. Sometimes,
+they must directly provide the agent with API keys, passwords, personal
+information, private paths, or other sensitive values for the task. These values
+may be discovered by the agent or intentionally supplied by the user. Either way,
+the goal is for the agent to use them, not for the cloud LLM behind it to receive
+them in plaintext. Sending the original values to a cloud model means trusting
+every provider and intermediary that handles the request. Data policies vary;
+some services may retain or reuse requests for model improvement or training.
+Unofficial or personal API relays make retention, access, and reuse even harder
+to assess. Moving entirely to local models often means either investing
+substantial compute resources or accepting less capable models.
 
-APG inserts a local boundary between the Agent and the model:
+### What providers say
 
-| Detect locally | Protect before upload | Stay protocol-native | Restore locally |
-| --- | --- | --- | --- |
-| Credentials, PII, local paths, and high-entropy values | Signed placeholders and stable path aliases replace raw values | Chat Completions, Responses, and Anthropic Messages remain separate wire formats | Verified values reappear in local answers and structured tool arguments |
+Data use depends on the product, account type, and privacy settings. On several
+consumer services, model-improvement data use remains enabled until the user
+turns it off; some safety-review and feedback exceptions still apply after an
+opt-out. The providers' own documentation also warns users not to submit
+sensitive or confidential information.[^provider-defaults]
+
+| Provider | Official policy |
+| --- | --- |
+| OpenAI | **ChatGPT and Codex content may be used for training unless the user opts out.** OpenAI also says not to share sensitive information in conversations. [Data-usage policy](https://help.openai.com/en/articles/5722486-api-data-usage-policies) · [ChatGPT privacy guidance](https://help.openai.com/en/articles/6783457-chatgpt-privacy-and-data-security) |
+| Anthropic | Claude consumer chats and coding sessions may be used when Model Improvement is enabled, feedback is submitted, or a conversation is flagged for safety review; flagged conversations may still be used for internal safety-model training after the general setting is disabled. Anthropic explicitly says: **“We encourage our users not to use our products and services to process personal data.”** [Consumer policy](https://privacy.claude.com/en/articles/10023555-how-do-you-use-personal-data-in-model-training) · [Commercial policy](https://privacy.claude.com/en/articles/7996885-how-do-you-use-personal-data-in-model-training) |
+| Google | **When Gemini Keep Activity is on, chats, files, screens, and photos may be used to improve services, including training generative AI models, with some data reviewed by humans.** Google warns users not to enter confidential information they would not want a reviewer to see or Google to use for improvement. Turning Keep Activity off prevents future chats from being used for general model training unless feedback is submitted, though chats are still retained for 72 hours for service and safety purposes. [Gemini Apps Privacy Hub](https://support.google.com/gemini/answer/13594961?hl=en) |
+| DeepSeek | DeepSeek's privacy policy permits operational and statistical analysis of dialogue content to improve algorithmic models, service intelligence, and understanding of user input. Its user agreement separately tells users **not to enter their own or other people's sensitive personal information**; continuing to use the service constitutes acceptance of the policy rather than a separate training opt-in. [Privacy policy](https://platform.deepseek.com/downloads/DeepSeek%20Privacy%20Policy.pdf) · [User agreement](https://platform.deepseek.com/downloads/DeepSeek%20User%20Agreement.pdf) |
+
+These policies do not mean that every provider trains on every request.
+But the providers' own warnings make the practical boundary clear: users should
+not assume that a cloud LLM is an appropriate place for plaintext personal data
+or secrets. APG enforces that boundary locally instead of relying on every user,
+agent, setting, and intermediary to handle sensitive values correctly.
+
+### What users have reported
+
+The following public reports have not been confirmed by the providers and do
+not independently prove cross-user data leakage. Unexpected content may also
+result from hallucination, context contamination, client bugs, or tool input.
+They nevertheless illustrate a practical problem: once sensitive data is sent
+upstream, users lose control over which systems process it and whether it might
+reappear under unexpected conditions.
+
+| Platform | Public report |
+| --- | --- |
+| Claude | After asking Claude to organize local files and run a Git command, a user received an unrelated comparison of layoff candidates containing roles, salaries, and skills. [View the original post](https://x.com/manateelazycat/status/2076933787217428652) |
+| Claude Code | A user reported that unrelated production-server connection details and credentials appeared in a session, after which the Agent connected to the server and modified a third-party database. [View the issue](https://github.com/anthropics/claude-code/issues/72274) |
+| ChatGPT | Multiple users reported receiving responses unrelated to files they had uploaded. One response allegedly contained a document uploaded by a local lawyer. [View the discussion](https://news.ycombinator.com/item?id=43615756) |
+| Gemini | After uploading audio for transcription, a user received an unrelated business-meeting transcript containing names, corporate email addresses, contracts, and document links. The poster said some of the people and details could be verified. [View the original post](https://www.reddit.com/r/GeminiAI/comments/1v8700z/gemini_gave_me_someone_elses_transcript/) |
+
+APG does not need to assume that every anomaly is a data breach. It replaces
+sensitive values before a request leaves the device. If an upstream service
+experiences incorrect routing, logging, context contamination, or another
+unexpected failure, it sees placeholders rather than the user's API keys,
+passwords, or personal information.
+
+Exposing a secret can also interrupt the task itself. A safety-aligned model may
+warn the user to revoke a credential, refuse to continue, or avoid using the
+value—even when the intended operation is legitimate. The user is then forced
+to replace, paste, or manage sensitive values manually, adding friction and
+more human-in-the-loop work.
+
+APG keeps the literal value local and gives the model a stable placeholder
+instead. The model only needs to know that a secret exists and where it should
+be used; it rarely needs to know the secret itself. APG verifies and restores
+the original value only at an authorized local destination, so the task can
+continue without directly exposing sensitive data to the cloud.
+
+| Detect locally | Protect before upload | Restore locally |
+| --- | --- | --- |
+| Credentials, PII, local paths, and high-entropy values | Signed placeholders and stable path aliases replace raw values | Verified values reappear in local answers and structured tool arguments |
 
 ### What makes APG different
 
 - **Transparent protection** — the model works with stable placeholders; the
   user receives authorized values back without manually decoding them.
-- **Native in, native out** — APG does not translate requests, responses,
-  streams, tool calls, or provider errors between API formats.
 - **Local control plane** — provider credentials, protected-value mappings,
   detector configuration, audit records, and optional models stay on the
   machine.
@@ -64,18 +115,14 @@ APG inserts a local boundary between the Agent and the model:
   session, workspace, mapping state, expiry, revocation, and sink.
 - **Inspectable behavior** — dry-run detectors, review protected mappings, and
   audit every replacement and restoration without storing raw values in logs.
-- **Agent-focused validation** — the repository includes deterministic and live
-  Claude Code/OpenCode matrices with explicit leak assertions.
 
 ## 🛡️ How it works
 
-```mermaid
-flowchart LR
-    A["Agent or LLM client"] -->|"native request"| B["APG<br/>detect + replace locally"]
-    B -->|"signed placeholders"| C["Cloud model"]
-    C -->|"native response"| D["APG<br/>verify + restore locally"]
-    D -->|"answer or structured tool args"| E["User or local tool"]
-```
+APG handles both directions locally. Before a request leaves the device, it
+detects sensitive values and replaces them with signed placeholders or stable
+path aliases. When the model response returns, APG verifies those placeholders
+and restores the original values only in authorized local responses or
+structured tool arguments. The cloud model only works with the placeholders.
 
 Given this local input:
 
@@ -91,12 +138,17 @@ Email <APG:v1:pii:...>, open /workspace/project-hash,
 and use key <APG:v1:secret:...>.
 ```
 
+After the model returns the placeholders, the authorized local result is:
+
+```text
+Email alice@example.test, open /Users/alice/private/project,
+and use key sk-example-not-a-real-key.
+```
+
 If the model needs a protected value, it keeps the placeholder unchanged. APG
 verifies the placeholder and restores the original only in the authorized local
 response or decoded structured tool argument. Raw values are never restored
 into upstream/model-visible traffic.
-
-Invalid, altered, expired, revoked, or cross-session placeholders fail closed.
 
 ## ⚡ Quick Start
 
@@ -105,7 +157,7 @@ Invalid, altered, expired, revoked, or cross-session placeholders fail closed.
 Requirements: Python 3.11 or newer on macOS, Linux, or Windows.
 
 ```bash
-git clone https://github.com/zzhtx258/Agent-Privacy-Gateway.git
+git clone https://github.com/HKUDS/Agent-Privacy-Gateway.git
 cd Agent-Privacy-Gateway
 
 python3 -m venv .venv
@@ -135,13 +187,16 @@ WebUI: http://127.0.0.1:8765/ui/
 Open the WebUI and:
 
 1. add a named upstream configuration;
-2. choose its exact API format;
-3. enter the provider Base URL and API key;
-4. save and enable the configuration;
-5. turn on the APG master switch.
+2. enter the provider Base URL and API key;
+3. save and enable the configuration;
+4. turn on the APG master switch.
 
 Provider keys are written to the local launcher configuration with mode `0600`
 where supported and are never returned by the management API.
+Every connection exposes the Chat Completions, Responses, and Anthropic Messages
+entrypoints by default. APG selects the matching native upstream route from the
+incoming endpoint and never converts between formats. If the provider does not
+support that format, APG returns the actual upstream error.
 
 ### 4. Point your Agent at APG
 
@@ -155,26 +210,29 @@ selection.
 | OpenAI Responses | `http://127.0.0.1:8765/v1` |
 | Anthropic Messages | `http://127.0.0.1:8765` |
 
-> [!CAUTION]
-> The Agent format must match the active upstream format exactly. APG does not
-> convert between Chat Completions, Responses, and Anthropic Messages.
+> [!NOTE]
+> APG does not convert between Chat Completions, Responses, and Anthropic
+> Messages. The Agent and upstream must support the same request format. To
+> manage and quickly switch connection profiles across different Agents and
+> model providers, consider using [CC Switch](https://github.com/farion1231/cc-switch)
+> alongside APG. CC Switch manages configurations; it is not APG's protocol
+> conversion layer.
 
 The repository-level `./apg` wrapper is also available for development
 checkouts. Installed environments should use the `apg` command.
 
-## 🔌 Native protocol support
+## 🔌 Supported API formats
 
-APG deliberately keeps the three supported formats separate:
+APG accepts three API formats:
 
-| Format | Local endpoint | Upstream request | Streaming and errors |
-| --- | --- | --- | --- |
-| OpenAI Chat Completions | `POST /v1/chat/completions` | Chat Completions JSON | Preserved as Chat Completions SSE/errors |
-| OpenAI Responses | `POST /v1/responses` | Responses JSON | Preserved as Responses events/errors |
-| Anthropic Messages | `POST /v1/messages` | Anthropic Messages JSON | Preserved as Anthropic events/errors |
+| Format | Local endpoint |
+| --- | --- |
+| OpenAI Chat Completions | `POST /v1/chat/completions` |
+| OpenAI Responses | `POST /v1/responses` |
+| Anthropic Messages | `POST /v1/messages` |
 
-This avoids lossy mappings between different message roles, content blocks,
-reasoning fields, tool-call representations, usage data, finish reasons, event
-types, and provider-specific errors.
+APG forwards each request in its original API format and does not translate it
+into another protocol.
 
 ## ✨ Features
 
@@ -199,12 +257,12 @@ materialization layers.
 
 - one-click APG master switch;
 - multiple named upstream configurations;
+- all three native API entrypoints on every upstream configuration;
 - random local Agent API-key generation;
 - bilingual English/Chinese WebUI;
 - detector presets, ordering, enablement, duplication, and advanced settings;
 - protected-value review, revocation, and retention controls;
 - replacement and restoration audit views;
-- sanitized checked-in live-Agent validation evidence;
 - responsive desktop and mobile management UI.
 
 ### Optional local models
@@ -298,39 +356,12 @@ process user.
 
 ## ✅ Validation
 
-APG ships with multiple validation layers:
+The main branch keeps the standard regression suite:
 
 | Layer | Purpose | Command or evidence |
 | --- | --- | --- |
 | Unit and API regression | Proxy, detector, mapping, stream, UI, and security behavior | `pytest -m 'not integration'` |
-| Deterministic Agent harness | Offline synthetic leak scenarios | `python -m e2e_agent_tests.scripts.run_all` |
-| Live Agent matrix | Native Claude Code and OpenCode behavior | [`docs/live_validation_results.md`](docs/live_validation_results.md) |
-| Leak assertions | Upstream, workspace, audit, final-answer, and provider-key boundaries | [`docs/e2e_test_plan.md`](docs/e2e_test_plan.md) |
-
-Checked-in live evidence is sanitized. Real-Agent runs are opt-in and consume
-provider capacity.
-
-<details>
-<summary><strong>Run the native live-Agent matrix</strong></summary>
-
-Because APG does not convert protocols, run each Agent with a matching saved
-upstream profile:
-
-```bash
-python -m e2e_agent_tests.scripts.run_live_agents \
-  --launcher-config .apg/openai-chat-launcher.json \
-  --agents opencode \
-  --concurrency 4
-
-python -m e2e_agent_tests.scripts.run_live_agents \
-  --launcher-config .apg/anthropic-launcher.json \
-  --agents claude \
-  --concurrency 4
-```
-
-Use `--model MODEL` and `--concurrency N` to narrow or tune a run.
-
-</details>
+| Networked local-model integration | Isolated runtime download and real Worker inference | `APG_RUN_LOCAL_MODEL_INTEGRATION=1 pytest -m integration tests/test_local_models_integration.py` |
 
 ## 📚 Documentation
 
@@ -340,8 +371,6 @@ Use `--model MODEL` and `--concurrency N` to narrow or tune a run.
 | [`docs/webui.md`](docs/webui.md) | Management behavior, persistence, raw-value review, and UI security |
 | [`docs/threat_model.md`](docs/threat_model.md) | Threats, mitigations, assumptions, and residual risk |
 | [`docs/harness_integration.md`](docs/harness_integration.md) | Agent and tool-harness integration |
-| [`docs/e2e_test_plan.md`](docs/e2e_test_plan.md) | Deterministic/live scenarios and leak assertions |
-| [`docs/live_validation_results.md`](docs/live_validation_results.md) | Sanitized real-Agent validation results |
 | [`docs/roadmap.md`](docs/roadmap.md) | Planned work and open design areas |
 
 ## Development
@@ -370,7 +399,6 @@ APG_RUN_LOCAL_MODEL_INTEGRATION=1 pytest -m integration \
 | --- | --- |
 | [`src/gateway/`](src/gateway/) | Gateway, detection, storage, proxy, model worker, and WebUI |
 | [`tests/`](tests/) | Unit, API, stream, security, and WebUI regression tests |
-| [`e2e_agent_tests/`](e2e_agent_tests/) | Deterministic and live Agent validation matrix |
 | [`docs/`](docs/) | Design, operations, threat model, and validation evidence |
 | [`examples/`](examples/) | Minimal client and security examples |
 
@@ -378,7 +406,7 @@ APG_RUN_LOCAL_MODEL_INTEGRATION=1 pytest -m integration \
 
 Contributions are welcome. Start with [`CONTRIBUTING.md`](CONTRIBUTING.md), read
 the [`CODE_OF_CONDUCT.md`](CODE_OF_CONDUCT.md), and open an issue before large
-architectural or protocol changes.
+architectural or API contract changes.
 
 Please never include real credentials, protected values, private paths, or
 unsanitized Agent transcripts in issues or pull requests.
@@ -388,3 +416,5 @@ unsanitized Agent transcripts in issues or pull requests.
 Agent Privacy Gateway is licensed under the
 [Apache License 2.0](LICENSE). Bundled third-party notices are kept under
 [`docs/vendor/`](docs/vendor/).
+
+[^provider-defaults]: Business and API products often have stronger default data policies than consumer products. Refer to the terms for the specific provider, product, and account.
