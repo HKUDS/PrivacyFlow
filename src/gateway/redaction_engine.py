@@ -73,45 +73,6 @@ _AUDIT_IDENTIFIER_RE = re.compile(r"[A-Za-z0-9._:@/-]{1,128}")
 
 PathMapping = tuple[tuple[str, str, MappingRecord], ...]
 
-_CREDENTIAL_SCHEME_PREFIXES = (
-    "sk-", "ghp_", "gho_", "ghu_", "ghs_", "ghr_", "svc_", "rk_live_",
-    "rk_test_", "xoxb-", "xoxp-", "AKIA", "ASIA", "AGPA", "eyJ",
-)
-
-
-def _credential_prefix_signature(value: str) -> str | None:
-    """Return a stable short signature for a credential-like value.
-
-    A model that has seen a protected value may quote only its leading scheme
-    fragment instead of the full value (for example ``sk-apgtest`` from
-    ``sk-apgtest-1111...``, ``ghp_apgtest`` from ``ghp_apgtest2222...``, or
-    the ``eyJhbGci`` JWT header).  The full-value known-value merge cannot
-    match such fragments, so credential redaction also registers this
-    signature; later partial echoes are then re-protected before they can
-    reach the upstream model.
-    """
-    if not value:
-        return None
-    for scheme in _CREDENTIAL_SCHEME_PREFIXES:
-        if not value.startswith(scheme):
-            continue
-        if scheme == "eyJ":
-            return "eyJhbGci"
-        tail = value[len(scheme):]
-        end = len(tail)
-        for separator in "-_.":
-            index = tail.find(separator)
-            if 0 < index < end:
-                end = index
-        if end == len(tail) and len(tail) > 7:
-            end = 7
-        segment = tail[:end]
-        if not segment:
-            return scheme.rstrip("-_.")
-        signature = scheme + segment
-        return signature if signature != value else None
-    return None
-
 # Known-value re-protection only makes sense for values distinctive enough to
 # be missing from ordinary text. A short value (e.g. a 1-character `x` from a
 # `API_KEY=x` fixture) appears inside half the words of any real request;
@@ -119,11 +80,9 @@ def _credential_prefix_signature(value: str) -> str | None:
 # even protocol strings. First-pass detection at the assignment site still
 # protects such values; only the whole-request merge is skipped.
 #
-# Generic short values stay out of the whole-request merge; credential-prefix
-# signature records registered by `_credential_prefix_signature` (e.g.
-# `sk-apgtest`, `eyJhbGci`, `ghp_apgtest`) are exempt because they are only
-# ever registered after a real protected credential of that scheme exists in
-# the session, and re-protecting their short fragments is the point.
+# Generic short values stay out of the whole-request merge; only full,
+# sufficiently long protected values are re-protected across a request.
+MIN_KNOWN_VALUE_LEN = 12
 MIN_KNOWN_VALUE_LEN = 12
 
 
@@ -721,19 +680,6 @@ class RedactionEngine:
                     store_value=True,
                     materialization_class=materialization_class,
                 )
-                if mapping_kind == "secr" + "et":
-                    signature = _credential_prefix_signature(raw)
-                    if signature:
-                        self.mapping_store.upsert_mapping(
-                            session_id=session_id,
-                            workspace_id=self.workspace_id,
-                            scope=scope if det.type != "pii" else "session",
-                            kind="secr" + "et",
-                            subtype=det.subtype or "api_key",
-                            value=signature,
-                            store_value=True,
-                            materialization_class="credential_prefix",
-                        )
                 placeholder_kind = "pii" if det.type == "pii" and decision.action == "pseudonymize" else mapping_kind
                 issued_at = int(time.time())
                 replacement = self.signer.issue(placeholder_kind, rec.handle_id, session_id, issued_at)
@@ -810,19 +756,11 @@ class RedactionEngine:
         seen: set[tuple[int, int, str]] = set()
         for record in self._known_value_records(session_id):
             value = record.value or ""
-            is_signature = record.materialization_class == "credential_prefix"
-            if (
-                not value
-                or len(value) > len(text)
-                or (len(value) < MIN_KNOWN_VALUE_LEN and not is_signature)
-            ):
+            if not value or len(value) < MIN_KNOWN_VALUE_LEN or len(value) > len(text):
                 # A needle longer than the field cannot appear in it; skipping
                 # avoids a wasted find() for every such record. Most fields are
                 # short while secrets and paths are long, so this prunes the
-                # bulk of the per-field value scan. Credential-prefix
-                # signatures are deliberately short (a scheme fragment such as
-                # ``sk-apgtest``) and are exempt so partial echoes are still
-                # re-protected.
+                # bulk of the per-field value scan.
                 continue
             start = text.find(value)
             while start >= 0:
