@@ -48,6 +48,11 @@ def test_terminal_hyperlink_falls_back_to_plain_text() -> None:
 
     assert terminal_hyperlink(url, stream=_PlainStream(), environ={}) == url
     assert terminal_hyperlink(url, stream=_TTYStream(), environ={"TERM": "dumb"}) == url
+    assert terminal_hyperlink(
+        url,
+        stream=_TTYStream(),
+        environ={"TERM": "xterm-256color", "TERM_PROGRAM": "Apple_Terminal"},
+    ) == url
 
 
 def test_terminal_hyperlink_does_not_embed_control_characters() -> None:

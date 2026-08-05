@@ -204,6 +204,56 @@ def test_local_response_materializes_path_alias(redactor) -> None:
     assert "/Users/howard/private/project/src/app.py" in restored
 
 
+def test_active_path_mapping_uses_one_store_snapshot(redactor, monkeypatch) -> None:
+    session_id = "sess_path_snapshot"
+    for index in range(150):
+        redactor.mapping_store.upsert_mapping(
+            session_id=session_id,
+            workspace_id="ws",
+            scope="workspace",
+            kind="path",
+            subtype="local_path",
+            value=f"/private/tmp/project-{index}",
+            store_value=True,
+            materialization_class="path",
+        )
+
+    original = redactor.mapping_store.active_records
+    calls = 0
+
+    def counted(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(redactor.mapping_store, "active_records", counted)
+    mapping = redactor._active_path_mapping(session_id)
+
+    assert len(mapping) == 150
+    assert calls == 1
+
+
+def test_local_json_scan_reuses_path_mapping_for_all_strings(redactor, monkeypatch) -> None:
+    session_id = "sess_response_snapshot"
+    redactor.sanitize_text("/private/tmp/response-project", session_id)
+
+    original = redactor._active_path_mapping
+    calls = 0
+
+    def counted(request_session_id):
+        nonlocal calls
+        calls += 1
+        return original(request_session_id)
+
+    monkeypatch.setattr(redactor, "_active_path_mapping", counted)
+    payload = {"output": [{"content": [{"text": f"plain fragment {index}"}]} for index in range(500)]}
+    scanned, events = redactor.scan_local_json(payload, session_id)
+
+    assert scanned == payload
+    assert events == []
+    assert calls == 1
+
+
 def test_raw_secret_not_in_audit_log(tmp_path) -> None:
     from gateway.audit_logger import AuditLogger
 

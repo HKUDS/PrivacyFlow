@@ -69,7 +69,13 @@ def terminal_hyperlink(
     environment = os.environ if environ is None else environ
     safe_url = "".join(char if ord(char) >= 32 and ord(char) != 127 else "�" for char in url)
     is_tty = bool(getattr(output_stream, "isatty", lambda: False)())
-    if safe_url != url or not is_tty or environment.get("TERM", "").lower() == "dumb":
+    terminal_program = environment.get("TERM_PROGRAM", "").lower()
+    if (
+        safe_url != url
+        or not is_tty
+        or environment.get("TERM", "").lower() == "dumb"
+        or terminal_program == "apple_terminal"
+    ):
         return safe_url
     return f"\033]8;;{safe_url}\033\\{safe_url}\033]8;;\033\\"
 

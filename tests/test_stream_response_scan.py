@@ -629,6 +629,64 @@ def test_anthropic_streaming_text_and_tool_args_materialize_locally(tmp_path) ->
     assert next(event for event in detail["materializations"] if event["sink"] == "local_tool")["tool_name"] == "use_key"
 
 
+def test_anthropic_thinking_signature_is_preserved_as_protocol_metadata(tmp_path) -> None:
+    signature = "b2867577-f815-4294-8687-9855240c918c"
+
+    def factory(_payload):
+        async def chunks():
+            events = [
+                {
+                    "type": "message_start",
+                    "message": {
+                        "id": "msg_1",
+                        "type": "message",
+                        "role": "assistant",
+                        "model": "deepseek-v4-flash",
+                        "content": [],
+                        "stop_reason": None,
+                        "usage": {"input_tokens": 4, "output_tokens": 0},
+                    },
+                },
+                {
+                    "type": "content_block_start",
+                    "index": 0,
+                    "content_block": {"type": "thinking", "thinking": "", "signature": ""},
+                },
+                {
+                    "type": "content_block_delta",
+                    "index": 0,
+                    "delta": {"type": "thinking_delta", "thinking": "safe reasoning"},
+                },
+                {
+                    "type": "content_block_delta",
+                    "index": 0,
+                    "delta": {"type": "signature_delta", "signature": signature},
+                },
+                {"type": "content_block_stop", "index": 0},
+                {
+                    "type": "message_delta",
+                    "delta": {"stop_reason": "end_turn", "stop_sequence": None},
+                    "usage": {"output_tokens": 4},
+                },
+                {"type": "message_stop"},
+            ]
+            for event in events:
+                yield f"event: {event['type']}\ndata: {json.dumps(event)}\n\n".encode()
+
+        return chunks()
+
+    client = TestClient(create_app(_cfg(tmp_path, ANTHROPIC_MESSAGES), StaticStreamUpstream(factory)))
+    body = _stream_request(
+        client,
+        "/v1/messages",
+        {"model": "deepseek-v4-flash", "stream": True, "max_tokens": 64, "messages": [{"role": "user", "content": "hello"}]},
+        {"x-api-key": "local"},
+    )
+
+    assert signature in body
+    assert PROTECTED_VALUE not in body
+
+
 def test_malformed_anthropic_stream_returns_safe_error(tmp_path) -> None:
     raw = "sk-proj-abcdefghijklmnopqrstuvwxyz0"
 

@@ -169,6 +169,34 @@ def _safe_upstream_model_ids(body: Any, *, limit: int = 500) -> tuple[list[str],
     return models, truncated
 
 
+def _agent_model_list(model_ids: list[str]) -> dict[str, Any]:
+    """Build a model list accepted by both OpenAI-style and Anthropic-style clients.
+
+    Claude Code and CC Switch parse the Anthropic ``data[].type`` / ``display_name``
+    shape, while Codex and OpenAI-compatible clients expect ``object`` / ``created``.
+    Each entry carries both sets of fields so either parser finds the models.
+    """
+    data = [
+        {
+            "type": "model",
+            "object": "model",
+            "id": model_id,
+            "display_name": model_id,
+            "created": 0,
+            "created_at": "1970-01-01T00:00:00Z",
+            "owned_by": "upstream",
+        }
+        for model_id in model_ids
+    ]
+    return {
+        "object": "list",
+        "data": data,
+        "has_more": False,
+        "first_id": data[0]["id"] if data else None,
+        "last_id": data[-1]["id"] if data else None,
+    }
+
+
 def _upstream_models_path(base_url: str) -> str:
     """Use the standard models route without duplicating a Base URL's existing /v1 suffix."""
     base_path = urlsplit(base_url).path.rstrip("/")
@@ -959,20 +987,38 @@ def create_app(config: GatewayConfig | None = None, upstream_client: UpstreamCli
         if not upstream_is_configured():
             return upstream_not_configured_response()
         try:
-            status, headers, body = await upstream.request_json("GET", "/v1/models")
+            models_upstream_path = _upstream_models_path(cfg.upstream.base_url)
+            direct_request = getattr(upstream, "request_json_upstream_path", None)
+            if callable(direct_request):
+                status, headers, body = await direct_request("GET", models_upstream_path)
+            else:
+                status, headers, body = await upstream.request_json("GET", "/v1/models")
         except httpx.HTTPError as exc:
             return _upstream_error_response(exc, audit, request_id, session_id, cfg.workspace_id, "/v1/models")
+        content_type = str(headers.get("content-type", "")).lower()
+        model_ids, _ = _safe_upstream_model_ids(body)
+        unsupported = status in {404, 405, 501}
+        malformed_success = 200 <= status < 300 and ("json" not in content_type or not model_ids)
+        response_status = 200 if unsupported or malformed_success else status
+        response_body = _agent_model_list(model_ids) if 200 <= response_status < 300 else body
+        response_headers = {
+            "Cache-Control": "no-store",
+            **_safe_upstream_trace_headers(headers),
+        }
         audit.log(
             {
                 "request_id": request_id,
                 "session_id": session_id,
                 "endpoint": "/v1/models",
                 "phase": "models",
-                "status": status,
+                "status": response_status,
+                "upstream_status": status,
+                "model_count": len(model_ids),
+                "fallback": unsupported or malformed_success,
                 "upstream_trace_headers": _safe_upstream_trace_headers(headers),
             }
         )
-        return JSONResponse(body, status_code=status, headers=headers)
+        return JSONResponse(response_body, status_code=response_status, headers=response_headers)
 
     @app.post("/v1/chat/completions")
     async def chat_completions(request: Request, authorization: str | None = Header(default=None), x_apg_session_id: str | None = Header(default=None), x_api_key: str | None = Header(default=None)) -> Response:

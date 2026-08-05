@@ -19,15 +19,38 @@ from gateway.path_alias_manager import PathAliasManager
 from gateway.placeholder_parser import PlaceholderSigner
 from gateway.policy_engine import PolicyEngine
 
-PROTOCOL_KEYS = {"model", "tool_call_id", "tool_use_id", "call_id", "item_id", "previous_response_id"}
-PROTOCOL_ID_PARENTS = {"tool_calls", "tool_use"}
+PROTOCOL_KEYS = {
+    "approval_request_id",
+    "call_id",
+    "container_id",
+    "file_id",
+    "item_id",
+    "model",
+    "previous_response_id",
+    "response_id",
+    "signature",
+    "tool_call_id",
+    "tool_use_id",
+}
+PROTOCOL_ID_PARENTS = {"file_ids", "tool_calls", "tool_use", "vector_store_ids"}
 PROTOCOL_NAME_PARENTS = {"function"}
 CONTENT_FIELD_NAMES = {"content", "input", "instructions", "prompt", "system", "text"}
+OPAQUE_MULTIMODAL_FIELDS = {"file_data", "file_url", "image_url", "partial_image_b64"}
+OPAQUE_MULTIMODAL_TYPES = {
+    "audio",
+    "computer_screenshot",
+    "image",
+    "image_generation_call",
+    "input_audio",
+    "input_file",
+    "input_image",
+    "output_audio",
+}
 # Structured tool-call arguments and user-visible local response text are the
 # two downlink sinks where exact, valid APG placeholders may be materialized.
 # Raw values are never materialized into upstream/model-visible traffic.
 TOOL_ARG_FIELDS = {"arguments", "input"}
-TOOL_ARG_PARENTS = {"function", "tool_use"}
+TOOL_ARG_PARENTS = {"custom_tool_call", "function", "tool_use"}
 STREAM_MATERIALIZATION_TAIL = 4096
 STREAM_TEXT_BASE_TAIL = 256
 STREAM_TEXT_MAX_PENDING = 4096
@@ -41,6 +64,8 @@ _ENV_ASSIGNMENT_RE = re.compile(
 )
 _PEM_END_RE = re.compile(r"-----END (?:RSA |OPENSSH |EC |DSA )?PRIVATE KEY-----")
 _AUDIT_IDENTIFIER_RE = re.compile(r"[A-Za-z0-9._:@/-]{1,128}")
+
+PathMapping = tuple[tuple[str, str, MappingRecord], ...]
 
 
 class StreamProtocolError(ValueError):
@@ -267,10 +292,17 @@ class _ResponsesToolBuffer:
 class BalancedStreamScanner:
     """Bounded-delay scanner for one logical assistant text stream."""
 
-    def __init__(self, redactor: "RedactionEngine", session_id: str) -> None:
+    def __init__(
+        self,
+        redactor: "RedactionEngine",
+        session_id: str,
+        *,
+        path_mapping: PathMapping | None = None,
+    ) -> None:
         self.redactor = redactor
         self.session_id = session_id
-        self.path_aliases = redactor.active_path_aliases(session_id)
+        self.path_mapping = path_mapping if path_mapping is not None else redactor._active_path_mapping(session_id)
+        self.path_aliases = [alias for alias, _, _ in self.path_mapping]
         self.strict = redactor.stream_requires_strict_buffering()
         self.tail = STREAM_TEXT_BASE_TAIL
         self.pending = ""
@@ -333,7 +365,7 @@ class BalancedStreamScanner:
     def _sanitize(self, text: str) -> tuple[str, list[dict[str, Any]]]:
         if not text:
             return "", []
-        return self.redactor.scan_local_text(text, self.session_id)
+        return self.redactor.scan_local_text(text, self.session_id, path_mapping=self.path_mapping)
 
     @staticmethod
     def _sequence_spans(text: str, sequences: list[str]) -> list[tuple[int, int]]:
@@ -482,9 +514,13 @@ class RedactionEngine:
             if isinstance(value, list):
                 return [walk(v, path + (str(i),)) for i, v in enumerate(value)]
             if isinstance(value, dict):
+                if _is_opaque_multimodal_container(value):
+                    return copy.deepcopy(value)
                 out = {}
                 for k, v in value.items():
-                    if k == "id" and isinstance(v, str) and value.get("type") in {"message", "tool_use"}:
+                    if k in OPAQUE_MULTIMODAL_FIELDS:
+                        out[k] = v
+                    elif k == "id" and isinstance(v, str) and _is_response_protocol_id(value, path):
                         out[k] = v
                     elif skip_tool_args and _is_tool_arg_container(value, str(k), path) and isinstance(v, (str, dict, list)):
                         out[k] = v
@@ -513,6 +549,7 @@ class RedactionEngine:
         out: list[str] = []
         cursor = 0
         events: list[dict[str, Any]] = []
+        active_paths_for_aliasing: list[str] | None = None
         for det in detections:
             out.append(text[cursor:det.span_start])
             raw = text[det.span_start:det.span_end]
@@ -567,7 +604,12 @@ class RedactionEngine:
                 cursor = det.span_end
                 continue
             if det.type == "path" and decision.action == "alias":
-                alias = self._hierarchical_path_alias(raw, session_id)
+                if active_paths_for_aliasing is None:
+                    active_paths_for_aliasing = self.mapping_store.active_path_values(
+                        session_id,
+                        self.workspace_id,
+                    )
+                alias = self._hierarchical_path_alias(raw, active_paths_for_aliasing)
                 rec = self.mapping_store.upsert_mapping(
                     session_id=session_id,
                     workspace_id=self.workspace_id,
@@ -578,6 +620,8 @@ class RedactionEngine:
                     store_value=True,
                     materialization_class="path",
                 )
+                if raw not in active_paths_for_aliasing:
+                    active_paths_for_aliasing.append(raw)
                 replacement = alias
                 representation_type = "path_alias"
                 issued_at = 0
@@ -706,8 +750,10 @@ class RedactionEngine:
         session_id: str,
         *,
         tool_name: str = "",
+        path_mapping: PathMapping | None = None,
     ) -> tuple[Any, list[dict[str, Any]]]:
         events: list[dict[str, Any]] = []
+        mapping = path_mapping if path_mapping is not None else self._active_path_mapping(session_id)
 
         def walk(value: Any) -> Any:
             if isinstance(value, str):
@@ -715,6 +761,7 @@ class RedactionEngine:
                     value,
                     session_id,
                     tool_name=tool_name,
+                    path_mapping=mapping,
                 )
                 events.extend(materialization_events)
                 return materialized
@@ -740,10 +787,12 @@ class RedactionEngine:
         session_id: str,
         *,
         tool_name: str = "",
+        path_mapping: PathMapping | None = None,
     ) -> tuple[str, list[dict[str, Any]]]:
         materialized = text
         events: list[dict[str, Any]] = []
-        for alias, value, rec in self._active_path_mapping(session_id):
+        mapping = path_mapping if path_mapping is not None else self._active_path_mapping(session_id)
+        for alias, value, rec in mapping:
             if alias in materialized:
                 materialized = materialized.replace(alias, value)
                 events.append(
@@ -793,24 +842,31 @@ class RedactionEngine:
                 )
         return materialized, events
 
-    def _active_path_mapping(self, session_id: str) -> list[tuple[str, str, MappingRecord]]:
+    def _active_path_mapping(self, session_id: str) -> PathMapping:
+        records = self.mapping_store.active_records(
+            session_id,
+            self.workspace_id,
+            materialization_class="path",
+        )
+        active_paths = [str(record.value) for record in records if record.value]
+        sorted_paths = sorted(set(active_paths), key=len, reverse=True)
         pairs = [
-            (self._hierarchical_path_alias(str(record.value), session_id), str(record.value), record)
-            for record in self.mapping_store.active_records(
-                session_id,
-                self.workspace_id,
-                materialization_class="path",
-            )
+            (self._hierarchical_path_alias(str(record.value), sorted_paths), str(record.value), record)
+            for record in records
             if record.value
         ]
-        return sorted(set(pairs), key=lambda item: len(item[0]), reverse=True)
+        return tuple(sorted(set(pairs), key=lambda item: len(item[0]), reverse=True))
 
-    def _hierarchical_path_alias(self, raw: str, session_id: str) -> str:
-        active_paths = self.mapping_store.active_path_values(session_id, self.workspace_id)
-        for parent in sorted(active_paths, key=len, reverse=True):
+    def _hierarchical_path_alias(self, raw: str, active_paths: list[str]) -> str:
+        best_parent = ""
+        best_suffix: str | None = None
+        for parent in active_paths:
             suffix = self.path_aliases.relative_suffix(parent, raw)
-            if suffix:
-                return self.path_aliases.alias_for(parent) + suffix
+            if suffix and len(parent) > len(best_parent):
+                best_parent = parent
+                best_suffix = suffix
+        if best_suffix is not None:
+            return self.path_aliases.alias_for(best_parent) + best_suffix
         return self.path_aliases.alias_for(raw)
 
     def active_path_aliases(self, session_id: str) -> list[str]:
@@ -870,6 +926,7 @@ class RedactionEngine:
         session_id: str,
         *,
         tool_name: str = "",
+        path_mapping: PathMapping | None = None,
     ) -> tuple[str, list[dict[str, Any]]]:
         """Validate, materialize, and re-encode one standard tool argument object."""
         if not isinstance(arguments, str):
@@ -887,10 +944,21 @@ class RedactionEngine:
         if not isinstance(parsed, dict):
             raise ToolArgumentsJSONError("invalid_tool_arguments_type")
 
-        materialized, events = self.materialize_local_json_with_events(parsed, session_id, tool_name=tool_name)
+        materialized, events = self.materialize_local_json_with_events(
+            parsed,
+            session_id,
+            tool_name=tool_name,
+            path_mapping=path_mapping,
+        )
         return json.dumps(materialized, ensure_ascii=False, allow_nan=False), events
 
-    def materialize_local_tool_args_with_events(self, data: Any, session_id: str) -> tuple[Any, list[dict[str, Any]]]:
+    def materialize_local_tool_args_with_events(
+        self,
+        data: Any,
+        session_id: str,
+        *,
+        path_mapping: PathMapping | None = None,
+    ) -> tuple[Any, list[dict[str, Any]]]:
         """Materialize placeholders back to raw values, but only inside
         structured tool-call argument fields.
 
@@ -902,6 +970,7 @@ class RedactionEngine:
         than partially replaced.
         """
         events: list[dict[str, Any]] = []
+        mapping = path_mapping if path_mapping is not None else self._active_path_mapping(session_id)
 
         def walk(value: Any, path: tuple[str, ...]) -> Any:
             if isinstance(value, list):
@@ -919,6 +988,17 @@ class RedactionEngine:
                                 v,
                                 session_id,
                                 tool_name=tool_name,
+                                path_mapping=mapping,
+                            )
+                            events.extend(argument_events)
+                        elif value.get("type") == "custom_tool_call" and k == "input":
+                            if not isinstance(v, str):
+                                raise ToolArgumentsJSONError("invalid_tool_arguments_type")
+                            out[k], argument_events = self.materialize_local_text_with_events(
+                                v,
+                                session_id,
+                                tool_name=tool_name,
+                                path_mapping=mapping,
                             )
                             events.extend(argument_events)
                         else:
@@ -928,6 +1008,7 @@ class RedactionEngine:
                                 v,
                                 session_id,
                                 tool_name=tool_name,
+                                path_mapping=mapping,
                             )
                             events.extend(argument_events)
                     else:
@@ -937,24 +1018,36 @@ class RedactionEngine:
 
         return walk(copy.deepcopy(data), ()), events
 
-    def scan_local_json(self, data: Any, session_id: str, *, skip_tool_args: bool = True) -> tuple[Any, list[dict[str, Any]]]:
+    def scan_local_json(
+        self,
+        data: Any,
+        session_id: str,
+        *,
+        skip_tool_args: bool = True,
+        path_mapping: PathMapping | None = None,
+    ) -> tuple[Any, list[dict[str, Any]]]:
         events: list[dict[str, Any]] = []
         self.detector_manager.reset_diagnostics()
+        mapping = path_mapping if path_mapping is not None else self._active_path_mapping(session_id)
 
         def walk(value: Any, path: tuple[str, ...]) -> Any:
             if isinstance(value, str):
                 if self._is_protocol_value(path):
                     return value
-                safe, string_events = self.scan_local_text(value, session_id)
+                safe, string_events = self.scan_local_text(value, session_id, path_mapping=mapping)
                 events.extend(string_events)
                 return safe
             if isinstance(value, list):
                 return [walk(item, path + (str(index),)) for index, item in enumerate(value)]
             if isinstance(value, dict):
+                if _is_opaque_multimodal_container(value):
+                    return copy.deepcopy(value)
                 out: dict[str, Any] = {}
                 for key, item in value.items():
                     child_path = path + (str(key),)
-                    if key == "id" and isinstance(item, str) and _is_response_protocol_id(value, path):
+                    if key in OPAQUE_MULTIMODAL_FIELDS:
+                        out[key] = item
+                    elif key == "id" and isinstance(item, str) and _is_response_protocol_id(value, path):
                         out[key] = item
                     elif skip_tool_args and _is_tool_arg_container(value, str(key), path):
                         out[key] = item
@@ -967,16 +1060,34 @@ class RedactionEngine:
 
     async def materialize_local_stream(self, chunks: AsyncIterator[bytes], session_id: str) -> AsyncIterator[bytes]:
         buffer = ""
+        path_mapping = self._active_path_mapping(session_id)
         async for chunk in chunks:
             buffer += chunk.decode("utf-8", errors="ignore")
             if len(buffer) <= STREAM_MATERIALIZATION_TAIL:
                 continue
             emit, buffer = buffer[:-STREAM_MATERIALIZATION_TAIL], buffer[-STREAM_MATERIALIZATION_TAIL:]
-            yield self.materialize_local_text(emit, session_id).encode("utf-8")
+            materialized, _ = self.materialize_local_text_with_events(
+                emit,
+                session_id,
+                path_mapping=path_mapping,
+            )
+            yield materialized.encode("utf-8")
         if buffer:
-            yield self.materialize_local_text(buffer, session_id).encode("utf-8")
+            materialized, _ = self.materialize_local_text_with_events(
+                buffer,
+                session_id,
+                path_mapping=path_mapping,
+            )
+            yield materialized.encode("utf-8")
 
-    def scan_local_text(self, text: str, session_id: str, *, fold_apg_markers: bool = True) -> tuple[str, list[dict[str, Any]]]:
+    def scan_local_text(
+        self,
+        text: str,
+        session_id: str,
+        *,
+        fold_apg_markers: bool = True,
+        path_mapping: PathMapping | None = None,
+    ) -> tuple[str, list[dict[str, Any]]]:
         """Stream-safe downlink scan.
 
         Materializes exact valid same-session placeholders and path aliases
@@ -1004,7 +1115,8 @@ class RedactionEngine:
             restorations[token] = raw
             return token
 
-        for alias, value, rec in self._active_path_mapping(session_id):
+        mapping = path_mapping if path_mapping is not None else self._active_path_mapping(session_id)
+        for alias, value, rec in mapping:
             if alias in protected:
                 protected = protected.replace(alias, protect(value))
                 events.append(
@@ -1079,9 +1191,13 @@ class RedactionEngine:
         key = path[-1]
         if key in PROTOCOL_KEYS:
             return True
+        if key in OPAQUE_MULTIMODAL_FIELDS:
+            return True
         if key == "name" and any(parent in PROTOCOL_NAME_PARENTS for parent in path[:-1]):
             return True
-        return key == "id" and any(parent in PROTOCOL_ID_PARENTS for parent in path[:-1])
+        if any(parent in PROTOCOL_ID_PARENTS for parent in path[:-1]):
+            return key == "id" or key.isdigit()
+        return False
 
     async def scan_local_stream(
         self,
@@ -1092,6 +1208,7 @@ class RedactionEngine:
     ) -> AsyncIterator[bytes]:
         """Statefully scan an OpenAI Chat Completions SSE response."""
         summary = StreamAuditSummary()
+        path_mapping = self._active_path_mapping(session_id)
         text_scanners: dict[int, BalancedStreamScanner] = {}
         tool_buffers: dict[tuple[int, int], _OpenAIToolBuffer] = {}
         last_base: dict[int, dict[str, Any]] = {}
@@ -1132,6 +1249,7 @@ class RedactionEngine:
                     tool.arguments,
                     session_id,
                     tool_name=tool.name,
+                    path_mapping=path_mapping,
                 )
                 prepared_tools.append((tool, args))
                 materialization_events.extend(events)
@@ -1201,7 +1319,7 @@ class RedactionEngine:
                     if isinstance(delta.get("content"), str):
                         scanner = text_scanners.get(choice_index)
                         if scanner is None:
-                            scanner = BalancedStreamScanner(self, session_id)
+                            scanner = BalancedStreamScanner(self, session_id, path_mapping=path_mapping)
                             text_scanners[choice_index] = scanner
                         safe_text, events = scanner.feed(delta["content"])
                         summary.record(events)
@@ -1294,6 +1412,7 @@ class RedactionEngine:
     ) -> AsyncIterator[bytes]:
         """Scan a native Anthropic Messages SSE stream without protocol conversion."""
         summary = StreamAuditSummary()
+        path_mapping = self._active_path_mapping(session_id)
         text_scanners: dict[int, BalancedStreamScanner] = {}
         tool_buffers: dict[int, dict[str, str | bool]] = {}
         normal_end = False
@@ -1334,6 +1453,7 @@ class RedactionEngine:
                 str(tool.get("arguments") or ""),
                 session_id,
                 tool_name=str(tool.get("name") or ""),
+                path_mapping=path_mapping,
             )
             summary.record(events)
             return [
@@ -1373,7 +1493,7 @@ class RedactionEngine:
                         raise StreamProtocolError("invalid_content_block")
                     block_type = block.get("type")
                     if block_type == "text":
-                        scanner = BalancedStreamScanner(self, session_id)
+                        scanner = BalancedStreamScanner(self, session_id, path_mapping=path_mapping)
                         text_scanners[index] = scanner
                         initial = block.get("text", "")
                         if not isinstance(initial, str):
@@ -1395,6 +1515,7 @@ class RedactionEngine:
                             initial_input,
                             session_id,
                             tool_name=name,
+                            path_mapping=path_mapping,
                         )
                         summary.record(events)
                         emitted = copy.deepcopy(payload)
@@ -1421,7 +1542,10 @@ class RedactionEngine:
                         text = delta.get("text")
                         if not isinstance(text, str):
                             raise StreamProtocolError("invalid_text_delta")
-                        scanner = text_scanners.setdefault(index, BalancedStreamScanner(self, session_id))
+                        scanner = text_scanners.setdefault(
+                            index,
+                            BalancedStreamScanner(self, session_id, path_mapping=path_mapping),
+                        )
                         safe, events = scanner.feed(text)
                         summary.record(events)
                         if safe:
@@ -1467,7 +1591,11 @@ class RedactionEngine:
                             yield item
                     normal_end = True
 
-                safe_payload, events = self.scan_local_json(payload, session_id)
+                safe_payload, events = self.scan_local_json(
+                    payload,
+                    session_id,
+                    path_mapping=path_mapping,
+                )
                 summary.record(events)
                 yield event_bytes(safe_payload)
             if not normal_end:
@@ -1504,18 +1632,26 @@ class RedactionEngine:
     ) -> AsyncIterator[bytes]:
         """Statefully scan an OpenAI Responses API SSE stream."""
         summary = StreamAuditSummary()
+        path_mapping = self._active_path_mapping(session_id)
         text_scanners: dict[tuple[str, int, int, str], BalancedStreamScanner] = {}
         text_templates: dict[tuple[str, int, int, str], tuple[SSEEvent, dict[str, Any]]] = {}
         tool_buffers: dict[tuple[int, str], _ResponsesToolBuffer] = {}
+        custom_tool_buffers: dict[tuple[int, str], _ResponsesToolBuffer] = {}
         normal_end = False
 
         text_delta_fields = {
+            "response.code_interpreter_call_code.delta": "delta",
+            "response.mcp_call_arguments.delta": "delta",
             "response.output_text.delta": "delta",
+            "response.reasoning_text.delta": "delta",
             "response.reasoning_summary_text.delta": "delta",
             "response.refusal.delta": "delta",
         }
         text_done_fields = {
+            "response.code_interpreter_call_code.done": "code",
+            "response.mcp_call_arguments.done": "arguments",
             "response.output_text.done": "text",
+            "response.reasoning_text.done": "text",
             "response.reasoning_summary_text.done": "text",
             "response.refusal.done": "refusal",
         }
@@ -1554,7 +1690,11 @@ class RedactionEngine:
             if tool is None or tool.flushed:
                 return []
             tool.flushed = True
-            arguments, events = self.materialize_local_text_with_events(tool.arguments, session_id)
+            arguments, events = self.materialize_local_text_with_events(
+                tool.arguments,
+                session_id,
+                path_mapping=path_mapping,
+            )
             summary.record(events)
             tool.arguments = arguments
             if not arguments:
@@ -1565,9 +1705,38 @@ class RedactionEngine:
             event = SSEEvent("response.function_call_arguments.delta", "")
             return [event_bytes(event, template)]
 
+        def flush_custom_tool(key: tuple[int, str]) -> list[bytes]:
+            tool = custom_tool_buffers.get(key)
+            if tool is None or tool.flushed:
+                return []
+            tool.flushed = True
+            tool_input, events = self.materialize_local_text_with_events(
+                tool.arguments,
+                session_id,
+                path_mapping=path_mapping,
+            )
+            summary.record(events)
+            tool.arguments = tool_input
+            if not tool_input:
+                return []
+            template = dict(tool.template)
+            template["type"] = "response.custom_tool_call_input.delta"
+            template["delta"] = tool_input
+            event = SSEEvent("response.custom_tool_call_input.delta", "")
+            return [event_bytes(event, template)]
+
         def scan_complete_payload(payload: dict[str, Any]) -> tuple[dict[str, Any], list[dict[str, Any]]]:
-            materialized, materialization_events = self.materialize_local_tool_args_with_events(payload, session_id)
-            safe, scan_events = self.scan_local_json(materialized, session_id, skip_tool_args=True)
+            materialized, materialization_events = self.materialize_local_tool_args_with_events(
+                payload,
+                session_id,
+                path_mapping=path_mapping,
+            )
+            safe, scan_events = self.scan_local_json(
+                materialized,
+                session_id,
+                skip_tool_args=True,
+                path_mapping=path_mapping,
+            )
             return safe, [*materialization_events, *scan_events]
 
         try:
@@ -1578,6 +1747,9 @@ class RedactionEngine:
                             yield item
                     for key in list(tool_buffers):
                         for item in flush_tool(key):
+                            yield item
+                    for key in list(custom_tool_buffers):
+                        for item in flush_custom_tool(key):
                             yield item
                     normal_end = True
                     yield event.encode()
@@ -1590,13 +1762,20 @@ class RedactionEngine:
                     raise StreamProtocolError("invalid_responses_sse_payload")
                 event_type = str(payload.get("type") or event.event or "")
 
+                if event_type.startswith(("response.audio.", "response.image_generation_call.")):
+                    yield event_bytes(event, payload)
+                    continue
+
                 if event_type in text_delta_fields:
                     field_name = text_delta_fields[event_type]
                     fragment = payload.get(field_name)
                     if not isinstance(fragment, str):
                         raise StreamProtocolError("invalid_responses_text_delta")
                     key = text_key(event_type, payload)
-                    scanner = text_scanners.setdefault(key, BalancedStreamScanner(self, session_id))
+                    scanner = text_scanners.setdefault(
+                        key,
+                        BalancedStreamScanner(self, session_id, path_mapping=path_mapping),
+                    )
                     template = {key_name: value for key_name, value in payload.items() if key_name != field_name}
                     template["type"] = event_type
                     text_templates[key] = (event, template)
@@ -1616,7 +1795,11 @@ class RedactionEngine:
                     done_text = payload.get(field_name)
                     safe_payload = dict(payload)
                     if isinstance(done_text, str):
-                        safe_text, events = self.scan_local_text(done_text, session_id)
+                        safe_text, events = self.scan_local_text(
+                            done_text,
+                            session_id,
+                            path_mapping=path_mapping,
+                        )
                         summary.record(events)
                         safe_payload[field_name] = safe_text
                     yield event_bytes(event, safe_payload)
@@ -1641,26 +1824,65 @@ class RedactionEngine:
                     tool.template = {key_name: value for key_name, value in payload.items() if key_name != "arguments"}
                     for item in flush_tool(key):
                         yield item
-                    safe_arguments, events = self.materialize_local_text_with_events(tool.arguments, session_id)
+                    safe_arguments, events = self.materialize_local_text_with_events(
+                        tool.arguments,
+                        session_id,
+                        path_mapping=path_mapping,
+                    )
                     summary.record(events)
                     safe_payload = dict(payload)
                     safe_payload["arguments"] = safe_arguments
                     yield event_bytes(event, safe_payload)
                     continue
 
-                if event_type in {"response.output_item.done", "response.completed"}:
-                    if event_type == "response.completed":
+                if event_type == "response.custom_tool_call_input.delta":
+                    fragment = payload.get("delta")
+                    if not isinstance(fragment, str):
+                        raise StreamProtocolError("invalid_responses_custom_tool_delta")
+                    key = tool_key(payload)
+                    tool = custom_tool_buffers.setdefault(key, _ResponsesToolBuffer(key))
+                    tool.arguments += fragment
+                    tool.template = {key_name: value for key_name, value in payload.items() if key_name != "delta"}
+                    continue
+
+                if event_type == "response.custom_tool_call_input.done":
+                    key = tool_key(payload)
+                    tool = custom_tool_buffers.setdefault(key, _ResponsesToolBuffer(key))
+                    full_input = payload.get("input")
+                    if isinstance(full_input, str):
+                        tool.arguments = full_input
+                    tool.template = {key_name: value for key_name, value in payload.items() if key_name != "input"}
+                    for item in flush_custom_tool(key):
+                        yield item
+                    safe_input, events = self.materialize_local_text_with_events(
+                        tool.arguments,
+                        session_id,
+                        path_mapping=path_mapping,
+                    )
+                    summary.record(events)
+                    safe_payload = dict(payload)
+                    safe_payload["input"] = safe_input
+                    yield event_bytes(event, safe_payload)
+                    continue
+
+                if event_type in {"response.output_item.done", "response.completed", "response.incomplete"}:
+                    if event_type in {"response.completed", "response.incomplete"}:
                         for key in list(text_scanners):
                             for item in flush_text(key):
                                 yield item
                         for key in list(tool_buffers):
                             for item in flush_tool(key):
                                 yield item
+                        for key in list(custom_tool_buffers):
+                            for item in flush_custom_tool(key):
+                                yield item
                     safe_payload, events = scan_complete_payload(payload)
                     summary.record(events)
                     yield event_bytes(event, safe_payload)
-                    if event_type == "response.completed":
+                    if event_type in {"response.completed", "response.incomplete"}:
                         normal_end = True
+                        if event_type == "response.incomplete":
+                            summary.termination = "incomplete"
                     continue
 
                 if event_type in {"response.failed", "error"}:
@@ -1674,7 +1896,12 @@ class RedactionEngine:
                 if event_type.endswith(".delta") and isinstance(payload.get("delta"), str):
                     raise StreamProtocolError("unknown_responses_text_delta")
 
-                safe_payload, events = self.scan_local_json(payload, session_id, skip_tool_args=True)
+                safe_payload, events = self.scan_local_json(
+                    payload,
+                    session_id,
+                    skip_tool_args=True,
+                    path_mapping=path_mapping,
+                )
                 summary.record(events)
                 yield event_bytes(event, safe_payload)
 
@@ -1684,8 +1911,12 @@ class RedactionEngine:
             for key in list(tool_buffers):
                 for item in flush_tool(key):
                     yield item
-            summary.termination = "upstream_disconnected"
-            normal_end = True
+            for key in list(custom_tool_buffers):
+                for item in flush_custom_tool(key):
+                    yield item
+            if not normal_end:
+                summary.termination = "upstream_disconnected"
+                normal_end = True
         except StreamProtocolError as exc:
             summary.record_protocol_error(exc)
             summary.termination = "protocol_error"
@@ -1729,16 +1960,41 @@ def _is_tool_arg_container(container: dict[str, Any], key: str, path: tuple[str,
         return True
     if container.get("type") == "tool_use" and key == "input":
         return True
+    if container.get("type") == "custom_tool_call" and key == "input":
+        return True
     return any(parent in TOOL_ARG_PARENTS for parent in path)
+
+
+def _is_opaque_multimodal_container(container: dict[str, Any]) -> bool:
+    value = container.get("type")
+    return isinstance(value, str) and value in OPAQUE_MULTIMODAL_TYPES
 
 
 def _is_response_protocol_id(container: dict[str, Any], path: tuple[str, ...]) -> bool:
     if container.get("object") == "response":
         return True
-    if container.get("type") in {
+    value = container.get("type")
+    if isinstance(value, str) and value in {
         "message",
         "tool_use",
         "function_call",
+        "function_call_output",
+        "custom_tool_call",
+        "custom_tool_call_output",
+        "computer_call",
+        "computer_call_output",
+        "local_shell_call",
+        "local_shell_call_output",
+        "shell_call",
+        "shell_call_output",
+        "mcp_call",
+        "mcp_approval_request",
+        "mcp_approval_response",
+        "code_interpreter_call",
+        "image_generation_call",
+        "file_search_call",
+        "web_search_call",
+        "compaction",
         "output_text",
         "reasoning",
         "reasoning_summary",
