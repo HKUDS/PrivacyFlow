@@ -5,6 +5,7 @@ from pathlib import Path
 
 from gateway.detector_manager import DetectorManager
 from gateway.detectors.rules import builtin_rules
+from gateway.path_alias_manager import PathAliasManager
 from gateway.redaction_engine import RedactionEngine
 
 
@@ -94,6 +95,97 @@ def test_env_assignment_does_not_replace_safe_python_status_expressions(redactor
         sanitized, events = redactor.sanitize_text(source, "sess_1")
         assert sanitized == source
         assert events == []
+
+
+def test_known_value_records_are_queried_once_per_request(redactor, monkeypatch) -> None:
+    store = redactor.mapping_store
+    calls = 0
+    original = store.active_records
+
+    def counting(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(store, "active_records", counting)
+
+    # Ten string fields in one JSON body must not re-query the mapping store
+    # once per field; that is O(fields x rows) and adds seconds on the large
+    # requests real agents send. Exactly one query should cover all fields.
+    body = {"messages": [{"content": f"plain field number {i}"} for i in range(10)]}
+    redactor.sanitize_json(body, "sess_cache")
+    assert calls == 1
+
+    # Creating a new mapping bumps the store generation, so the next scan
+    # rebuilds the cache (one more query) instead of serving stale records.
+    redactor.sanitize_text("API_KEY=some-long-secret-value-here", "sess_cache")
+    redactor.sanitize_text("nothing secret in this field", "sess_cache")
+    assert calls == 2
+
+
+def test_relative_suffix_fast_path_matches_pathlib() -> None:
+    from pathlib import PurePosixPath, PureWindowsPath
+
+    mgr = PathAliasManager()
+
+    def pathlib_rel(parent: str, child: str) -> str | None:
+        sep = "\\" if "\\" in parent or "\\" in child else "/"
+        path_type = PureWindowsPath if sep == "\\" else PurePosixPath
+        try:
+            relative = path_type(child).relative_to(path_type(parent))
+        except ValueError:
+            return None
+        if not relative.parts:
+            return ""
+        return "/" + "/".join(relative.parts)
+
+    cases = [
+        ("/a/b", "/a/b/c"),
+        ("/a/b", "/a/b"),
+        ("/a/b", "/a/bc"),
+        ("/a/b/", "/a/b/c"),
+        ("/a/b", "/a/b/../c"),
+        ("/a", "/a/./b"),
+        ("/a//b", "/a//b/c"),
+        ("/b", "/a/../b"),
+        ("a/b", "a/b/c"),
+        ("", "/a"),
+        ("/a/b", "/a/b/c/d/e"),
+        ("/tmp/a", "/tmp/a-x/y"),
+        ("/a/.hidden/x", "/a/.hidden/x/y"),
+        ("/a/..b", "/a/..b/c"),
+        ("/a", "/a/"),
+        ("/a/./b", "/a/b"),
+        (r"C:\Users\x", r"C:\Users\x\proj"),
+    ]
+    for parent, child in cases:
+        assert mgr.relative_suffix(parent, child) == pathlib_rel(parent, child), (parent, child)
+
+
+def test_active_path_mapping_cached_until_mapping_changes(redactor, monkeypatch) -> None:
+    store = redactor.mapping_store
+    calls = 0
+    original = store.active_records
+
+    def counting(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(store, "active_records", counting)
+
+    # Establish a path mapping, then count only the _active_path_mapping queries.
+    redactor.sanitize_text("/private/tmp/one/a/path.txt", "sess_paths")
+    calls = 0
+    redactor._active_path_mapping("sess_paths")
+    assert calls == 1  # first build queries the store
+    redactor._active_path_mapping("sess_paths")
+    assert calls == 1  # cached, no re-query
+    # A new path mapping invalidates the cache; the next call rebuilds.
+    redactor.sanitize_text("/private/tmp/two/b/path.txt", "sess_paths")
+    calls = 0
+    redactor._active_path_mapping("sess_paths")
+    assert calls == 1  # rebuilt after the store change
 
 
 def test_short_env_value_is_detected_but_not_merged_everywhere(redactor) -> None:

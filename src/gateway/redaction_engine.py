@@ -549,6 +549,17 @@ class RedactionEngine:
         self.workspace_id = workspace_id
         self.path_aliases = PathAliasManager()
         self._materializer = MaterializationEngine(mapping_store, signer, policy, workspace_id)
+        # Cache of active known-value records per (session, workspace),
+        # invalidated by the store's write generation. Without this, large
+        # requests (e.g. Codex's ~400 KB bodies with hundreds of active
+        # mappings) re-query the store for every string field, adding seconds.
+        self._known_records_cache: dict[tuple[str, str], tuple[int, list[MappingRecord]]] = {}
+        # Cache of the hierarchical path mapping per (session, workspace),
+        # invalidated the same way. Building it is O(active_paths^2); on a
+        # response stream with hundreds of accumulated paths that is the single
+        # largest fixed cost, and it is recomputed on every call when mappings
+        # have not changed.
+        self._path_mapping_cache: dict[tuple[str, str], tuple[int, PathMapping]] = {}
 
     def sanitize_json(self, data: Any, session_id: str, scope: str = "request", *, alias_paths: bool = True, skip_tool_args: bool = False) -> tuple[Any, list[dict[str, Any]]]:
         events: list[dict[str, Any]] = []
@@ -753,6 +764,28 @@ class RedactionEngine:
         out.append(text[cursor:])
         return "".join(out), events
 
+    def _known_value_records(self, session_id: str) -> list[MappingRecord]:
+        """Active records for the session, cached until the store changes.
+
+        `_merge_known_value_detections` runs once per string field, and large
+        agent requests contain thousands of fields. Re-querying the mapping
+        store for every field is O(fields x rows); a single query cached across
+        the request (and across requests until a mapping is inserted,
+        tombstoned, or expired) keeps it O(rows + fields).
+        """
+        key = (session_id, self.workspace_id)
+        generation = self.mapping_store.write_generation
+        cached = self._known_records_cache.get(key)
+        if cached is not None and cached[0] == generation:
+            return cached[1]
+        records = self.mapping_store.active_records(session_id, self.workspace_id)
+        if len(self._known_records_cache) >= 32:
+            # Bound memory by dropping the whole cache; a cold start is one
+            # extra query per session, far cheaper than the unbounded growth.
+            self._known_records_cache = {}
+        self._known_records_cache[key] = (generation, records)
+        return records
+
     def _merge_known_value_detections(
         self,
         text: str,
@@ -769,9 +802,13 @@ class RedactionEngine:
         """
         known: list[tuple[Detection, bool]] = [(detection, False) for detection in detections]
         seen: set[tuple[int, int, str]] = set()
-        for record in self.mapping_store.active_records(session_id, self.workspace_id):
+        for record in self._known_value_records(session_id):
             value = record.value or ""
-            if not value or len(value) < MIN_KNOWN_VALUE_LEN:
+            if not value or len(value) < MIN_KNOWN_VALUE_LEN or len(value) > len(text):
+                # A needle longer than the field cannot appear in it; skipping
+                # avoids a wasted find() for every such record. Most fields are
+                # short while secrets and paths are long, so this prunes the
+                # bulk of the per-field value scan.
                 continue
             start = text.find(value)
             while start >= 0:
@@ -914,6 +951,11 @@ class RedactionEngine:
         return materialized, events
 
     def _active_path_mapping(self, session_id: str) -> PathMapping:
+        key = (session_id, self.workspace_id)
+        generation = self.mapping_store.write_generation
+        cached = self._path_mapping_cache.get(key)
+        if cached is not None and cached[0] == generation:
+            return cached[1]
         records = self.mapping_store.active_records(
             session_id,
             self.workspace_id,
@@ -926,7 +968,11 @@ class RedactionEngine:
             for record in records
             if record.value
         ]
-        return tuple(sorted(set(pairs), key=lambda item: len(item[0]), reverse=True))
+        result: PathMapping = tuple(sorted(set(pairs), key=lambda item: len(item[0]), reverse=True))
+        if len(self._path_mapping_cache) >= 32:
+            self._path_mapping_cache = {}
+        self._path_mapping_cache[key] = (generation, result)
+        return result
 
     def _hierarchical_path_alias(self, raw: str, active_paths: list[str]) -> str:
         best_parent = ""
