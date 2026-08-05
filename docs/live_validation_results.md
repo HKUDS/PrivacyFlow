@@ -1,5 +1,47 @@
 # Live Validation Results
 
+## Full live-agent matrix: Claude Code + OpenCode
+
+Date: 2026-08-05
+
+Both coding agents were validated against the current gateway on native
+protocols only: Claude Code `2.1.220` through the `anthropic_messages`
+profile and OpenCode `1.17.18` through the `openai_chat_completions`
+profile, both on DeepSeek with model `deepseek-v4-flash`.
+
+- The configurable concurrent scheduler ran with `concurrency=4` and
+  `retries=1`; each case kept an isolated repository, APG process, port,
+  audit log, and SQLite database. Deterministic `summary.json` ordering was
+  preserved while cases executed concurrently.
+- Effective results: Claude Code `15/15`, OpenCode `15/15`. OpenCode passed
+  on its first effective attempt for all 15 cases; Claude Code passed all 15
+  cases on this run.
+- Raw canary leak files, final APG handles, materialization failures, omitted
+  audit details, upstream private-path leaks, and provider-key file hits were
+  zero. All final-value authorization checks passed.
+- The harness contract assertion now also validates the Anthropic top-level
+  `system` block (string or text-block list); the gateway injects the
+  "Agent Privacy Gateway" contract into `system[0].text`, which the previous
+  `instructions`/`messages`-only check did not inspect.
+- The run exposed and fixed a partial-disclosure gap: a model that had seen a
+  protected credential could echo only its leading scheme fragment (for
+  example the `sk-` prefix or the `eyJ` JWT header) into a later thinking
+  block. Full-value known-value tracking cannot match such fragments, so
+  credential redaction now also registers a stable signature prefix that is
+  re-protected in later requests. Signature records are internal detection
+  aids and are hidden from the admin protected-values list.
+- One `safe_env_example` attempt hit a transient upstream stream parse
+  failure (`The upstream stream could not be safely parsed.`); an isolated
+  rerun of the same scenario passed, and the protocol-error audit now
+  records the concrete error code for diagnosis.
+- The offline regression suite is `364 passed, 1 skipped`; the E2E harness
+  unit tests are `31 passed`.
+
+Evidence:
+
+- `<local-run-artifacts>/apg-live-agents-20260805-opencode/summary.json`
+- `<local-run-artifacts>/apg-live-agents-20260805-claude-final/summary.json`
+
 ## Native-format live validation
 
 Date: 2026-07-28

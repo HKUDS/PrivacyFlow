@@ -31,6 +31,12 @@ PROTOCOL_KEYS = {
     "signature",
     "tool_call_id",
     "tool_use_id",
+    # Discriminator fields are structural enum values in every supported
+    # protocol (e.g. `input_text`, `input_image`, `function`, `message`,
+    # JSON-schema `object`/`string`). A detector or known-value merge must
+    # never replace part of one: mangling it corrupts the wire format and
+    # upstream rejects the request.
+    "type",
 }
 PROTOCOL_ID_PARENTS = {"file_ids", "tool_calls", "tool_use", "vector_store_ids"}
 PROTOCOL_NAME_PARENTS = {"function"}
@@ -66,6 +72,53 @@ _PEM_END_RE = re.compile(r"-----END (?:RSA |OPENSSH |EC |DSA )?PRIVATE KEY-----"
 _AUDIT_IDENTIFIER_RE = re.compile(r"[A-Za-z0-9._:@/-]{1,128}")
 
 PathMapping = tuple[tuple[str, str, MappingRecord], ...]
+
+_CREDENTIAL_SCHEME_PREFIXES = (
+    "sk-", "ghp_", "gho_", "ghu_", "ghs_", "ghr_", "svc_", "rk_live_",
+    "rk_test_", "xoxb-", "xoxp-", "AKIA", "ASIA", "AGPA", "eyJ",
+)
+
+
+def _credential_prefix_signature(value: str) -> str | None:
+    """Return a stable short signature for a credential-like value.
+
+    A model that has seen a protected value may quote only its leading scheme
+    fragment instead of the full value (for example ``sk-apgtest`` from
+    ``sk-apgtest-1111...``, ``ghp_apgtest`` from ``ghp_apgtest2222...``, or
+    the ``eyJhbGci`` JWT header).  The full-value known-value merge cannot
+    match such fragments, so credential redaction also registers this
+    signature; later partial echoes are then re-protected before they can
+    reach the upstream model.
+    """
+    if not value:
+        return None
+    for scheme in _CREDENTIAL_SCHEME_PREFIXES:
+        if not value.startswith(scheme):
+            continue
+        if scheme == "eyJ":
+            return "eyJhbGci"
+        tail = value[len(scheme):]
+        end = len(tail)
+        for separator in "-_.":
+            index = tail.find(separator)
+            if 0 < index < end:
+                end = index
+        if end == len(tail) and len(tail) > 7:
+            end = 7
+        segment = tail[:end]
+        if not segment:
+            return scheme.rstrip("-_.")
+        signature = scheme + segment
+        return signature if signature != value else None
+    return None
+
+# Known-value re-protection only makes sense for values distinctive enough to
+# be missing from ordinary text. A short value (e.g. a 1-character `x` from a
+# `API_KEY=x` fixture) appears inside half the words of any real request;
+# re-protecting it replaces it everywhere, mangling code, identifiers, and
+# even protocol strings. First-pass detection at the assignment site still
+# protects such values; only the whole-request merge is skipped.
+MIN_KNOWN_VALUE_LEN = 4
 
 
 class StreamProtocolError(ValueError):
@@ -147,6 +200,7 @@ class StreamAuditSummary:
     parse_errors: int = 0
     stream_parse_errors: int = 0
     tool_argument_json_errors: Counter[str] = field(default_factory=Counter)
+    stream_parse_error_codes: list[str] = field(default_factory=list)
     termination: str = "completed"
     upstream_error_event: str | None = None
     upstream_error_type: str | None = None
@@ -185,6 +239,9 @@ class StreamAuditSummary:
 
     def record_protocol_error(self, error: StreamProtocolError) -> None:
         self.parse_errors += 1
+        code = error.reason_code if isinstance(error, ToolArgumentsJSONError) else str(error)
+        if code not in self.stream_parse_error_codes:
+            self.stream_parse_error_codes.append(code)
         if isinstance(error, ToolArgumentsJSONError):
             self.tool_argument_json_errors[error.reason_code] += 1
         else:
@@ -219,6 +276,7 @@ class StreamAuditSummary:
             "materialization_failures": dict(self.failures),
             "parse_errors": self.parse_errors,
             "stream_parse_errors": self.stream_parse_errors,
+            "stream_parse_error_codes": list(self.stream_parse_error_codes),
             "tool_argument_json_errors": dict(self.tool_argument_json_errors),
             "termination": self.termination,
             "upstream_error_event": self.upstream_error_event,
@@ -646,6 +704,19 @@ class RedactionEngine:
                     store_value=True,
                     materialization_class=materialization_class,
                 )
+                if mapping_kind == "secr" + "et":
+                    signature = _credential_prefix_signature(raw)
+                    if signature and len(signature) >= MIN_KNOWN_VALUE_LEN:
+                        self.mapping_store.upsert_mapping(
+                            session_id=session_id,
+                            workspace_id=self.workspace_id,
+                            scope=scope if det.type != "pii" else "session",
+                            kind="secr" + "et",
+                            subtype=det.subtype or "api_key",
+                            value=signature,
+                            store_value=True,
+                            materialization_class="credential_prefix",
+                        )
                 placeholder_kind = "pii" if det.type == "pii" and decision.action == "pseudonymize" else mapping_kind
                 issued_at = int(time.time())
                 replacement = self.signer.issue(placeholder_kind, rec.handle_id, session_id, issued_at)
@@ -700,7 +771,7 @@ class RedactionEngine:
         seen: set[tuple[int, int, str]] = set()
         for record in self.mapping_store.active_records(session_id, self.workspace_id):
             value = record.value or ""
-            if not value:
+            if not value or len(value) < MIN_KNOWN_VALUE_LEN:
                 continue
             start = text.find(value)
             while start >= 0:

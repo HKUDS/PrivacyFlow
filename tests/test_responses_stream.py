@@ -562,6 +562,48 @@ def test_responses_request_with_dict_typed_type_field_is_walked_not_crashed(tmp_
     assert _placeholder_of_kind(json.dumps(sent), "secret")
 
 
+def test_responses_known_values_do_not_mangle_protocol_discriminators(tmp_path) -> None:
+    upstream = MutableResponsesUpstream()
+    client = TestClient(create_app(_cfg(tmp_path), upstream))
+    # First request establishes two known mappings for this session (the same
+    # local key reuses the session): `text` (long enough to be merged) and `x`
+    # (too short to be merged). Both are substrings of `input_text`.
+    first = client.post(
+        "/v1/responses",
+        headers={"Authorization": "Bearer local"},
+        json={"model": "x", "input": [{"role": "user", "content": [{"type": "input_text", "text": "set API_KEY=text and API_KEY=x"}]}]},
+    )
+    assert first.status_code == 200
+    # Second request, same session: the known values are active. The `type`
+    # discriminator must never be rewritten, or upstream rejects the request
+    # with an unknown-variant error (`input_te<...>t`), and the short `x` must
+    # not be re-protected inside ordinary words.
+    second = client.post(
+        "/v1/responses",
+        headers={"Authorization": "Bearer local"},
+        json={
+            "model": "x",
+            "input": [
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "input_text", "text": "set API_KEY=text and expand next"},
+                    ],
+                }
+            ],
+        },
+    )
+
+    assert second.status_code == 200
+    sent = upstream.calls[1][2]
+    item = sent["input"][0]["content"][0]
+    assert item["type"] == "input_text"
+    # The assignment value is still protected at the detection site.
+    assert item["text"].startswith("set API_KEY=<APG:")
+    # The same `x` inside another word is not re-protected by the merge.
+    assert "expand next" in item["text"]
+
+
 def test_responses_stream_flushes_tool_arguments_at_eof_and_rejects_malformed_json(tmp_path) -> None:
     def eof_factory(payload):
         placeholder = _placeholder_of_kind(json.dumps(payload), "secret")

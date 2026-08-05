@@ -22,6 +22,7 @@ class UpstreamConfig:
     timeout_seconds: float = 60.0
     strip_local_v1: bool = False
     endpoint_overrides: dict[str, str] = field(default_factory=dict)
+    proxy: str | None = None
 
 
 @dataclass(frozen=True)
@@ -76,6 +77,7 @@ def load_config(path: str | None = None) -> GatewayConfig:
         }
         if isinstance(upstream_raw.get("endpoint_overrides", {}), dict)
         else {},
+        proxy=str(os.getenv("APG_UPSTREAM_PROXY") or upstream_raw.get("proxy") or "").strip() or None,
     )
     if upstream.protocol not in {"", *SUPPORTED_UPSTREAM_PROTOCOLS}:
         raise RuntimeError(

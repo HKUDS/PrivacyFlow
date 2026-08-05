@@ -356,9 +356,19 @@ def _payload_has_contract(event: dict[str, Any]) -> bool:
     payload = event.get("payload")
     if not isinstance(payload, dict):
         return False
+    # OpenAI Responses: the contract is injected as top-level instructions.
     instructions = payload.get("instructions")
     if isinstance(instructions, str) and "Agent Privacy Gateway" in instructions:
         return True
+    # Anthropic Messages: the contract is injected into the top-level system
+    # field, which may be a string or a list of {type: text, text: ...} blocks.
+    system = payload.get("system")
+    if isinstance(system, str) and "Agent Privacy Gateway" in system:
+        return True
+    if isinstance(system, list):
+        for block in system:
+            if isinstance(block, dict) and "Agent Privacy Gateway" in str(block.get("text", "")):
+                return True
     return any(
         isinstance(message, dict) and "Agent Privacy Gateway" in str(message.get("content", ""))
         for message in payload.get("messages", [])

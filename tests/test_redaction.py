@@ -96,6 +96,16 @@ def test_env_assignment_does_not_replace_safe_python_status_expressions(redactor
         assert events == []
 
 
+def test_short_env_value_is_detected_but_not_merged_everywhere(redactor) -> None:
+    assignment, events = redactor.sanitize_text("API_KEY=x", "sess_1")
+    assert assignment.startswith("API_KEY=<APG:v1:secret:")
+    # The single `x` now exists as an active mapping. A second scan of text
+    # that merely contains `x` inside another word must not re-protect it.
+    text, events = redactor.sanitize_text("expand the next extra part", "sess_1")
+    assert text == "expand the next extra part"
+    assert events == []
+
+
 def test_materialized_secret_is_reprotected_without_original_assignment_context(redactor) -> None:
     raw = "svc_apgtest_edge_inline_55555555555555555555"
     first, _ = redactor.sanitize_text(f"SERVICE_TOKEN={raw}", "sess_1")
@@ -347,3 +357,16 @@ def test_local_model_only_scans_content_fields_while_rules_cover_tool_schema(com
     diagnostics = manager.diagnostics()
     assert [item["id"] for item in diagnostics] == ["rules", "personal_model"]
     assert diagnostics[-1]["status"] == "ok"
+
+
+def test_credential_prefix_signature_reprotects_partial_echo(redactor) -> None:
+    full = "<APG:v1:secret:secr_0a153523e5:sess_229000ed3083:1785910770:fJ2dAL6JY3KjO4Uf>" + "-11111111111111111111111111111111"
+    prefix = "<APG:v1:secret:secr_0a153523e5:sess_229000ed3083:1785910770:fJ2dAL6JY3KjO4Uf>"
+    first, _ = redactor.sanitize_text(f"Authorization: Bearer {full}", "sess_1")
+    assert full not in first
+
+    # A model that saw the protected value may echo only its leading scheme
+    # fragment; the registered signature must re-protect that partial echo.
+    echoed, events = redactor.sanitize_text(f"the key starts with {prefix}", "sess_1")
+    assert prefix not in echoed
+    assert any(event.get("detector") == "known_value" for event in events)

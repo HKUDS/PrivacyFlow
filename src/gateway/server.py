@@ -635,6 +635,9 @@ def create_app(config: GatewayConfig | None = None, upstream_client: UpstreamCli
                     await gc_task
                 except asyncio.CancelledError:
                     pass
+            close_upstream = getattr(upstream, "close", None)
+            if callable(close_upstream):
+                await close_upstream()
             local_models.close()
             store.close()
             sessions.close()
