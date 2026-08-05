@@ -118,7 +118,13 @@ def _credential_prefix_signature(value: str) -> str | None:
 # re-protecting it replaces it everywhere, mangling code, identifiers, and
 # even protocol strings. First-pass detection at the assignment site still
 # protects such values; only the whole-request merge is skipped.
-MIN_KNOWN_VALUE_LEN = 4
+#
+# Generic short values stay out of the whole-request merge; credential-prefix
+# signature records registered by `_credential_prefix_signature` (e.g.
+# `sk-apgtest`, `eyJhbGci`, `ghp_apgtest`) are exempt because they are only
+# ever registered after a real protected credential of that scheme exists in
+# the session, and re-protecting their short fragments is the point.
+MIN_KNOWN_VALUE_LEN = 12
 
 
 class StreamProtocolError(ValueError):
@@ -717,7 +723,7 @@ class RedactionEngine:
                 )
                 if mapping_kind == "secr" + "et":
                     signature = _credential_prefix_signature(raw)
-                    if signature and len(signature) >= MIN_KNOWN_VALUE_LEN:
+                    if signature:
                         self.mapping_store.upsert_mapping(
                             session_id=session_id,
                             workspace_id=self.workspace_id,
@@ -804,11 +810,19 @@ class RedactionEngine:
         seen: set[tuple[int, int, str]] = set()
         for record in self._known_value_records(session_id):
             value = record.value or ""
-            if not value or len(value) < MIN_KNOWN_VALUE_LEN or len(value) > len(text):
+            is_signature = record.materialization_class == "credential_prefix"
+            if (
+                not value
+                or len(value) > len(text)
+                or (len(value) < MIN_KNOWN_VALUE_LEN and not is_signature)
+            ):
                 # A needle longer than the field cannot appear in it; skipping
                 # avoids a wasted find() for every such record. Most fields are
                 # short while secrets and paths are long, so this prunes the
-                # bulk of the per-field value scan.
+                # bulk of the per-field value scan. Credential-prefix
+                # signatures are deliberately short (a scheme fragment such as
+                # ``sk-apgtest``) and are exempt so partial echoes are still
+                # re-protected.
                 continue
             start = text.find(value)
             while start >= 0:

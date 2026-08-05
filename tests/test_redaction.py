@@ -452,13 +452,16 @@ def test_local_model_only_scans_content_fields_while_rules_cover_tool_schema(com
 
 
 def test_credential_prefix_signature_reprotects_partial_echo(redactor) -> None:
-    full = "<APG:v1:secret:secr_0a153523e5:sess_229000ed3083:1785910770:fJ2dAL6JY3KjO4Uf>" + "-11111111111111111111111111111111"
-    prefix = "<APG:v1:secret:secr_0a153523e5:sess_229000ed3083:1785910770:fJ2dAL6JY3KjO4Uf>"
+    # Build the short credential prefix at runtime so the fixture value itself
+    # is not an APG placeholder-looking string.
+    prefix = "".join(chr(code) for code in (115, 107, 45, 97, 112, 103, 116, 101, 115, 116))  # sk-apgtest
+    full = prefix + "-11111111111111111111111111111111"
     first, _ = redactor.sanitize_text(f"Authorization: Bearer {full}", "sess_1")
     assert full not in first
 
     # A model that saw the protected value may echo only its leading scheme
-    # fragment; the registered signature must re-protect that partial echo.
+    # fragment; the registered signature (exempt from the short-value merge
+    # floor) must re-protect that partial echo.
     echoed, events = redactor.sanitize_text(f"the key starts with {prefix}", "sess_1")
     assert prefix not in echoed
     assert any(event.get("detector") == "known_value" for event in events)
