@@ -76,6 +76,10 @@ class MappingStore:
         Path(path).parent.mkdir(parents=True, exist_ok=True)
         self.conn = sqlite3.connect(path, check_same_thread=False)
         self._lock = threading.RLock()
+        # Monotonic counter bumped whenever the active mapping set changes
+        # (insert, tombstone, or expiry). Consumers cache active records and
+        # rebuild only when this changes instead of re-querying per call.
+        self._write_generation = 0
         self.conn.row_factory = sqlite3.Row
         self.conn.execute("PRAGMA journal_mode=WAL")
         self.conn.execute("PRAGMA synchronous=NORMAL")
@@ -344,6 +348,7 @@ class MappingStore:
                     "",
                 ),
             )
+            self._write_generation += 1
         return self.get(handle_id)
 
     def get(self, handle_id: str) -> MappingRecord | None:
@@ -667,6 +672,7 @@ class MappingStore:
                 """,
                 (reason, handle_id),
             )
+            self._write_generation += 1
 
     def expire_request_scope(self) -> int:
         now = int(time.time())
@@ -678,6 +684,8 @@ class MappingStore:
                 """,
                 (now,),
             )
+            if cur.rowcount:
+                self._write_generation += 1
             return cur.rowcount
 
     def tombstone_expired(self) -> int:
@@ -691,7 +699,14 @@ class MappingStore:
                 ")",
                 (now, now),
             )
+            if cur.rowcount:
+                self._write_generation += 1
             return cur.rowcount
+
+    @property
+    def write_generation(self) -> int:
+        """Increments whenever the active mapping set changes."""
+        return self._write_generation
 
     def close(self) -> None:
         with self._lock:

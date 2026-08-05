@@ -491,6 +491,13 @@ class RedactionEngine:
         self.workspace_id = workspace_id
         self.path_aliases = PathAliasManager()
         self._materializer = MaterializationEngine(mapping_store, signer, policy, workspace_id)
+        # Cache active mappings per session until the store changes. Large
+        # agent requests can contain hundreds of string fields; querying the
+        # mapping store for every field adds avoidable latency.
+        self._known_records_cache: dict[tuple[str, str], tuple[int, list[MappingRecord]]] = {}
+        self._path_mapping_cache: dict[tuple[str, str], tuple[int, PathMapping]] = {}
+        self._placeholder_cache: dict[tuple[str, str, str], str] = {}
+        self._supported_kinds_cache: tuple[DetectorManager, frozenset[str]] | None = None
 
     def sanitize_json(self, data: Any, session_id: str, scope: str = "request", *, alias_paths: bool = True, skip_tool_args: bool = False) -> tuple[Any, list[dict[str, Any]]]:
         events: list[dict[str, Any]] = []
@@ -647,8 +654,9 @@ class RedactionEngine:
                     materialization_class=materialization_class,
                 )
                 placeholder_kind = "pii" if det.type == "pii" and decision.action == "pseudonymize" else mapping_kind
-                issued_at = int(time.time())
-                replacement = self.signer.issue(placeholder_kind, rec.handle_id, session_id, issued_at)
+                replacement = self._issue_placeholder(placeholder_kind, rec.handle_id, session_id)
+                parsed = self.signer.parse(replacement)
+                issued_at = parsed[0].issued_at if parsed else int(time.time())
                 representation_type = "signed_placeholder"
             event = {
                 "type": det.type,
@@ -698,9 +706,12 @@ class RedactionEngine:
         """
         known: list[tuple[Detection, bool]] = [(detection, False) for detection in detections]
         seen: set[tuple[int, int, str]] = set()
-        for record in self.mapping_store.active_records(session_id, self.workspace_id):
+        supported_kinds = self._supported_kinds()
+        for record in self._known_value_records(session_id):
+            if record.kind not in supported_kinds:
+                continue
             value = record.value or ""
-            if not value:
+            if not value or len(value) < MIN_KNOWN_VALUE_LEN or len(value) > len(text):
                 continue
             start = text.find(value)
             while start >= 0:
@@ -743,6 +754,65 @@ class RedactionEngine:
             selected.append(detection)
             cursor = detection.span_end
         return selected
+
+    def _known_value_records(self, session_id: str) -> list[MappingRecord]:
+        key = (session_id, self.workspace_id)
+        generation = self.mapping_store.write_generation
+        cached = self._known_records_cache.get(key)
+        if cached is not None and cached[0] == generation:
+            return cached[1]
+        records = self.mapping_store.active_records(session_id, self.workspace_id)
+        if len(self._known_records_cache) >= 32:
+            self._known_records_cache = {}
+        self._known_records_cache[key] = (generation, records)
+        return records
+
+    def _supported_kinds(self) -> frozenset[str]:
+        """Return mapping kinds the active detector flow can produce."""
+        cached = self._supported_kinds_cache
+        if cached is not None and cached[0] is self.detector_manager:
+            return cached[1]
+        kinds: set[str] = set()
+        modules = getattr(self.detector_manager.hierarchical.flow, "modules", ())
+        for module in modules:
+            if not getattr(module, "enabled", True):
+                continue
+            mtype = getattr(module, "type", "")
+            if mtype == "path_detector":
+                kinds.add("path")
+            elif mtype == "entropy_context":
+                kinds.add("secret")
+            elif mtype in {"local_model", "hf_token_classification", "gliner"}:
+                if self.policy.pii_mode == "redact":
+                    kinds.add("secret")
+                elif self.policy.pii_mode == "pseudonymize":
+                    kinds.add("pii")
+            elif mtype in {"regex_rules", "rule_validator"}:
+                detector = getattr(module, "detector", None)
+                for rule in getattr(detector, "rules", ()):
+                    if not getattr(rule, "enabled", True):
+                        continue
+                    rule_type = getattr(rule, "type", "")
+                    if rule_type in {"MACHINE_SECRET", "APG_MARKER", "UNKNOWN_SECRET_CANDIDATE"}:
+                        kinds.add("secret")
+                    elif rule_type == "PII":
+                        kinds.add("secret" if self.policy.pii_mode == "redact" else "pii")
+                    elif rule_type in {"LOCAL_CONTEXT", "CREDENTIAL_FILE"}:
+                        kinds.add("path")
+        result = frozenset(kinds)
+        self._supported_kinds_cache = (self.detector_manager, result)
+        return result
+
+    def _issue_placeholder(self, kind: str, handle_id: str, session_id: str) -> str:
+        key = (kind, handle_id, session_id)
+        cached = self._placeholder_cache.get(key)
+        if cached is not None:
+            return cached
+        placeholder = self.signer.issue(kind, handle_id, session_id)
+        if len(self._placeholder_cache) >= 10_000:
+            self._placeholder_cache = {}
+        self._placeholder_cache[key] = placeholder
+        return placeholder
 
     def materialize_local_json_with_events(
         self,
@@ -843,6 +913,11 @@ class RedactionEngine:
         return materialized, events
 
     def _active_path_mapping(self, session_id: str) -> PathMapping:
+        key = (session_id, self.workspace_id)
+        generation = self.mapping_store.write_generation
+        cached = self._path_mapping_cache.get(key)
+        if cached is not None and cached[0] == generation:
+            return cached[1]
         records = self.mapping_store.active_records(
             session_id,
             self.workspace_id,
@@ -855,7 +930,11 @@ class RedactionEngine:
             for record in records
             if record.value
         ]
-        return tuple(sorted(set(pairs), key=lambda item: len(item[0]), reverse=True))
+        result: PathMapping = tuple(sorted(set(pairs), key=lambda item: len(item[0]), reverse=True))
+        if len(self._path_mapping_cache) >= 32:
+            self._path_mapping_cache = {}
+        self._path_mapping_cache[key] = (generation, result)
+        return result
 
     def _hierarchical_path_alias(self, raw: str, active_paths: list[str]) -> str:
         best_parent = ""
