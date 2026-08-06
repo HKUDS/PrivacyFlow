@@ -23,13 +23,11 @@ profile, both on DeepSeek with model `deepseek-v4-flash`.
   `system` block (string or text-block list); the gateway injects the
   "Agent Privacy Gateway" contract into `system[0].text`, which the previous
   `instructions`/`messages`-only check did not inspect.
-- The run exposed and fixed a partial-disclosure gap: a model that had seen a
-  protected credential could echo only its leading scheme fragment (for
-  example the `sk-` prefix or the `eyJ` JWT header) into a later thinking
-  block. Full-value known-value tracking cannot match such fragments, so
-  credential redaction now also registers a stable signature prefix that is
-  re-protected in later requests. Signature records are internal detection
-  aids and are hidden from the admin protected-values list.
+- The run exercised repeated-request handling: complete protected values that
+  re-enter a later request are re-protected from the session mapping even when
+  their surrounding syntax has changed. Short, non-distinctive fragments are
+  intentionally excluded from generic known-value matching so ordinary
+  identifiers and protocol fields are not rewritten.
 - One `safe_env_example` attempt hit a transient upstream stream parse
   failure (`The upstream stream could not be safely parsed.`); an isolated
   rerun of the same scenario passed, and the protocol-error audit now
