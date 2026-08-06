@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from collections.abc import AsyncIterator
 from typing import Any
 from urllib.parse import urlsplit, urlunsplit
@@ -121,7 +122,14 @@ class UpstreamClient:
         resp = await client.request(method, self.resolve_upstream_url(upstream_path), headers=headers, json=payload)
         content_type = resp.headers.get("content-type", "")
         if "application/json" in content_type:
-            body: Any = resp.json()
+            try:
+                body: Any = resp.json()
+            except (json.JSONDecodeError, UnicodeDecodeError):
+                # Malformed JSON body would otherwise surface as an unhandled
+                # 500 (JSONDecodeError is a ValueError, not an httpx.HTTPError,
+                # so the callers' except clauses never see it). Normalize it to
+                # the same safe error body used for non-JSON responses.
+                body = {"error": {"message": "Upstream returned malformed JSON response", "status_code": resp.status_code}}
         else:
             body = {"error": {"message": "Upstream returned non-JSON response", "status_code": resp.status_code}}
         return resp.status_code, self._response_headers(resp, "application/json"), body

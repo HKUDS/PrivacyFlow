@@ -72,7 +72,6 @@ def _config(tmp_path) -> GatewayConfig:
         audit_log_path=str(tmp_path / "audit.jsonl"),
         signing_secret="test-signing-secret",
         local_api_keys={"agent-key"},
-        admin_api_keys={"admin-key"},
         strict_mode=True,
         upstream=UpstreamConfig(base_url="https://upstream.example/v1", api_key="provider-key"),
     )
@@ -1544,13 +1543,11 @@ def test_admin_configuration_loads_from_environment(monkeypatch, tmp_path) -> No
     monkeypatch.delenv("APG_CONFIG_PATH", raising=False)
     monkeypatch.setenv("APG_STRICT", "false")
     monkeypatch.setenv("APG_LOCAL_API_KEYS", "agent-one")
-    monkeypatch.setenv("APG_ADMIN_API_KEYS", "admin-one,admin-two")
     monkeypatch.setenv("APG_ADMIN_ENABLED", "false")
     monkeypatch.setenv("APG_SIGNING_SECRET", "configured-signing-secret")
     monkeypatch.setenv("APG_DATABASE_PATH", str(tmp_path / "state.sqlite3"))
     monkeypatch.setenv("APG_AUDIT_LOG_PATH", str(tmp_path / "audit.jsonl"))
     cfg = load_config()
-    assert cfg.admin_api_keys == {"admin-one", "admin-two"}
     assert cfg.admin_enabled is False
 
 

@@ -54,7 +54,6 @@ from gateway.upstream_protocol import (
     SUPPORTED_UPSTREAM_PROTOCOLS,
     UPSTREAM_PROTOCOL_ENDPOINTS,
     canonical_upstream_protocol,
-    upstream_protocol_for_path,
 )
 
 APG_BUILD_ID = os.environ.get("APG_BUILD_ID", f"apg-{__version__}")
@@ -593,28 +592,6 @@ def create_app(config: GatewayConfig | None = None, upstream_client: UpstreamCli
             }
         return JSONResponse(payload, status_code=503)
 
-    def upstream_protocol_supported(endpoint: str) -> bool:
-        required_protocol = upstream_protocol_for_path(endpoint)
-        return not required_protocol or required_protocol in active_upstream_protocols()
-
-    def upstream_protocol_unsupported_response(endpoint: str, *, anthropic: bool = False) -> JSONResponse:
-        protocols = active_upstream_protocols()
-        message = (
-            f"The active upstream connection could not resolve a native route for the local {endpoint} endpoint "
-            f"(available formats: {protocols!r})."
-        )
-        if anthropic:
-            payload: dict[str, Any] = {"type": "error", "error": {"type": "api_error", "message": message}}
-        else:
-            payload = {
-                "error": {
-                    "code": "APG_UPSTREAM_PROTOCOL_UNSUPPORTED",
-                    "retryable": False,
-                    "message": message,
-                }
-            }
-        return JSONResponse(payload, status_code=501)
-
     @asynccontextmanager
     async def lifespan(_: FastAPI):
         gc_task: asyncio.Task[None] | None = None
@@ -710,8 +687,6 @@ def create_app(config: GatewayConfig | None = None, upstream_client: UpstreamCli
         privacy_enabled = apg_effective_enabled()
         if not upstream_is_configured():
             return upstream_not_configured_response()
-        if not upstream_protocol_supported(endpoint):
-            return upstream_protocol_unsupported_response(endpoint)
         try:
             body: Any = await request.json()
         except Exception as exc:
@@ -857,8 +832,6 @@ def create_app(config: GatewayConfig | None = None, upstream_client: UpstreamCli
         privacy_enabled = apg_effective_enabled()
         if not upstream_is_configured():
             return upstream_not_configured_response(anthropic=True)
-        if not upstream_protocol_supported("/v1/messages"):
-            return upstream_protocol_unsupported_response("/v1/messages", anthropic=True)
         try:
             body: Any = await request.json()
         except Exception as exc:
@@ -990,7 +963,7 @@ def create_app(config: GatewayConfig | None = None, upstream_client: UpstreamCli
         if not upstream_is_configured():
             return upstream_not_configured_response()
         try:
-            models_upstream_path = _upstream_models_path(cfg.upstream.base_url)
+            models_upstream_path = _upstream_models_path(active_upstream_config().base_url)
             direct_request = getattr(upstream, "request_json_upstream_path", None)
             if callable(direct_request):
                 status, headers, body = await direct_request("GET", models_upstream_path)

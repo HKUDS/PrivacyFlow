@@ -7,7 +7,7 @@ import time
 from dataclasses import dataclass
 from hashlib import sha256
 
-PLACEHOLDER_RE = re.compile(r"<APG:v1:(?P<kind>[a-z_]+):(?P<handle>[^:<>]+):(?P<session>[^:<>]+):(?P<issued>\d+):(?P<mac>[A-Za-z0-9_-]+)>")
+PLACEHOLDER_RE = re.compile(r"<APG:v1:(?P<kind>[a-z_]+):(?P<handle>[^:<>]+):(?P<session>[^:<>]+):(?P<issued>\d{1,15}):(?P<mac>[A-Za-z0-9_-]+)>")
 APG_PLACEHOLDER_FORMAT_EXAMPLES = (
     "<APG:v1:pii:...>",
     "<APG:v1:secret:...>",
@@ -81,14 +81,8 @@ class PlaceholderSigner:
             )
         return parsed
 
-    def is_valid(self, ph: ParsedPlaceholder, *, max_age_seconds: int | None = None) -> bool:
-        if not hmac.compare_digest(ph.mac, self._mac(ph.kind, ph.handle_id, ph.session_id, ph.issued_at)):
-            return False
-        # Check expiry: reject placeholders older than max_age_seconds
-        if max_age_seconds is not None:
-            if int(time.time()) - ph.issued_at > max_age_seconds:
-                return False
-        return True
+    def is_valid(self, ph: ParsedPlaceholder) -> bool:
+        return hmac.compare_digest(ph.mac, self._mac(ph.kind, ph.handle_id, ph.session_id, ph.issued_at))
 
     def _mac(self, kind: str, handle_id: str, session_id: str, issued_at: int) -> str:
         body = f"v1:{kind}:{handle_id}:{session_id}:{self.workspace_id}:{issued_at}:{self.policy_hash}".encode("utf-8")

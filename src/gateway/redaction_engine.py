@@ -57,7 +57,6 @@ OPAQUE_MULTIMODAL_TYPES = {
 # Raw values are never materialized into upstream/model-visible traffic.
 TOOL_ARG_FIELDS = {"arguments", "input"}
 TOOL_ARG_PARENTS = {"custom_tool_call", "function", "tool_use"}
-STREAM_MATERIALIZATION_TAIL = 4096
 STREAM_TEXT_BASE_TAIL = 256
 STREAM_TEXT_MAX_PENDING = 4096
 STREAM_TEXT_MAX_STRICT_BLOCK = 1_048_576
@@ -960,7 +959,7 @@ class RedactionEngine:
         for ph in self.signer.parse(materialized):
             result = self._materializer.materialize_placeholder(ph, session_id=session_id, sink_type="local_tool")
             if result.allowed and result.value is not None:
-                materialized = materialized.replace(ph.raw + ph.suffix, result.value)
+                materialized = materialized.replace(self._placeholder_replace_key(ph), result.value)
                 action = "materialize"
                 result_code = "OK"
             else:
@@ -1031,6 +1030,18 @@ class RedactionEngine:
 
     def active_path_aliases(self, session_id: str) -> list[str]:
         return [alias for alias, _, _ in self._active_path_mapping(session_id)]
+
+    @staticmethod
+    def _placeholder_replace_key(ph: Any) -> str:
+        """Return the text to replace when restoring a placeholder.
+
+        ``parse()`` treats a following ``/path``-shaped run as a suffix. For
+        ``path`` mappings the suffix is part of the restored value
+        (``join_suffix``), so it is consumed together with the raw handle.
+        For secret/PII mappings the suffix is unrelated following text and
+        must be preserved, not swallowed with the replacement.
+        """
+        return ph.raw + ph.suffix if ph.kind == "path" else ph.raw
 
     def _materialization_event(
         self,
@@ -1218,28 +1229,6 @@ class RedactionEngine:
 
         return walk(copy.deepcopy(data), ()), events
 
-    async def materialize_local_stream(self, chunks: AsyncIterator[bytes], session_id: str) -> AsyncIterator[bytes]:
-        buffer = ""
-        path_mapping = self._active_path_mapping(session_id)
-        async for chunk in chunks:
-            buffer += chunk.decode("utf-8", errors="ignore")
-            if len(buffer) <= STREAM_MATERIALIZATION_TAIL:
-                continue
-            emit, buffer = buffer[:-STREAM_MATERIALIZATION_TAIL], buffer[-STREAM_MATERIALIZATION_TAIL:]
-            materialized, _ = self.materialize_local_text_with_events(
-                emit,
-                session_id,
-                path_mapping=path_mapping,
-            )
-            yield materialized.encode("utf-8")
-        if buffer:
-            materialized, _ = self.materialize_local_text_with_events(
-                buffer,
-                session_id,
-                path_mapping=path_mapping,
-            )
-            yield materialized.encode("utf-8")
-
     def scan_local_text(
         self,
         text: str,
@@ -1292,7 +1281,7 @@ class RedactionEngine:
         for ph in self.signer.parse(protected):
             result = self._materializer.materialize_placeholder(ph, session_id=session_id, sink_type="local_user")
             if result.allowed and result.value is not None:
-                protected = protected.replace(ph.raw + ph.suffix, protect(result.value))
+                protected = protected.replace(self._placeholder_replace_key(ph), protect(result.value))
                 action = "materialize"
                 result_code = "OK"
             else:
@@ -1328,7 +1317,7 @@ class RedactionEngine:
         for ph in self.signer.parse(safe):
             result = self._materializer.materialize_placeholder(ph, session_id=session_id, sink_type="local_user")
             if result.allowed and result.value is not None:
-                safe = safe.replace(ph.raw + ph.suffix, result.value)
+                safe = safe.replace(self._placeholder_replace_key(ph), result.value)
                 rec = self.mapping_store.get(ph.handle_id)
                 if rec is not None:
                     post_events.append(
