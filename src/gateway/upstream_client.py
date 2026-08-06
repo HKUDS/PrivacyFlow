@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import asyncio
 import json
 from collections.abc import AsyncIterator
 from typing import Any
@@ -43,6 +42,10 @@ class UpstreamClient:
         self.config = config
         self.transport = transport
         self._client: httpx.AsyncClient | None = None
+        # Clients retired by a config change. They are kept until shutdown so
+        # requests that were already streaming on them finish instead of
+        # failing with "Cannot send a request, as the client has been closed."
+        self._retired_clients: list[httpx.AsyncClient] = []
 
     def upstream_path(self, path: str) -> str:
         request_protocol = upstream_protocol_for_path(path) or canonical_upstream_protocol(self.config.protocol)
@@ -60,18 +63,18 @@ class UpstreamClient:
         self.config = config
         self._client = None
         if previous is not None:
-            self._schedule_close(previous)
+            self._retired_clients.append(previous)
 
     async def close(self) -> None:
+        retired, self._retired_clients = self._retired_clients, []
+        for client in retired:
+            try:
+                await client.aclose()
+            except Exception:
+                pass
         client, self._client = self._client, None
         if client is not None:
             await client.aclose()
-
-    def _schedule_close(self, client: httpx.AsyncClient) -> None:
-        try:
-            asyncio.get_running_loop().create_task(client.aclose())
-        except RuntimeError:
-            pass
 
     def _get_client(self) -> httpx.AsyncClient:
         if self._client is None:
@@ -139,11 +142,10 @@ class UpstreamClient:
         headers = self._headers(upstream_protocol_for_path(path))
         client = self._get_client()
         stream = client.stream(method, self.resolve_upstream_url(upstream_path), headers=headers, json=payload)
-        try:
-            resp = await stream.__aenter__()
-        except Exception:
-            await client.aclose()
-            raise
+        # A failed connect here is a transient, per-request failure. Do not
+        # close the shared client: doing so breaks every in-flight and later
+        # request with "Cannot send a request, as the client has been closed."
+        resp = await stream.__aenter__()
 
         async def body() -> AsyncIterator[bytes]:
             try:
