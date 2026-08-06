@@ -210,6 +210,82 @@ def test_materialized_secret_is_reprotected_without_original_assignment_context(
     assert any(event["detector"] == "known_value" for event in events)
 
 
+def test_disabled_module_does_not_reprotect_existing_mapping(components) -> None:
+    store, signer, policy = components
+    enabled = RedactionEngine(
+        DetectorManager(
+            detectors_config={
+                "flow": {
+                    "modules": [{"id": "paths", "type": "path_detector", "enabled": True}]
+                }
+            }
+        ),
+        store,
+        signer,
+        policy,
+        "ws",
+    )
+    raw = "/private/tmp/project/private/path_probe.txt"
+    first, _ = enabled.sanitize_text(raw, "sess_disabled_module")
+    assert raw not in first
+
+    disabled = RedactionEngine(
+        DetectorManager(
+            detectors_config={
+                "flow": {
+                    "modules": [{"id": "paths", "type": "path_detector", "enabled": False}]
+                }
+            }
+        ),
+        store,
+        signer,
+        policy,
+        "ws",
+    )
+    second, events = disabled.sanitize_text(raw, "sess_disabled_module")
+    assert second == raw
+    assert events == []
+
+
+def test_disabled_rule_does_not_reprotect_existing_mapping(components) -> None:
+    store, signer, policy = components
+    raw = "custom-secret-value-1234567890"
+
+    def manager(enabled: bool) -> DetectorManager:
+        return DetectorManager(
+            detectors_config={
+                "flow": {
+                    "modules": [
+                        {
+                            "id": "custom_rules",
+                            "type": "regex_rules",
+                            "rules": [
+                                {
+                                    "id": "custom.secret",
+                                    "pattern": r"custom-secret-value-[0-9]+",
+                                    "type": "MACHINE_SECRET",
+                                    "subtype": "custom_secret",
+                                    "risk": "high",
+                                    "suggested_action": "redact",
+                                    "enabled": enabled,
+                                }
+                            ],
+                        }
+                    ]
+                }
+            }
+        )
+
+    active = RedactionEngine(manager(True), store, signer, policy, "ws")
+    first, _ = active.sanitize_text(raw, "sess_disabled_rule")
+    assert raw not in first
+
+    inactive = RedactionEngine(manager(False), store, signer, policy, "ws")
+    second, events = inactive.sanitize_text(raw, "sess_disabled_rule")
+    assert second == raw
+    assert events == []
+
+
 def test_email_pseudonymized_consistently(redactor) -> None:
     a, _ = redactor.sanitize_text("howard@example.com", "sess_1")
     b, _ = redactor.sanitize_text("howard@example.com", "sess_1")

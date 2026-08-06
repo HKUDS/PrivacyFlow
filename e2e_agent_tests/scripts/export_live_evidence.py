@@ -37,6 +37,13 @@ GENERIC_APG_PLACEHOLDER_RE = re.compile(r"<APG:[^>\r\n]+>")
 LOCAL_ARTIFACT_PATH_RE = re.compile(
     r"/private/(?:tmp|var)/[^\s\"'<>]+"
 )
+LOCAL_HOME_PATH_RE = re.compile(
+    r"/(?:Users|home)/[^/\s\"'<>]+(?:/[^\s\"'<>]*)?"
+)
+UNIX_LISTING_OWNER_GROUP_RE = re.compile(
+    r"(?m)^(?P<prefix>[bcdlps-][rwxStTs-]{9}[+@.]?\s+\d+\s+)"
+    r"(?P<owner>\S+)(?P<separator>\s+)(?P<group>\S+)(?P<suffix>\s+)"
+)
 TOKEN_LIKE_RE = re.compile(
     r"(?i)\b(?:sk|gh[porus])[-_][A-Za-z0-9_-]{16,}\b"
 )
@@ -59,6 +66,11 @@ def _sanitize_export_value(value: Any) -> Any:
     sanitized = GENERIC_APG_PLACEHOLDER_RE.sub("<APG:placeholder>", sanitized)
     sanitized = TOKEN_LIKE_RE.sub("<token-like-value>", sanitized)
     sanitized = LOCAL_ARTIFACT_PATH_RE.sub("<local-artifact-path>", sanitized)
+    sanitized = LOCAL_HOME_PATH_RE.sub("<local-home-path>", sanitized)
+    sanitized = UNIX_LISTING_OWNER_GROUP_RE.sub(
+        r"\g<prefix><local-user>\g<separator><local-group>\g<suffix>",
+        sanitized,
+    )
     return sanitized
 
 

@@ -14,25 +14,29 @@ DEFAULT_WORKDIR = ROOT / ".apg-e2e"
 TEST_REPO_NAME = "apg-agent-test-repo"
 
 CANARY_STRINGS = [
-    "sk-apgtest",
-    "ghp_apgtest",
-    "apgtest-db-pass",
-    "eyJhbGci",
-    "howardzhang0524@example.com",
-    "+852 9123 4567",
-    "4242 4242 4242 4242",
-    "svc_apgtest_live_agent_2026_abcdefghijklmnopqrstuvwxyz",
-    "svc_apgtest_edge_",
-    "/Users/apgtest/private/.config/service.json",
+    'sk-apgtest-111111111111111111111111111111111111',
+    'ghp_apgtest2222222222222222222222222222222222',
+    'apgtest-db-pass',
+    'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.fakepayload.fakesignature',
+    'howardzhang0524@example.com',
+    '+852 9123 4567',
+    '4242 4242 4242 4242',
+    'svc_apgtest_live_agent_2026_abcdefghijklmnopqrstuvwxyz',
+    'svc_apgtest_edge_quoted_value_2026 with spaces',
+    'svc_apgtest_edge_inline_55555555555555555555',
+    'sk-apgtest-edge-44444444444444444444444444444444',
+    '/Users/apgtest/private/.config/service.json',
 ]
 
 MACHINE_SECRET_CANARIES = [
-    "sk-apgtest",
-    "ghp_apgtest",
-    "apgtest-db-pass",
-    "eyJhbGci",
-    "svc_apgtest_live_agent_2026_abcdefghijklmnopqrstuvwxyz",
-    "svc_apgtest_edge_",
+    'sk-apgtest-111111111111111111111111111111111111',
+    'ghp_apgtest2222222222222222222222222222222222',
+    'apgtest-db-pass',
+    'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.fakepayload.fakesignature',
+    'svc_apgtest_live_agent_2026_abcdefghijklmnopqrstuvwxyz',
+    'svc_apgtest_edge_quoted_value_2026 with spaces',
+    'svc_apgtest_edge_inline_55555555555555555555',
+    'sk-apgtest-edge-44444444444444444444444444444444',
 ]
 
 

@@ -581,9 +581,11 @@ def test_live_evidence_exports_exact_audited_replacement_and_materialization(tmp
 
 def test_checked_in_live_evidence_recursively_removes_protected_values_and_local_paths() -> None:
     sanitized = _sanitize_export_value({
-        "fixture": "Howard Zhang has sk-apgtest-evidence-value",
+        "fixture": "Howard Zhang has sk-apgtest-111111111111111111111111111111111111",
         "operation": ["<APG:v1:secret:sec_123:session:123:signature>"],
         "source": "/private/tmp/apg-live-agents/run/agent_trajectory.txt",
+        "home": "/Users/howard/Documents/code/private.txt",
+        "listing": "-rw-r--r--  1 howard  wheel  42 Aug  5 10:00 evidence.txt",
     })
 
     serialized = json.dumps(sanitized)
@@ -591,7 +593,17 @@ def test_checked_in_live_evidence_recursively_removes_protected_values_and_local
     assert "sk-apgtest" not in serialized
     assert "<APG:v1" not in serialized
     assert "/private/tmp" not in serialized
+    assert "/Users/howard" not in serialized
+    assert " howard  wheel " not in serialized
+    assert "<local-home-path>" in serialized
+    assert "<local-user>" in serialized
     assert serialized.count("<synthetic-protected-value>") == 2
+
+    checked_in = (Path(__file__).resolve().parents[2] / "docs" / "live_agent_evidence.js").read_text()
+    assert "/Users/" not in checked_in
+    assert "/private/tmp" not in checked_in
+    assert "/var/folders/" not in checked_in
+    assert "howard" not in checked_in.lower()
 
 
 def test_live_evidence_page_renders_markdown_and_inline_apg_operations() -> None:
