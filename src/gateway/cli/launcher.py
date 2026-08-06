@@ -9,7 +9,7 @@ import tempfile
 from collections.abc import Mapping, MutableMapping, Sequence
 from pathlib import Path
 from typing import Any
-from urllib.parse import urlparse, urlunparse
+from urllib.parse import urlparse, urlsplit, urlunparse
 
 from gateway.upstream_protocol import (
     DEFAULT_UPSTREAM_PROTOCOLS,
@@ -114,12 +114,16 @@ def prepare_launcher_config(
     provider_protocol = canonical_upstream_protocol(
         environment.get("APG_UPSTREAM_PROTOCOL", "") or str((active_profile or {}).get("protocol", ""))
     )
+    provider_proxy = environment.get("APG_UPSTREAM_PROXY", "").strip() or str(
+        (active_profile or {}).get("proxy", "")
+    ).strip()
 
     config["upstream_profiles"] = profiles
     config["active_upstream_profile_id"] = active_profile_id
     config["_resolved_upstream_api_key"] = provider_key
     config["_resolved_upstream_base_url"] = provider_base_url.rstrip("/")
     config["_resolved_upstream_protocol"] = provider_protocol
+    config["_resolved_upstream_proxy"] = provider_proxy
     config["_launcher_config_path"] = str(path.resolve())
     if changed:
         _write_launcher_config(path, {key: value for key, value in config.items() if not key.startswith("_")})
@@ -136,6 +140,7 @@ def apply_launcher_environment(
         "APG_UPSTREAM_BASE_URL": str(config["_resolved_upstream_base_url"]),
         "APG_UPSTREAM_API_KEY": str(config["_resolved_upstream_api_key"]),
         "APG_UPSTREAM_PROTOCOL": str(config["_resolved_upstream_protocol"]),
+        "APG_UPSTREAM_PROXY": str(config.get("_resolved_upstream_proxy", "")),
         "APG_UPSTREAM_STRIP_LOCAL_V1": "true" if config.get("strip_local_v1", True) else "false",
         "APG_LOCAL_API_KEYS": str(config["local_api_key"]),
         "APG_SIGNING_SECRET": str(config["signing_secret"]),
@@ -211,6 +216,7 @@ def save_launcher_upstream_profile(
     api_key: str,
     protocols: Sequence[str] | None = None,
     endpoint_overrides: Mapping[str, str] | None = None,
+    proxy: str | None = None,
 ) -> dict[str, Any]:
     normalized_protocol = normalize_upstream_protocol(protocol)
     normalized_protocols = list(DEFAULT_UPSTREAM_PROTOCOLS)
@@ -220,6 +226,9 @@ def save_launcher_upstream_profile(
     config = prepare_launcher_config(path, environ={})
     profiles = [dict(profile) for profile in config["upstream_profiles"]]
     existing = next((profile for profile in profiles if profile["id"] == profile_id), None)
+    normalized_proxy = normalize_upstream_proxy(
+        proxy if proxy is not None else str((existing or {}).get("proxy", ""))
+    )
     normalized_key = api_key.strip() or str((existing or {}).get("api_key", "")).strip()
     if not normalized_key or len(normalized_key) > 4096:
         raise LauncherConfigError("The upstream API key must contain between 1 and 4096 characters.")
@@ -234,6 +243,7 @@ def save_launcher_upstream_profile(
         "base_url": normalized_base_url,
         "api_key": normalized_key,
         "endpoint_overrides": normalized_overrides,
+        "proxy": normalized_proxy,
     }
     profiles = [profile if item["id"] == resolved_id else item for item in profiles]
     if existing is None:
@@ -285,6 +295,17 @@ def normalize_upstream_profile_name(name: str) -> str:
         raise LauncherConfigError("The upstream profile name must contain between 1 and 80 characters.")
     if any(ord(char) < 32 or ord(char) == 127 for char in normalized):
         raise LauncherConfigError("The upstream profile name contains unsupported control characters.")
+    return normalized
+
+
+def normalize_upstream_proxy(proxy: str) -> str:
+    """Normalize an explicit upstream proxy URL; empty means no proxy."""
+    normalized = proxy.strip()
+    if not normalized:
+        return ""
+    parsed = urlsplit(normalized)
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        raise LauncherConfigError("The upstream proxy must be an http:// or https:// URL.")
     return normalized
 
 
@@ -390,6 +411,7 @@ def _normalize_upstream_profiles(config: dict[str, Any]) -> tuple[list[dict[str,
                 "base_url": str(raw.get("base_url", "")).rstrip("/"),
                 "api_key": str(raw.get("api_key", "")).strip(),
                 "endpoint_overrides": endpoint_overrides,
+                "proxy": str(raw.get("proxy", "")).strip(),
             }
             if profile != raw:
                 changed = True
@@ -413,6 +435,7 @@ def _normalize_upstream_profiles(config: dict[str, Any]) -> tuple[list[dict[str,
                     "base_url": legacy_base_url,
                     "api_key": legacy_api_key,
                     "endpoint_overrides": {},
+                    "proxy": str(config.get("upstream_proxy", "")).strip(),
                 }
             )
         changed = True
@@ -420,7 +443,7 @@ def _normalize_upstream_profiles(config: dict[str, Any]) -> tuple[list[dict[str,
     if not any(profile["id"] == active_id for profile in profiles):
         active_id = str(profiles[0]["id"]) if profiles else ""
         changed = True
-    for key in ("upstream_protocol", "upstream_base_url", "upstream_api_key"):
+    for key in ("upstream_protocol", "upstream_base_url", "upstream_api_key", "upstream_proxy"):
         if key in config:
             config.pop(key, None)
             changed = True

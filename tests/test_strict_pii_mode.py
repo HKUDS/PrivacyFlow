@@ -3,6 +3,7 @@ from __future__ import annotations
 import pytest
 
 from gateway.config import load_config
+from gateway.detectors.rules import builtin_rules
 from gateway.mapping_store import MappingStore
 from gateway.placeholder_parser import PlaceholderSigner
 from gateway.policy_engine import PolicyEngine
@@ -97,6 +98,40 @@ def test_pii_mode_redact_treats_pii_as_secret(tmp_path) -> None:
     placeholder = re.search(r"<APG:v1:secret:(?P<handle>[^:]+):", out).group("handle")
     rec = store.get(placeholder)
     assert rec.kind == "secret" and rec.materialization_class == "secret"
+
+
+def test_pii_mode_redact_reprotects_known_pii_without_original_context(tmp_path) -> None:
+    raw = "alice@example.com"
+    red = RedactionEngine(
+        DetectorManager(
+            detectors_config={
+                "flow": {
+                    "modules": [
+                        {
+                            "id": "pii_only",
+                            "type": "regex_rules",
+                            "rules": [
+                                rule.__dict__
+                                for rule in builtin_rules()
+                                if rule.type == "PII"
+                            ],
+                        }
+                    ]
+                }
+            }
+        ),
+        MappingStore(str(tmp_path / "known-pii.sqlite3")),
+        PlaceholderSigner("s", "ws"),
+        PolicyEngine(pii_mode="redact"),
+        "ws",
+    )
+
+    first, _ = red.sanitize_text(f"Email: {raw}", "sess")
+    second, events = red.sanitize_text(f"forward {raw}", "sess")
+
+    assert raw not in first
+    assert raw not in second
+    assert any(event["detector"] == "known_value" for event in events)
 
 
 def test_pii_mode_allow_passes_pii_through(tmp_path) -> None:

@@ -31,6 +31,12 @@ PROTOCOL_KEYS = {
     "signature",
     "tool_call_id",
     "tool_use_id",
+    # Discriminator fields are structural enum values in every supported
+    # protocol (e.g. `input_text`, `input_image`, `function`, `message`,
+    # JSON-schema `object`/`string`). A detector or known-value merge must
+    # never replace part of one: mangling it corrupts the wire format and
+    # upstream rejects the request.
+    "type",
 }
 PROTOCOL_ID_PARENTS = {"file_ids", "tool_calls", "tool_use", "vector_store_ids"}
 PROTOCOL_NAME_PARENTS = {"function"}
@@ -66,6 +72,17 @@ _PEM_END_RE = re.compile(r"-----END (?:RSA |OPENSSH |EC |DSA )?PRIVATE KEY-----"
 _AUDIT_IDENTIFIER_RE = re.compile(r"[A-Za-z0-9._:@/-]{1,128}")
 
 PathMapping = tuple[tuple[str, str, MappingRecord], ...]
+
+# Known-value re-protection only makes sense for values distinctive enough to
+# be missing from ordinary text. A short value (e.g. a 1-character `x` from a
+# `API_KEY=x` fixture) appears inside half the words of any real request;
+# re-protecting it replaces it everywhere, mangling code, identifiers, and
+# even protocol strings. First-pass detection at the assignment site still
+# protects such values; only the whole-request merge is skipped.
+#
+# Generic short values stay out of the whole-request merge; only full,
+# sufficiently long protected values are re-protected across a request.
+MIN_KNOWN_VALUE_LEN = 12
 
 
 class StreamProtocolError(ValueError):
@@ -147,6 +164,7 @@ class StreamAuditSummary:
     parse_errors: int = 0
     stream_parse_errors: int = 0
     tool_argument_json_errors: Counter[str] = field(default_factory=Counter)
+    stream_parse_error_codes: list[str] = field(default_factory=list)
     termination: str = "completed"
     upstream_error_event: str | None = None
     upstream_error_type: str | None = None
@@ -185,6 +203,9 @@ class StreamAuditSummary:
 
     def record_protocol_error(self, error: StreamProtocolError) -> None:
         self.parse_errors += 1
+        code = error.reason_code if isinstance(error, ToolArgumentsJSONError) else str(error)
+        if code not in self.stream_parse_error_codes:
+            self.stream_parse_error_codes.append(code)
         if isinstance(error, ToolArgumentsJSONError):
             self.tool_argument_json_errors[error.reason_code] += 1
         else:
@@ -219,6 +240,7 @@ class StreamAuditSummary:
             "materialization_failures": dict(self.failures),
             "parse_errors": self.parse_errors,
             "stream_parse_errors": self.stream_parse_errors,
+            "stream_parse_error_codes": list(self.stream_parse_error_codes),
             "tool_argument_json_errors": dict(self.tool_argument_json_errors),
             "termination": self.termination,
             "upstream_error_event": self.upstream_error_event,
@@ -491,12 +513,30 @@ class RedactionEngine:
         self.workspace_id = workspace_id
         self.path_aliases = PathAliasManager()
         self._materializer = MaterializationEngine(mapping_store, signer, policy, workspace_id)
-        # Cache active mappings per session until the store changes. Large
-        # agent requests can contain hundreds of string fields; querying the
-        # mapping store for every field adds avoidable latency.
+        # Cache of active known-value records per (session, workspace),
+        # invalidated by the store's write generation. Without this, large
+        # requests (e.g. Codex's ~400 KB bodies with hundreds of active
+        # mappings) re-query the store for every string field, adding seconds.
         self._known_records_cache: dict[tuple[str, str], tuple[int, list[MappingRecord]]] = {}
+        # Cache of the hierarchical path mapping per (session, workspace),
+        # invalidated the same way. Building it is O(active_paths^2); on a
+        # response stream with hundreds of accumulated paths that is the single
+        # largest fixed cost, and it is recomputed on every call when mappings
+        # have not changed.
         self._path_mapping_cache: dict[tuple[str, str], tuple[int, PathMapping]] = {}
+        # Cached signed placeholders per (kind, handle, session). Reusing the
+        # same placeholder string for the same protected value keeps the
+        # sanitized request content stable across messages; a fresh per-issue
+        # timestamp would change the request every turn and defeat DeepSeek's
+        # prompt cache, forcing a full prefill of the conversation prefix.
+        # Materialization still validates signature, session, and mapping state
+        # (revocation/expiry) at restore time, and no caller applies an age cap.
         self._placeholder_cache: dict[tuple[str, str, str], str] = {}
+        # Which mapping kinds the active detector configuration can produce,
+        # cached per DetectorManager instance (the server swaps it on config
+        # activate). The known-value merge re-protects only these kinds so a
+        # credentials-only config no longer keeps re-aliasing paths that were
+        # mapped by an earlier path-inclusive configuration.
         self._supported_kinds_cache: tuple[DetectorManager, frozenset[str]] | None = None
 
     def sanitize_json(self, data: Any, session_id: str, scope: str = "request", *, alias_paths: bool = True, skip_tool_args: bool = False) -> tuple[Any, list[dict[str, Any]]]:
@@ -690,6 +730,99 @@ class RedactionEngine:
         out.append(text[cursor:])
         return "".join(out), events
 
+    def _known_value_records(self, session_id: str) -> list[MappingRecord]:
+        """Active records for the session, cached until the store changes.
+
+        `_merge_known_value_detections` runs once per string field, and large
+        agent requests contain thousands of fields. Re-querying the mapping
+        store for every field is O(fields x rows); a single query cached across
+        the request (and across requests until a mapping is inserted,
+        tombstoned, or expired) keeps it O(rows + fields).
+        """
+        key = (session_id, self.workspace_id)
+        generation = self.mapping_store.write_generation
+        cached = self._known_records_cache.get(key)
+        if cached is not None and cached[0] == generation:
+            return cached[1]
+        records = self.mapping_store.active_records(session_id, self.workspace_id)
+        if len(self._known_records_cache) >= 32:
+            # Bound memory by dropping the whole cache; a cold start is one
+            # extra query per session, far cheaper than the unbounded growth.
+            self._known_records_cache = {}
+        self._known_records_cache[key] = (generation, records)
+        return records
+
+    def _supported_kinds(self) -> frozenset[str]:
+        """Kinds the active detector configuration can produce.
+
+        Derived from the detector flow modules: `path_detector` supports paths,
+        `entropy_context` supports secrets, `local_model` supports PII, and
+        `regex_rules` supports the kinds of its rule types. The known-value
+        merge uses this so it only re-protects values the current configuration
+        would actually detect, instead of every accumulated mapping from older
+        configurations.
+        """
+        cached = self._supported_kinds_cache
+        if cached is not None and cached[0] is self.detector_manager:
+            return cached[1]
+        kinds: set[str] = set()
+        modules = getattr(self.detector_manager.hierarchical.flow, "modules", ())
+        for module in modules:
+            if not getattr(module, "enabled", True):
+                continue
+            mtype = getattr(module, "type", "")
+            if mtype == "path_detector":
+                kinds.add("path")
+            elif mtype == "entropy_context":
+                kinds.add("secret")
+            elif mtype in {"local_model", "hf_token_classification", "gliner"}:
+                if self.policy.pii_mode == "redact":
+                    # Redacted PII is deliberately stored on the secret track.
+                    kinds.add("secret")
+                elif self.policy.pii_mode == "pseudonymize":
+                    kinds.add("pii")
+            elif mtype in {"regex_rules", "rule_validator"}:
+                detector = getattr(module, "detector", None)
+                for rule in getattr(detector, "rules", ()):
+                    if not getattr(rule, "enabled", True):
+                        continue
+                    rule_type = getattr(rule, "type", "")
+                    if rule_type in {"MACHINE_SECRET", "APG_MARKER", "UNKNOWN_SECRET_CANDIDATE"}:
+                        kinds.add("secret")
+                    elif rule_type == "PII":
+                        if self.policy.pii_mode == "redact":
+                            kinds.add("secret")
+                        elif self.policy.pii_mode == "pseudonymize":
+                            kinds.add("pii")
+                    elif rule_type in {"LOCAL_CONTEXT", "CREDENTIAL_FILE"}:
+                        kinds.add("path")
+        result = frozenset(kinds)
+        self._supported_kinds_cache = (self.detector_manager, result)
+        return result
+
+    def _issue_placeholder(self, kind: str, handle_id: str, session_id: str) -> str:
+        """Issue a signed placeholder, reusing one string per protected value.
+
+        A placeholder embeds an issuance timestamp and MAC, so issuing a fresh
+        one for the same value on every request makes the sanitized request
+        differ between messages and defeats DeepSeek's prompt cache after the
+        first changed placeholder. Reusing the cached string keeps the prefix
+        stable; materialization still validates the signature, session, and
+        mapping state (revocation/expiry) when the value is restored, and the
+        age cap is not applied by any caller.
+        """
+        key = (kind, handle_id, session_id)
+        cached = self._placeholder_cache.get(key)
+        if cached is not None:
+            return cached
+        placeholder = self.signer.issue(kind, handle_id, session_id)
+        if len(self._placeholder_cache) >= 10_000:
+            # Bound memory. Clearing re-issues fresh placeholders (one
+            # cache-miss turn) but prevents unbounded growth across sessions.
+            self._placeholder_cache = {}
+        self._placeholder_cache[key] = placeholder
+        return placeholder
+
     def _merge_known_value_detections(
         self,
         text: str,
@@ -709,9 +842,16 @@ class RedactionEngine:
         supported_kinds = self._supported_kinds()
         for record in self._known_value_records(session_id):
             if record.kind not in supported_kinds:
+                # The current configuration does not detect this kind (e.g. a
+                # credentials-only config no longer aliases paths mapped by an
+                # earlier path-inclusive configuration); do not re-protect it.
                 continue
             value = record.value or ""
             if not value or len(value) < MIN_KNOWN_VALUE_LEN or len(value) > len(text):
+                # A needle longer than the field cannot appear in it; skipping
+                # avoids a wasted find() for every such record. Most fields are
+                # short while secrets and paths are long, so this prunes the
+                # bulk of the per-field value scan.
                 continue
             start = text.find(value)
             while start >= 0:
@@ -754,65 +894,6 @@ class RedactionEngine:
             selected.append(detection)
             cursor = detection.span_end
         return selected
-
-    def _known_value_records(self, session_id: str) -> list[MappingRecord]:
-        key = (session_id, self.workspace_id)
-        generation = self.mapping_store.write_generation
-        cached = self._known_records_cache.get(key)
-        if cached is not None and cached[0] == generation:
-            return cached[1]
-        records = self.mapping_store.active_records(session_id, self.workspace_id)
-        if len(self._known_records_cache) >= 32:
-            self._known_records_cache = {}
-        self._known_records_cache[key] = (generation, records)
-        return records
-
-    def _supported_kinds(self) -> frozenset[str]:
-        """Return mapping kinds the active detector flow can produce."""
-        cached = self._supported_kinds_cache
-        if cached is not None and cached[0] is self.detector_manager:
-            return cached[1]
-        kinds: set[str] = set()
-        modules = getattr(self.detector_manager.hierarchical.flow, "modules", ())
-        for module in modules:
-            if not getattr(module, "enabled", True):
-                continue
-            mtype = getattr(module, "type", "")
-            if mtype == "path_detector":
-                kinds.add("path")
-            elif mtype == "entropy_context":
-                kinds.add("secret")
-            elif mtype in {"local_model", "hf_token_classification", "gliner"}:
-                if self.policy.pii_mode == "redact":
-                    kinds.add("secret")
-                elif self.policy.pii_mode == "pseudonymize":
-                    kinds.add("pii")
-            elif mtype in {"regex_rules", "rule_validator"}:
-                detector = getattr(module, "detector", None)
-                for rule in getattr(detector, "rules", ()):
-                    if not getattr(rule, "enabled", True):
-                        continue
-                    rule_type = getattr(rule, "type", "")
-                    if rule_type in {"MACHINE_SECRET", "APG_MARKER", "UNKNOWN_SECRET_CANDIDATE"}:
-                        kinds.add("secret")
-                    elif rule_type == "PII":
-                        kinds.add("secret" if self.policy.pii_mode == "redact" else "pii")
-                    elif rule_type in {"LOCAL_CONTEXT", "CREDENTIAL_FILE"}:
-                        kinds.add("path")
-        result = frozenset(kinds)
-        self._supported_kinds_cache = (self.detector_manager, result)
-        return result
-
-    def _issue_placeholder(self, kind: str, handle_id: str, session_id: str) -> str:
-        key = (kind, handle_id, session_id)
-        cached = self._placeholder_cache.get(key)
-        if cached is not None:
-            return cached
-        placeholder = self.signer.issue(kind, handle_id, session_id)
-        if len(self._placeholder_cache) >= 10_000:
-            self._placeholder_cache = {}
-        self._placeholder_cache[key] = placeholder
-        return placeholder
 
     def materialize_local_json_with_events(
         self,

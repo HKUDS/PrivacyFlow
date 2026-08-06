@@ -47,7 +47,11 @@ class AdminService:
             if item.get("type") == "materialization" and item.get("action") == "materialize"
         ) + sum(int(event.get("materialized", event.get("materialized_count", 0)) or 0) for event in recent)
         active = self.store.list_records(workspace_id=self.config.workspace_id, state="active", limit=2000)
-        active = [record for record in active if not _record_expired(record, now)]
+        active = [
+            record
+            for record in active
+            if record.materialization_class != "credential_prefix" and not _record_expired(record, now)
+        ]
 
         day_counts: Counter[str] = Counter()
         for event in events:
@@ -329,6 +333,7 @@ class AdminService:
             kind=kind or None,
             limit=1000,
         )
+        records = [record for record in records if record.materialization_class != "credential_prefix"]
         safe_records = [self._safe_mapping(record, now, include_raw=include_raw) for record in records]
         if include_raw:
             self.audit.log(
@@ -575,6 +580,8 @@ class AdminService:
         if not public_id.startswith("pv_") or len(public_id) != 19:
             raise AdminNotFoundError("Protected value not found")
         for record in self.store.list_records(workspace_id=self.config.workspace_id, limit=2000):
+            if record.materialization_class == "credential_prefix":
+                continue
             if hmac.compare_digest(self._public_mapping_id(record.handle_id), public_id):
                 return record
         raise AdminNotFoundError("Protected value not found")

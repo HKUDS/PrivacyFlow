@@ -32,6 +32,15 @@ class NormalizedText:
 
 def normalize_with_mapping(text: str, max_decode_depth: int = 2, max_len: int = 200_000) -> NormalizedText:
     clipped = text[:max_len]
+    if (
+        clipped.isascii()
+        and "%" not in clipped
+        and "&" not in clipped
+        and "\\" not in clipped
+    ):
+        # Identity fast path: no zero-width/NFKC changes and no escape forms
+        # (percent, HTML entity, \u / \x) that the decode passes could rewrite.
+        return NormalizedText(clipped, clipped, ())
     normalized_chars: list[str] = []
     starts: list[int] = []
     ends: list[int] = []

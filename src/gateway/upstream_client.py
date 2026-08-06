@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from collections.abc import AsyncIterator
 from typing import Any
 from urllib.parse import urlsplit, urlunsplit
@@ -40,6 +41,7 @@ class UpstreamClient:
     def __init__(self, config: UpstreamConfig, *, transport: httpx.AsyncBaseTransport | None = None) -> None:
         self.config = config
         self.transport = transport
+        self._client: httpx.AsyncClient | None = None
 
     def upstream_path(self, path: str) -> str:
         request_protocol = upstream_protocol_for_path(path) or canonical_upstream_protocol(self.config.protocol)
@@ -51,7 +53,41 @@ class UpstreamClient:
         return path
 
     def update_config(self, config: UpstreamConfig) -> None:
+        if config == self.config:
+            return
+        previous = self._client
         self.config = config
+        self._client = None
+        if previous is not None:
+            self._schedule_close(previous)
+
+    async def close(self) -> None:
+        client, self._client = self._client, None
+        if client is not None:
+            await client.aclose()
+
+    def _schedule_close(self, client: httpx.AsyncClient) -> None:
+        try:
+            asyncio.get_running_loop().create_task(client.aclose())
+        except RuntimeError:
+            pass
+
+    def _get_client(self) -> httpx.AsyncClient:
+        if self._client is None:
+            self._client = httpx.AsyncClient(**self._client_kwargs())
+        return self._client
+
+    def _client_kwargs(self) -> dict[str, Any]:
+        """Build httpx client options without ambient environment proxies."""
+        kwargs: dict[str, Any] = {
+            "timeout": self.config.timeout_seconds,
+            "trust_env": False,
+        }
+        if self.transport is not None:
+            kwargs["transport"] = self.transport
+        if self.config.proxy:
+            kwargs["proxy"] = self.config.proxy
+        return kwargs
 
     def resolve_upstream_url(self, upstream_path: str) -> str:
         """Resolve a route against either an API root or a configured full endpoint."""
@@ -81,8 +117,8 @@ class UpstreamClient:
     ) -> tuple[int, dict[str, str], Any]:
         """Request an already-resolved upstream path without applying local route rewriting."""
         headers = self._headers(upstream_protocol_for_path(upstream_path))
-        async with httpx.AsyncClient(timeout=self.config.timeout_seconds, transport=self.transport) as client:
-            resp = await client.request(method, self.resolve_upstream_url(upstream_path), headers=headers, json=payload)
+        client = self._get_client()
+        resp = await client.request(method, self.resolve_upstream_url(upstream_path), headers=headers, json=payload)
         content_type = resp.headers.get("content-type", "")
         if "application/json" in content_type:
             body: Any = resp.json()
@@ -93,7 +129,7 @@ class UpstreamClient:
     async def stream_request(self, method: str, path: str, payload: Any | None = None) -> tuple[int, dict[str, str], AsyncIterator[bytes]]:
         upstream_path = self.upstream_path(path)
         headers = self._headers(upstream_protocol_for_path(path))
-        client = httpx.AsyncClient(timeout=self.config.timeout_seconds, transport=self.transport)
+        client = self._get_client()
         stream = client.stream(method, self.resolve_upstream_url(upstream_path), headers=headers, json=payload)
         try:
             resp = await stream.__aenter__()
@@ -107,7 +143,6 @@ class UpstreamClient:
                     yield chunk
             finally:
                 await stream.__aexit__(None, None, None)
-                await client.aclose()
 
         return resp.status_code, self._response_headers(resp, "text/event-stream"), body()
 
