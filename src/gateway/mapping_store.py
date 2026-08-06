@@ -89,10 +89,22 @@ class MappingStore:
         # transparent tool-call materialization contract). Tighten the file
         # permissions; callers are responsible for placing the database in a
         # protected directory and, where appropriate, using disk encryption.
-        try:
-            os.chmod(path, 0o600)
-        except OSError:
-            pass
+        self._tighten_sqlite_file_permissions(path)
+
+    def _tighten_sqlite_file_permissions(self, path: str) -> None:
+        """Restrict every SQLite file to the owning user.
+
+        WAL mode creates ``-wal`` and ``-shm`` companion files with
+        umask-derived permissions (0644 under a typical umask 022), and those
+        side files hold raw mapping values before a checkpoint. The main
+        ``chmod`` alone would leave them world-readable, so re-apply 0600 to
+        all three whenever the store is (re)opened or written.
+        """
+        for candidate in (path, f"{path}-wal", f"{path}-shm"):
+            try:
+                os.chmod(candidate, 0o600)
+            except OSError:
+                pass
 
     def _init(self) -> None:
         self.conn.executescript(
@@ -309,6 +321,7 @@ class MappingStore:
                     "UPDATE mappings SET last_seen_at=?, idle_expires_at=?, max_expires_at=? WHERE handle_id=?",
                     (now, idle, maximum, existing["handle_id"]),
                 )
+                self._tighten_sqlite_file_permissions(self.path)
                 return self.get(existing["handle_id"])  # type: ignore[arg-type]
             handle_id = f"{kind[:4]}_{uuid.uuid4().hex[:10]}"
             record_value = value if store_value else None
@@ -349,6 +362,7 @@ class MappingStore:
                 ),
             )
             self._write_generation += 1
+        self._tighten_sqlite_file_permissions(self.path)
         return self.get(handle_id)
 
     def get(self, handle_id: str) -> MappingRecord | None:

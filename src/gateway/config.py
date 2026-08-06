@@ -33,7 +33,6 @@ class GatewayConfig:
     audit_log_path: str = ".apg/audit.jsonl"
     signing_secret: str = "dev-only-change-me"
     local_api_keys: set[str] = field(default_factory=lambda: {"apg-local"})
-    admin_api_keys: set[str] = field(default_factory=set)
     admin_enabled: bool = True
     workspace_id: str = "default"
     strict_mode: bool = True
@@ -86,8 +85,6 @@ def load_config(path: str | None = None) -> GatewayConfig:
         )
     keys = os.getenv("APG_LOCAL_API_KEYS")
     local_api_keys = set(keys.split(",")) if keys else set(raw.get("local_api_keys", ["apg-local"]))
-    admin_keys = os.getenv("APG_ADMIN_API_KEYS")
-    admin_api_keys = set(admin_keys.split(",")) if admin_keys else set(raw.get("admin_api_keys", []))
     signing_secret = os.getenv("APG_SIGNING_SECRET", raw.get("signing_secret", "dev-only-change-me"))
 
     if "apg-local" in local_api_keys and not os.getenv("APG_LOCAL_API_KEYS"):
@@ -114,7 +111,6 @@ def load_config(path: str | None = None) -> GatewayConfig:
         audit_log_path=os.getenv("APG_AUDIT_LOG_PATH", raw.get("audit_log_path", ".apg/audit.jsonl")),
         signing_secret=signing_secret,
         local_api_keys=local_api_keys,
-        admin_api_keys=admin_api_keys,
         admin_enabled=_env_bool("APG_ADMIN_ENABLED", raw.get("admin_enabled", True)),
         workspace_id=os.getenv("APG_WORKSPACE_ID", raw.get("workspace_id", "default")),
         strict_mode=strict_mode,

@@ -21,6 +21,44 @@ from gateway.model_worker import ModelWorkerClient, ModelWorkerError
 
 STATE_VERSION = 2
 RUNTIME_VERSION = "model-runtime-v1"
+
+# Environment variables passed through to runtime-preparation subprocesses
+# (venv creation, pip install, model downloads). Mirrors
+# ``WORKER_ENV_ALLOWLIST`` in model_worker.py and adds the pip, proxy, and TLS
+# settings an install or download may need. Everything else — including
+# credential-bearing variables such as AWS_*, GITHUB_*, or HF_TOKEN — is
+# deliberately excluded.
+_RUN_COMMAND_ENV_ALLOWLIST = frozenset({
+    "CUDA_VISIBLE_DEVICES",
+    "DYLD_FALLBACK_LIBRARY_PATH",
+    "DYLD_LIBRARY_PATH",
+    "HF_ENDPOINT",
+    "HF_HUB_ENABLE_HF_TRANSFER",
+    "HOME",
+    "HTTP_PROXY",
+    "HTTPS_PROXY",
+    "LANG",
+    "LC_ALL",
+    "LC_CTYPE",
+    "LD_LIBRARY_PATH",
+    "NO_PROXY",
+    "PATH",
+    "PIP_EXTRA_INDEX_URL",
+    "PIP_INDEX_URL",
+    "PIP_TRUSTED_HOST",
+    "REQUESTS_CA_BUNDLE",
+    "SSL_CERT_DIR",
+    "SSL_CERT_FILE",
+    "SYSTEMROOT",
+    "TEMP",
+    "TMP",
+    "TMPDIR",
+    "VIRTUAL_ENV",
+    "WINDIR",
+    "http_proxy",
+    "https_proxy",
+    "no_proxy",
+})
 ADAPTER_REQUIREMENTS = {
     "transformers_token_classification": ("transformers>=4.40", "huggingface_hub"),
     "gliner": ("gliner>=0.2.17", "huggingface_hub"),
@@ -749,16 +787,14 @@ class LocalModelService:
         return self._worker
 
     def _run_command(self, args: list[str], *, timeout: int) -> str:
+        # Pass only an explicit allowlist into runtime-preparation subprocesses
+        # (venv creation, pip install, model downloads). The parent process may
+        # hold arbitrary credentials in its environment, and a compromised or
+        # typosquatted package could otherwise read every one of them.
         environment = {
             key: value
             for key, value in os.environ.items()
-            if key not in {
-                "APG_API_KEY",
-                "APG_LOCAL_API_KEY",
-                "APG_SIGNING_SECRET",
-                "ANTHROPIC_API_KEY",
-                "OPENAI_API_KEY",
-            }
+            if key in _RUN_COMMAND_ENV_ALLOWLIST and value
         }
         environment.update({
             "HF_HOME": str(self.cache_root.resolve()),

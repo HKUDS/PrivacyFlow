@@ -40,12 +40,14 @@ Every configuration exposes all three native formats by default. APG routes each
 
 The Agent connection strip displays the OpenAI-compatible and Anthropic local Base URLs simultaneously and provides an independent copy action for each. On a new launcher installation, the local Agent API key is generated with cryptographic randomness and persisted in the private launcher file; existing keys are never rotated by migration. The Agent key stays masked by default, and an eye icon temporarily reveals it. APG intentionally does not generate Agent-specific model configuration: users select the model in their Agent and replace only its request URL and API key with the displayed APG connection details. The rest of the view summarizes the latest audit window: requests, interceptions, local tool-argument materializations, active protected values, seven-day activity, and risk distribution. The upstream is represented by hostname only.
 
-| Agent endpoint | Chat Completions upstream | Responses upstream | Anthropic Messages upstream |
-| --- | --- | --- | --- |
-| `/v1/chat/completions` | Native | Unsupported (`501`) | Unsupported (`501`) |
-| `/v1/messages` | Unsupported (`501`) | Unsupported (`501`) | Native Anthropic JSON and SSE |
-| `/v1/responses` | Unsupported (`501`) | Native | Unsupported (`501`) |
-| `/v1/models` | Native | Native | Native Anthropic Models API |
+| Agent endpoint | Native upstream route | Format |
+| --- | --- | --- |
+| `/v1/chat/completions` | Chat Completions | Native JSON and SSE |
+| `/v1/messages` | Anthropic Messages | Native Anthropic JSON and SSE |
+| `/v1/responses` | Responses | Native JSON and SSE |
+| `/v1/models` | Models | Native |
+
+Each local endpoint is routed to its matching native upstream route without conversion. A provider that does not implement that route returns its own upstream error, which APG normalizes and passes through.
 
 ### Audit
 
