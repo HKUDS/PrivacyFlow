@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import secrets
 import time
 import uuid
 from contextlib import asynccontextmanager
@@ -631,7 +632,8 @@ def create_app(config: GatewayConfig | None = None, upstream_client: UpstreamCli
             key = auth.removeprefix("Bearer ").strip()
         else:
             raise HTTPException(status_code=401, detail="Missing local API key")
-        if cfg.local_api_keys and key not in cfg.local_api_keys:
+        # Constant-time comparison to prevent timing attacks that could leak key length/prefix
+        if cfg.local_api_keys and not any(secrets.compare_digest(key, k) for k in cfg.local_api_keys):
             raise HTTPException(status_code=401, detail="Invalid local API key")
         try:
             return sessions.session_for_key(key, requested_session_id)
