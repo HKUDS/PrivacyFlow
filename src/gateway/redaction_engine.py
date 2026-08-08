@@ -427,7 +427,8 @@ class BalancedStreamScanner:
         return prefix + PROTECTED_VALUE, [*events, self._fold_event("stream_pending_limit")]
 
     def _consume_discard(self, text: str) -> tuple[str, list[dict[str, Any]]]:
-        assert self.discard_mode is not None
+        if self.discard_mode is None:
+            raise RuntimeError("_consume_discard called without discard_mode set")
         if self.discard_mode == "apg":
             end = text.find(">")
             remainder = text[end + 1 :] if end >= 0 else None

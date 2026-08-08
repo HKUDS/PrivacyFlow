@@ -223,7 +223,8 @@ class MappingStore:
                     "SELECT * FROM mapping_retention_policies WHERE workspace_id=?",
                     (workspace_id,),
                 ).fetchone()
-        assert row is not None
+        if row is None:
+            raise RuntimeError(f"Mapping retention policy for workspace {workspace_id} not found after insert")
         return _row_to_retention_policy(row)
 
     def set_mapping_retention_policy(
@@ -279,7 +280,8 @@ class MappingStore:
                 "SELECT * FROM mapping_retention_policies WHERE workspace_id=?",
                 (workspace_id,),
             ).fetchone()
-        assert updated is not None
+        if updated is None:
+            raise RuntimeError(f"Mapping retention policy for workspace {workspace_id} not found after update")
         return _row_to_retention_policy(updated)
 
     def upsert_mapping(

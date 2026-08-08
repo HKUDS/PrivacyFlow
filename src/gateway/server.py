@@ -6,6 +6,7 @@ import os
 import secrets
 import time
 import uuid
+import warnings
 from contextlib import asynccontextmanager
 from dataclasses import replace
 from pathlib import Path
@@ -381,6 +382,18 @@ def _tool_arguments_error_response(
 
 def create_app(config: GatewayConfig | None = None, upstream_client: UpstreamClient | None = None) -> FastAPI:
     cfg = config or load_config()
+
+    # Security check: warn if admin API is exposed without authentication
+    if cfg.bind_host not in {"127.0.0.1", "localhost", "::1"} and cfg.admin_enabled:
+        warnings.warn(
+            f"Admin API is enabled on non-loopback address '{cfg.bind_host}' without authentication. "
+            "Management endpoints (WebUI, configuration, audit logs) are accessible over the network. "
+            "APG relies on loopback binding for admin security. To secure this deployment, either: "
+            "(1) bind to 127.0.0.1, or (2) add network-level access controls.",
+            SecurityWarning,
+            stacklevel=2
+        )
+
     store = MappingStore(cfg.database_path)
     signer = PlaceholderSigner(cfg.signing_secret, cfg.workspace_id)
     policy = PolicyEngine(pii_mode=cfg.pii_mode)
