@@ -10,8 +10,6 @@ from gateway.cli.launcher import (
     normalize_upstream_profile_name,
     normalize_upstream_protocol,
     prepare_launcher_config,
-    save_launcher_upstream_api_key,
-    save_launcher_upstream_configuration,
     save_launcher_local_api_key,
     save_launcher_upstream_profile,
 )
@@ -28,8 +26,6 @@ __all__ = [
     "normalize_upstream_profile_name",
     "normalize_upstream_protocol",
     "prepare_launcher_config",
-    "save_launcher_upstream_api_key",
-    "save_launcher_upstream_configuration",
     "save_launcher_local_api_key",
     "save_launcher_upstream_profile",
 ]

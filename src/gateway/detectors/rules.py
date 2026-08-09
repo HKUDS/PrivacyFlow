@@ -331,15 +331,6 @@ def _source_action(rule: DetectionRule, source_kind: str) -> SuggestedAction:
 
 BUILTIN_RULES: tuple[dict[str, Any], ...] = (
     {
-        "id": "apg.legacy_pii_placeholder",
-        "pattern": r"<APG_PII:[^<>]+>",
-        "type": "APG_MARKER",
-        "subtype": "legacy_pii_placeholder",
-        "risk": "high",
-        "suggested_action": "warn",
-        "preview_keep": 0,
-    },
-    {
         "id": "apg.signed_placeholder",
         "pattern": r"<APG:v1:(?P<kind>[a-z_]+):(?P<handle>[^:<>]+):(?P<session>[^:<>]+):(?P<issued>\d+):(?P<mac>[A-Za-z0-9_-]+)>",
         "type": "APG_MARKER",

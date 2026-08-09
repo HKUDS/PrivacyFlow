@@ -6,7 +6,6 @@ import importlib.util
 import json
 import os
 import re
-import shutil
 import threading
 import uuid
 from datetime import UTC, datetime
@@ -26,7 +25,7 @@ MODULE_TYPE_LABELS = {
     "local_model": "本地小模型",
 }
 
-LEGACY_PRESETS = {"fast", "default", "strict", "model_enhanced"}
+BUILTIN_FLOW_PRESETS = {"fast", "default", "strict", "model_enhanced"}
 RISK_LEVELS = {"low", "medium", "high", "critical"}
 ACTIONS = {"warn", "redact", "block", "pseudonymize", "alias"}
 FINDING_TYPES = {"MACHINE_SECRET", "PII", "LOCAL_CONTEXT", "CREDENTIAL_FILE", "APG_MARKER", "UNKNOWN_SECRET_CANDIDATE"}
@@ -69,61 +68,9 @@ def _rule_dict(rule: Any) -> dict[str, Any]:
 
 BUILTIN_RULE_VALUES = tuple(_rule_dict(rule) for rule in builtin_rules())
 BUILTIN_RULESET_REVISION = 4
-BUILTIN_RULESET_REVISION_2_ADDITIONS = {
-    "secret.credential_pair_password",
-    "secret.ip_access_url_token",
-    "pii.phone_labeled",
-}
-BUILTIN_RULESET_REVISION_2_REMOVALS = {
-    "secret.database_test_password",
-    "secret.github_apg_test_token",
-    "secret.jwt_prefix",
-    "secret.openai_apg_test_key",
-}
-BUILTIN_RULESET_REVISION_3_SUBTYPES = {
-    "secret.openai_api_key": ("openai_api_key", "api_key"),
-    "secret.credential_pair_password": ("password", "credential_password"),
-}
-BUILTIN_RULESET_REVISION_4_ADDITIONS = {
-    "secret.hex_dump_jwt_fragment",
-}
-_CURRENT_RULE_PATTERNS = {str(rule["id"]): str(rule["pattern"]) for rule in BUILTIN_RULE_VALUES}
-_ENV_ASSIGNMENT_V1_PATTERN = (
-    r"^\s*[A-Z0-9_]*(?:API_KEY|TOKEN|SECRET|PASSWORD|PASSWD|PASS|CREDENTIAL|PRIVATE_KEY|DATABASE_URL)"
-    r"[A-Z0-9_]*\s*=\s*(?P<value>.+)$"
-)
-_ENV_ASSIGNMENT_V2_PATTERN = (
-    r"(?<![A-Z0-9_])(?:export\s+)?[A-Z0-9_]*(?:API_KEY|TOKEN|SECRET|PASSWORD|PASSWD|PASS|CREDENTIAL|PRIVATE_KEY|DATABASE_URL)"
-    r"[A-Z0-9_]*\s*=\s*(?P<value>[^\r\n]+)$"
-)
-_ENV_ASSIGNMENT_V3_PATTERN = (
-    r"(?<![A-Z0-9_])(?:export[ \t]+)?[A-Z0-9_]*(?:API_KEY|TOKEN|SECRET|PASSWORD|PASSWD|PASS|CREDENTIAL|PRIVATE_KEY|DATABASE_URL)"
-    r"[A-Z0-9_]*[ \t]*=[ \t]*(?P<value>\"(?:\\.|[^\"\\\r\n])*\"|'(?:\\.|[^'\\\r\n])*'|[^\s;]+)"
-)
-_ENV_ASSIGNMENT_V4_PATTERN = (
-    r"(?<![A-Z0-9_])(?:export[ \t]+)?(?:[A-Z0-9]+_)*(?:API_KEY|APIKEY|TOKEN|SECRET|PASSWORD|PASSWD|PASS|CREDENTIAL|PRIVATE_KEY|DATABASE_URL)"
-    r"(?:_[A-Z0-9]+)*[ \t]*=[ \t]*(?P<value>\"(?:\\.|[^\"\\\r\n])*\"|'(?:\\.|[^'\\\r\n])*'|[^\s;]+)"
-)
-_ENV_ASSIGNMENT_V5_PATTERN = (
-    r"(?<![A-Z0-9_])(?:export[ \t]+)?(?P<name>[A-Z][A-Z0-9_]*)[ \t]*=[ \t]*"
-    r"(?P<value>\"(?:\\.|[^\"\\\r\n])*\"|'(?:\\.|[^'\\\r\n])*'|[^\s;]+)"
-)
-_BEARER_TOKEN_V1_PATTERN = r"\bAuthorization\s*:\s*Bearer\s+[A-Za-z0-9._~+/=-]{16,}"
-_BEARER_TOKEN_V2_PATTERN = r"\bAuthorization\s*:\s*Bearer\s+(?P<value>[A-Za-z0-9._~+/=-]{16,})"
-_COOKIE_V1_PATTERN = r"\b(?:cookie|sessionid|sid|connect\.sid)\s*[:=]\s*[A-Za-z0-9._~+/=-]{16,}"
-TRUSTED_RULE_PATTERN_UPGRADES = {
-    ("secret.env_assignment", _ENV_ASSIGNMENT_V1_PATTERN): _CURRENT_RULE_PATTERNS["secret.env_assignment"],
-    ("secret.env_assignment", _ENV_ASSIGNMENT_V2_PATTERN): _CURRENT_RULE_PATTERNS["secret.env_assignment"],
-    ("secret.env_assignment", _ENV_ASSIGNMENT_V3_PATTERN): _CURRENT_RULE_PATTERNS["secret.env_assignment"],
-    ("secret.env_assignment", _ENV_ASSIGNMENT_V4_PATTERN): _CURRENT_RULE_PATTERNS["secret.env_assignment"],
-    ("secret.env_assignment", _ENV_ASSIGNMENT_V5_PATTERN): _CURRENT_RULE_PATTERNS["secret.env_assignment"],
-    ("secret.bearer_token", _BEARER_TOKEN_V1_PATTERN): _CURRENT_RULE_PATTERNS["secret.bearer_token"],
-    ("secret.bearer_token", _BEARER_TOKEN_V2_PATTERN): _CURRENT_RULE_PATTERNS["secret.bearer_token"],
-    ("secret.cookie", _COOKIE_V1_PATTERN): _CURRENT_RULE_PATTERNS["secret.cookie"],
-}
 TRUSTED_RULE_PATTERNS = {
     (str(rule["id"]), str(rule["pattern"])) for rule in BUILTIN_RULE_VALUES
-} | set(TRUSTED_RULE_PATTERN_UPGRADES)
+}
 CORE_RULES = [copy.deepcopy(rule) for rule in BUILTIN_RULE_VALUES if str(rule["id"]).startswith("apg.")]
 CREDENTIAL_RULES = [copy.deepcopy(rule) for rule in BUILTIN_RULE_VALUES if str(rule["id"]).startswith("secret.")]
 PII_RULES = [copy.deepcopy(rule) for rule in BUILTIN_RULE_VALUES if str(rule["id"]).startswith("pii.")]
@@ -502,9 +449,9 @@ class DetectorControlPlane:
         if module["type"] == "local_model":
             return {**common, "type": "local_model", **config}
         if module["type"] == "deployment":
-            legacy = copy.deepcopy(config["legacy"])
-            legacy.update({key: value for key, value in common.items() if value is not None})
-            return legacy
+            runtime = copy.deepcopy(config["runtime"])
+            runtime.update({key: value for key, value in common.items() if value is not None})
+            return runtime
         raise DetectorControlError("Unknown module type")
 
     def _validate_configuration(
@@ -611,8 +558,6 @@ class DetectorControlPlane:
             pattern = str(raw.get("pattern", ""))
             if not pattern or len(pattern) > 512:
                 raise DetectorControlError("Pattern must be between 1 and 512 characters")
-            upgraded_builtin = (rule_id, pattern) in TRUSTED_RULE_PATTERN_UPGRADES
-            pattern = TRUSTED_RULE_PATTERN_UPGRADES.get((rule_id, pattern), pattern)
             if (rule_id, pattern) not in TRUSTED_RULE_PATTERNS and (
                 _UNSAFE_GROUP_REPEAT_RE.search(pattern) or _UNSAFE_REGEX_FEATURE_RE.search(pattern)
             ):
@@ -642,9 +587,6 @@ class DetectorControlPlane:
             validators = self._validator_names(raw.get("validators", []))
             require_validators = self._validator_names(raw.get("require_validators", []))
             reject_validators = self._validator_names(raw.get("reject_validators", []))
-            if upgraded_builtin and rule_id == "secret.env_assignment":
-                validators = list(dict.fromkeys([*validators, "credential_assignment_value"]))
-                require_validators = list(dict.fromkeys([*require_validators, "credential_assignment_value"]))
             required_builtin_validators = {
                 "pii.email": "email_structure",
                 "pii.phone": "phone_shape",
@@ -834,7 +776,7 @@ class DetectorControlPlane:
         custom = self.base_config.get("presets", {})
         if isinstance(custom, dict):
             for name in custom:
-                if str(name) in LEGACY_PRESETS:
+                if str(name) in BUILTIN_FLOW_PRESETS:
                     continue
                 compiled = compile_flow_config({**copy.deepcopy(self.base_config), "preset": str(name)})
                 template_id = f"deployment.{self._slug(str(name))}"
@@ -844,7 +786,7 @@ class DetectorControlPlane:
             compiled = compile_flow_config(copy.deepcopy(self.base_config))
             templates["deployment.current"] = self._deployment_template("deployment.current", str(flow.get("id", "Deployment flow")), compiled)
         elif self.base_config.get("overrides") or (
-            "preset" in self.base_config and str(self.base_config.get("preset")) in LEGACY_PRESETS
+            "preset" in self.base_config and str(self.base_config.get("preset")) in BUILTIN_FLOW_PRESETS
         ):
             compiled = compile_flow_config(copy.deepcopy(self.base_config))
             templates["deployment.current"] = self._deployment_template(
@@ -864,7 +806,7 @@ class DetectorControlPlane:
             "source_template_id": None,
             "core_guard_enabled": True,
             "flow_timeout_ms": compiled.get("flow_timeout_ms"),
-            "modules": self._legacy_modules_to_unified(compiled.get("modules", [])),
+            "modules": self._flow_modules_to_unified(compiled.get("modules", [])),
             "content_tags": ["deployment"],
             "created_at": now,
             "updated_at": now,
@@ -872,11 +814,11 @@ class DetectorControlPlane:
             "template": True,
         }
 
-    def _legacy_modules_to_unified(self, modules: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    def _flow_modules_to_unified(self, modules: list[dict[str, Any]]) -> list[dict[str, Any]]:
         out: list[dict[str, Any]] = []
         for index, raw in enumerate(modules):
             module_type = str(raw.get("type", "regex_rules"))
-            module_id = str(raw.get("id", f"legacy_{index}"))
+            module_id = str(raw.get("id", f"deployment_{index}"))
             enabled = bool(raw.get("enabled", True))
             timeout = raw.get("timeout_ms")
             failure_mode = "open" if bool(raw.get("fail_open", True)) else "closed"
@@ -902,7 +844,7 @@ class DetectorControlPlane:
                     config["device"] = f"cuda:{config['device']}"
                 out.append(_module(module_id, module_id.replace("_", " ").title(), "local_model", config, enabled=enabled, timeout_ms=timeout, failure_mode=failure_mode))
             else:
-                out.append(_module(module_id, module_id.replace("_", " ").title(), "deployment", {"legacy": copy.deepcopy(raw)}, enabled=enabled, timeout_ms=timeout, failure_mode=failure_mode, editable=False))
+                out.append(_module(module_id, module_id.replace("_", " ").title(), "deployment", {"runtime": copy.deepcopy(raw)}, enabled=enabled, timeout_ms=timeout, failure_mode=failure_mode, editable=False))
         return out
 
     def _load_state(self) -> dict[str, Any]:
@@ -919,232 +861,42 @@ class DetectorControlPlane:
         try:
             text = self.state_path.read_text(encoding="utf-8")
             data = json.loads(text)
-        except (OSError, ValueError):
-            return empty
+        except OSError as exc:
+            raise DetectorControlError("Could not read detector configuration state") from exc
+        except ValueError as exc:
+            raise DetectorControlError("Detector configuration state is not valid JSON") from exc
         if not isinstance(data, dict):
-            return empty
-        if data.get("version") == 2:
-            try:
-                configurations = [self._validate_configuration(item, trusted=True) for item in data.get("configurations", [])]
-                active = str(data.get("active_configuration_id", self._default_active_id()))
-                stored_enabled = data.get("apg_enabled", True)
-                state = {
-                    "version": 2,
-                    "builtin_ruleset_revision": int(data.get("builtin_ruleset_revision", 1)),
-                    "active_configuration_id": active,
-                    "apg_enabled": stored_enabled if isinstance(stored_enabled, bool) else True,
-                    "template_module_overrides": self._validate_template_module_overrides(data.get("template_module_overrides", {})),
-                    "configurations": configurations,
-                }
-                if active not in self._templates and not any(item["id"] == active for item in configurations):
-                    state["active_configuration_id"] = self._default_active_id()
-                if state["builtin_ruleset_revision"] < BUILTIN_RULESET_REVISION:
-                    self._upgrade_builtin_ruleset(state)
-                    try:
-                        self._persist_state(state)
-                    except OSError:
-                        pass
-                return state
-            except DetectorControlError:
-                return empty
-        if data.get("version") == 1:
-            try:
-                migrated = self._migrate_v1(data)
-            except (DetectorControlError, TypeError, ValueError):
-                return self._v1_fallback_state(data)
-            try:
-                backup = self.state_path.with_suffix(self.state_path.suffix + ".apg.bak")
-                shutil.copyfile(self.state_path, backup)
-                os.chmod(backup, 0o600)
-                self._persist_state(migrated)
-            except OSError:
-                pass
-            return migrated
-        return empty
+            raise DetectorControlError("Detector configuration state must be a JSON object")
+        if data.get("version") != 2 or data.get("builtin_ruleset_revision") != BUILTIN_RULESET_REVISION:
+            raise DetectorControlError("Unsupported detector configuration state version")
+        try:
+            configurations = [self._validate_configuration(item, trusted=True) for item in data.get("configurations", [])]
+            active = str(data.get("active_configuration_id", self._default_active_id()))
+            stored_enabled = data.get("apg_enabled", True)
+            state = {
+                "version": 2,
+                "builtin_ruleset_revision": BUILTIN_RULESET_REVISION,
+                "active_configuration_id": active,
+                "apg_enabled": stored_enabled if isinstance(stored_enabled, bool) else True,
+                "template_module_overrides": self._validate_template_module_overrides(data.get("template_module_overrides", {})),
+                "configurations": configurations,
+            }
+            if active not in self._templates and not any(item["id"] == active for item in configurations):
+                state["active_configuration_id"] = self._default_active_id()
+            return state
+        except (DetectorControlError, TypeError, ValueError) as exc:
+            raise DetectorControlError("Invalid detector configuration state") from exc
 
     def _default_active_id(self) -> str:
         if isinstance(self.base_config.get("flow"), dict) and self.base_config["flow"].get("modules"):
             return "deployment.current"
         if self.base_config.get("overrides") or (
-            "preset" in self.base_config and str(self.base_config.get("preset")) in LEGACY_PRESETS
+            "preset" in self.base_config and str(self.base_config.get("preset")) in BUILTIN_FLOW_PRESETS
         ):
             return "deployment.current"
         preset = str(self.base_config.get("preset", "default"))
         deployment_id = f"deployment.{self._slug(preset)}"
         return deployment_id if deployment_id in self._templates else "builtin.comprehensive"
-
-    def _migrate_v1(self, data: dict[str, Any]) -> dict[str, Any]:
-        effective = self._effective_v1_config(data)
-        compiled = compile_flow_config(effective)
-        now = _now()
-        configuration = {
-            "id": "dcfg_6d69677261746564",
-            "name": "迁移的检测配置",
-            "description": "由旧版检测器预设和覆盖项自动迁移",
-            "revision": 1,
-            "source_template_id": None,
-            "core_guard_enabled": True,
-            "flow_timeout_ms": compiled.get("flow_timeout_ms"),
-            "modules": self._legacy_modules_to_unified(compiled.get("modules", [])),
-            "content_tags": ["migrated"],
-            "created_at": now,
-            "updated_at": now,
-            "readonly": False,
-            "template": False,
-        }
-        configuration = self._validate_configuration(configuration, trusted=True)
-        return {
-            "version": 2,
-            "builtin_ruleset_revision": BUILTIN_RULESET_REVISION,
-            "active_configuration_id": configuration["id"],
-            "apg_enabled": True,
-            "template_module_overrides": {},
-            "configurations": [configuration],
-        }
-
-    def _effective_v1_config(self, data: dict[str, Any]) -> dict[str, Any]:
-        effective = copy.deepcopy(self.base_config)
-        if isinstance(data.get("preset"), str) and data["preset"]:
-            effective["preset"] = data["preset"]
-            effective.pop("flow", None)
-        overrides = effective.setdefault("overrides", {})
-        module_overrides = overrides.setdefault("modules", {})
-        if isinstance(data.get("module_overrides"), dict):
-            for module_id, values in data["module_overrides"].items():
-                if isinstance(values, dict):
-                    module_overrides.setdefault(module_id, {}).update(copy.deepcopy(values))
-        rules = overrides.setdefault("rules", {})
-        custom_rules = data.get("custom_rules", []) if isinstance(data.get("custom_rules"), list) else []
-        rules.setdefault("add", []).extend(copy.deepcopy(custom_rules))
-        return effective
-
-    def _v1_fallback_state(self, data: dict[str, Any]) -> dict[str, Any]:
-        compiled = compile_flow_config(self._effective_v1_config(data))
-        now = _now()
-        modules: list[dict[str, Any]] = []
-        for index, raw in enumerate(compiled.get("modules", [])):
-            legacy = copy.deepcopy(raw)
-            if legacy.get("type") in {"regex_rules", "rule_validator"}:
-                legacy["rules"] = [
-                    rule for rule in legacy.get("rules", []) if not str(rule.get("id", "")).startswith("apg.")
-                ]
-                if not legacy["rules"]:
-                    continue
-            module_id = str(legacy.get("id", f"legacy_{index}"))
-            modules.append(
-                _module(
-                    module_id,
-                    module_id.replace("_", " ").title(),
-                    "deployment",
-                    {"legacy": legacy},
-                    enabled=bool(legacy.get("enabled", True)),
-                    timeout_ms=legacy.get("timeout_ms"),
-                    failure_mode="open" if bool(legacy.get("fail_open", True)) else "closed",
-                    editable=False,
-                )
-            )
-        configuration = {
-            "id": "dcfg_6c65676163796662",
-            "name": "旧版检测配置（兼容模式）",
-            "description": "新版迁移校验失败；继续使用未写回的旧版流水线",
-            "revision": 1,
-            "source_template_id": None,
-            "core_guard_enabled": True,
-            "flow_timeout_ms": compiled.get("flow_timeout_ms"),
-            "modules": modules,
-            "content_tags": ["legacy", "fallback"],
-            "created_at": now,
-            "updated_at": now,
-            "readonly": False,
-            "template": False,
-        }
-        return {
-            "version": 2,
-            "builtin_ruleset_revision": BUILTIN_RULESET_REVISION,
-            "active_configuration_id": configuration["id"],
-            "apg_enabled": True,
-            "template_module_overrides": {},
-            "configurations": [configuration],
-        }
-
-    def _upgrade_builtin_ruleset(self, state: dict[str, Any]) -> None:
-        previous_revision = int(state.get("builtin_ruleset_revision", 1))
-        for configuration in state.get("configurations", []):
-            changed = False
-            if previous_revision < 2:
-                for module in configuration.get("modules", []):
-                    if module.get("type") != "regex":
-                        continue
-                    rules = module.get("config", {}).get("rules", [])
-                    retained = [
-                        rule
-                        for rule in rules
-                        if str(rule.get("id")) not in BUILTIN_RULESET_REVISION_2_REMOVALS
-                    ]
-                    if len(retained) != len(rules):
-                        rules[:] = retained
-                        changed = True
-            source_id = str(configuration.get("source_template_id") or "")
-            source = self._templates.get(source_id)
-            if previous_revision < 2 and source is not None:
-                source_modules = {str(module["id"]): module for module in source.get("modules", [])}
-                for module in configuration.get("modules", []):
-                    if module.get("type") != "regex":
-                        continue
-                    source_module = source_modules.get(str(module.get("id")))
-                    if source_module is None or source_module.get("type") != "regex":
-                        continue
-                    rules = module.get("config", {}).get("rules", [])
-                    existing_ids = {str(rule.get("id")) for rule in rules}
-                    additions = [
-                        copy.deepcopy(rule)
-                        for rule in source_module.get("config", {}).get("rules", [])
-                        if str(rule.get("id")) in BUILTIN_RULESET_REVISION_2_ADDITIONS
-                        and str(rule.get("id")) not in existing_ids
-                    ]
-                    if additions:
-                        rules.extend(additions)
-                        changed = True
-            if previous_revision < 3:
-                for module in configuration.get("modules", []):
-                    if module.get("type") != "regex":
-                        continue
-                    for rule in module.get("config", {}).get("rules", []):
-                        rule_id = str(rule.get("id"))
-                        subtype_update = BUILTIN_RULESET_REVISION_3_SUBTYPES.get(rule_id)
-                        if subtype_update is None or str(rule.get("pattern")) != _CURRENT_RULE_PATTERNS.get(rule_id):
-                            continue
-                        old_subtype, new_subtype = subtype_update
-                        if str(rule.get("subtype")) != old_subtype:
-                            continue
-                        builtin = next(item for item in BUILTIN_RULE_VALUES if str(item["id"]) == rule_id)
-                        rule["subtype"] = new_subtype
-                        if not rule.get("metadata") and builtin.get("metadata"):
-                            rule["metadata"] = copy.deepcopy(builtin["metadata"])
-                        changed = True
-            if previous_revision < 4 and source is not None:
-                source_modules = {str(module["id"]): module for module in source.get("modules", [])}
-                for module in configuration.get("modules", []):
-                    if module.get("type") != "regex":
-                        continue
-                    source_module = source_modules.get(str(module.get("id")))
-                    if source_module is None or source_module.get("type") != "regex":
-                        continue
-                    rules = module.get("config", {}).get("rules", [])
-                    existing_ids = {str(rule.get("id")) for rule in rules}
-                    additions = [
-                        copy.deepcopy(rule)
-                        for rule in source_module.get("config", {}).get("rules", [])
-                        if str(rule.get("id")) in BUILTIN_RULESET_REVISION_4_ADDITIONS
-                        and str(rule.get("id")) not in existing_ids
-                    ]
-                    if additions:
-                        rules.extend(additions)
-                        changed = True
-            if changed:
-                configuration["revision"] = int(configuration.get("revision", 0)) + 1
-                configuration["updated_at"] = _now()
-        state["builtin_ruleset_revision"] = BUILTIN_RULESET_REVISION
 
     def _validate_template_module_overrides(self, value: Any) -> dict[str, dict[str, bool]]:
         if not isinstance(value, dict):

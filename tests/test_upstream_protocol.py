@@ -76,6 +76,24 @@ def test_upstream_client_forwards_native_anthropic_payload_and_response() -> Non
     assert body["content"] == [{"type": "text", "text": "ok"}]
 
 
+def test_upstream_client_accepts_structured_json_media_types() -> None:
+    async def handler(_: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            429,
+            headers={"content-type": "application/problem+json; charset=utf-8"},
+            json={"error": {"code": "rate_limited"}},
+        )
+
+    client = UpstreamClient(
+        UpstreamConfig(base_url="https://provider.example", api_key="provider-key"),
+        transport=httpx.MockTransport(handler),
+    )
+    status, _, body = asyncio.run(client.request_json("POST", "/v1/chat/completions", {}))
+
+    assert status == 429
+    assert body == {"error": {"code": "rate_limited"}}
+
+
 def test_upstream_client_resolves_api_root_and_full_endpoint_urls() -> None:
     root_client = UpstreamClient(
         UpstreamConfig(
@@ -368,6 +386,43 @@ class _ChunkStream(httpx.AsyncByteStream):
     async def __aiter__(self):
         for index in range(0, len(self.content), self.size):
             yield self.content[index : index + self.size]
+
+
+def test_anthropic_streaming_http_error_is_preserved_without_sse_parsing(tmp_path) -> None:
+    error_body = {"type": "error", "error": {"type": "rate_limit_error", "code": "rate_limited"}}
+
+    class ErrorUpstream:
+        async def stream_request(self, method, path, payload=None):
+            async def chunks():
+                yield json.dumps(error_body).encode()
+
+            return 429, {"content-type": "application/problem+json", "x-request-id": "req_rate"}, chunks()
+
+    config = GatewayConfig(
+        database_path=str(tmp_path / "state.sqlite3"),
+        audit_log_path=str(tmp_path / "audit.jsonl"),
+        signing_secret="test-signing-secret",
+        local_api_keys={"agent-key"},
+        upstream=UpstreamConfig(
+            base_url="https://provider.example",
+            api_key="provider-key",
+            protocol=ANTHROPIC_MESSAGES,
+        ),
+    )
+    with TestClient(create_app(config, ErrorUpstream())) as client:
+        response = client.post(
+            "/v1/messages",
+            headers={"x-api-key": "agent-key"},
+            json={"model": "claude-test", "max_tokens": 8, "stream": True, "messages": []},
+        )
+
+    assert response.status_code == 429
+    assert response.json() == error_body
+    assert response.headers["x-request-id"] == "req_rate"
+    audit_rows = [json.loads(line) for line in (tmp_path / "audit.jsonl").read_text().splitlines()]
+    completed = next(row for row in audit_rows if row.get("phase") == "response_stream_complete")
+    assert completed["termination"] == "failed"
+    assert completed["upstream_error_code"] == "rate_limited"
 
 
 def test_anthropic_agent_materializes_tools_through_native_anthropic_upstream(tmp_path) -> None:

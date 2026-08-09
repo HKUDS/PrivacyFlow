@@ -412,7 +412,7 @@ def test_incomplete_apg_marker_does_not_span_lines() -> None:
 
 @pytest.mark.parametrize(
     "example",
-    ["<APG:v1:pii:...>", "<APG:v1:secret:...>", "<APG_PII:handle>"],
+    ["<APG:v1:pii:...>", "<APG:v1:secret:...>"],
 )
 def test_canonical_placeholder_format_examples_are_not_findings(example: str) -> None:
     assert scan(example) == []

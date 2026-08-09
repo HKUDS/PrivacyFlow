@@ -13,7 +13,7 @@ class PolicyEngine:
     ``pii_mode`` is the disposition selector for PII detections, controlled by
     configuration (``APG_PII_MODE`` env / ``pii_mode`` YAML):
 
-    - ``pseudonymize`` (default): emit ``<APG_PII:handle>`` so the human-path
+    - ``pseudonymize`` (default): emit a signed PII placeholder so the human-path
       mapping can be restored to user-visible local text.
     - ``redact``: treat PII like a regular secret — emit a signed
       ``<APG:v1:secret:...>`` placeholder and gate materialization.

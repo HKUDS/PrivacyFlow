@@ -383,14 +383,14 @@ def _tool_arguments_error_response(
 def create_app(config: GatewayConfig | None = None, upstream_client: UpstreamClient | None = None) -> FastAPI:
     cfg = config or load_config()
 
-    # Security check: warn if admin API is exposed without authentication
+    # The management plane is loopback-only by design and has no app-layer auth.
     if cfg.bind_host not in {"127.0.0.1", "localhost", "::1"} and cfg.admin_enabled:
         warnings.warn(
             f"Admin API is enabled on non-loopback address '{cfg.bind_host}' without authentication. "
             "Management endpoints (WebUI, configuration, audit logs) are accessible over the network. "
             "APG relies on loopback binding for admin security. To secure this deployment, either: "
             "(1) bind to 127.0.0.1, or (2) add network-level access controls.",
-            SecurityWarning,
+            RuntimeWarning,
             stacklevel=2
         )
 
@@ -484,19 +484,13 @@ def create_app(config: GatewayConfig | None = None, upstream_client: UpstreamCli
         protocol = canonical_upstream_protocol(active_upstream_config().protocol)
         return protocol if protocol in SUPPORTED_UPSTREAM_PROTOCOLS else OPENAI_CHAT_COMPLETIONS
 
-    def profile_protocols(profile: dict[str, Any] | None) -> list[str]:
-        if not profile:
-            return []
-        return list(DEFAULT_UPSTREAM_PROTOCOLS)
-
     def active_upstream_protocols() -> list[str]:
         profile = next(
             (item for item in runtime_upstream_profiles if item["id"] == active_upstream_profile_id),
             None,
         )
-        protocols = profile_protocols(profile)
-        if protocols:
-            return protocols
+        if profile is not None:
+            return list(DEFAULT_UPSTREAM_PROTOCOLS)
         protocol = canonical_upstream_protocol(active_upstream_config().protocol)
         return [protocol] if protocol in SUPPORTED_UPSTREAM_PROTOCOLS else []
 
@@ -530,7 +524,7 @@ def create_app(config: GatewayConfig | None = None, upstream_client: UpstreamCli
             "id": str(profile.get("id", "")),
             "name": str(profile.get("name", "")),
             "protocol": canonical_upstream_protocol(str(profile.get("protocol", ""))),
-            "protocols": profile_protocols(profile),
+            "protocols": list(DEFAULT_UPSTREAM_PROTOCOLS),
             "base_url": str(profile.get("base_url", "")),
             "endpoint_overrides": dict(profile.get("endpoint_overrides", {})),
             "has_api_key": bool(str(profile.get("api_key", "")).strip()),
@@ -606,6 +600,58 @@ def create_app(config: GatewayConfig | None = None, upstream_client: UpstreamCli
             }
         return JSONResponse(payload, status_code=503)
 
+    def upstream_error_stream_response(
+        *,
+        stream_body: Any,
+        status: int,
+        headers: dict[str, str],
+        request_id: str,
+        session_id: str,
+        endpoint: str,
+    ) -> StreamingResponse:
+        trace_headers = _safe_upstream_trace_headers(headers)
+        audit.log(
+            {
+                "request_id": request_id,
+                "session_id": session_id,
+                "workspace_id": cfg.workspace_id,
+                "endpoint": endpoint,
+                "phase": "response",
+                "status": status,
+                "stream": True,
+                "upstream_trace_headers": trace_headers,
+            }
+        )
+
+        async def body() -> Any:
+            captured = bytearray()
+            try:
+                async for chunk in stream_body:
+                    if len(captured) < 65_536:
+                        captured.extend(chunk[: 65_536 - len(captured)])
+                    yield chunk
+            finally:
+                details = _safe_upstream_error_details_from_bytes(bytes(captured))
+                audit.log(
+                    {
+                        "request_id": request_id,
+                        "session_id": session_id,
+                        "workspace_id": cfg.workspace_id,
+                        "endpoint": endpoint,
+                        "phase": "response_stream_complete",
+                        "termination": "failed",
+                        "upstream_trace_headers": trace_headers,
+                        **{key: value for key, value in details.items() if key != "upstream_error_message"},
+                    }
+                )
+
+        return StreamingResponse(
+            body(),
+            status_code=status,
+            media_type=headers.get("content-type", "application/json"),
+            headers=trace_headers,
+        )
+
     @asynccontextmanager
     async def lifespan(_: FastAPI):
         gc_task: asyncio.Task[None] | None = None
@@ -645,8 +691,10 @@ def create_app(config: GatewayConfig | None = None, upstream_client: UpstreamCli
             key = auth.removeprefix("Bearer ").strip()
         else:
             raise HTTPException(status_code=401, detail="Missing local API key")
+        if not key or not cfg.local_api_keys:
+            raise HTTPException(status_code=401, detail="Invalid local API key")
         # Constant-time comparison to prevent timing attacks that could leak key length/prefix
-        if cfg.local_api_keys and not any(secrets.compare_digest(key, k) for k in cfg.local_api_keys):
+        if not any(secrets.compare_digest(key, candidate) for candidate in cfg.local_api_keys if candidate):
             raise HTTPException(status_code=401, detail="Invalid local API key")
         try:
             return sessions.session_for_key(key, requested_session_id)
@@ -659,11 +707,6 @@ def create_app(config: GatewayConfig | None = None, upstream_client: UpstreamCli
                     "message": "The requested APG session is unavailable for this local credential.",
                 },
             ) from exc
-
-    def authenticate_admin(auth: str | None, x_api_key: str | None = None) -> None:
-        # The management plane is intentionally unauthenticated. Its security
-        # boundary is the loopback bind (the default), not an application key.
-        return None
 
     async def admin_body(request: Request) -> dict[str, Any]:
         try:
@@ -732,46 +775,13 @@ def create_app(config: GatewayConfig | None = None, upstream_client: UpstreamCli
                 return _upstream_error_response(exc, audit, request_id, session_id, cfg.workspace_id, endpoint)
             upstream_trace_headers = _safe_upstream_trace_headers(headers)
             if status >= 400:
-                audit.log(
-                    {
-                        "request_id": request_id,
-                        "session_id": session_id,
-                        "workspace_id": cfg.workspace_id,
-                        "endpoint": endpoint,
-                        "phase": "response",
-                        "status": status,
-                        "stream": True,
-                        "upstream_trace_headers": upstream_trace_headers,
-                    }
-                )
-
-                async def upstream_error_stream() -> Any:
-                    captured = bytearray()
-                    try:
-                        async for chunk in stream_body:
-                            if len(captured) < 65_536:
-                                captured.extend(chunk[: 65_536 - len(captured)])
-                            yield chunk
-                    finally:
-                        error_details = _safe_upstream_error_details_from_bytes(bytes(captured))
-                        audit.log(
-                            {
-                                "request_id": request_id,
-                                "session_id": session_id,
-                                "workspace_id": cfg.workspace_id,
-                                "endpoint": endpoint,
-                                "phase": "response_stream_complete",
-                                "termination": "failed",
-                                "upstream_trace_headers": upstream_trace_headers,
-                                **{key: value for key, value in error_details.items() if key != "upstream_error_message"},
-                            }
-                        )
-
-                return StreamingResponse(
-                    upstream_error_stream(),
-                    status_code=status,
-                    media_type=headers.get("content-type", "application/json"),
-                    headers=upstream_trace_headers,
+                return upstream_error_stream_response(
+                    stream_body=stream_body,
+                    status=status,
+                    headers=headers,
+                    request_id=request_id,
+                    session_id=session_id,
+                    endpoint=endpoint,
                 )
             if not privacy_enabled:
                 return StreamingResponse(
@@ -880,6 +890,15 @@ def create_app(config: GatewayConfig | None = None, upstream_client: UpstreamCli
             except httpx.HTTPError as exc:
                 return _upstream_error_response(exc, audit, request_id, session_id, cfg.workspace_id, endpoint)
             upstream_trace_headers = _safe_upstream_trace_headers(headers)
+            if status >= 400:
+                return upstream_error_stream_response(
+                    stream_body=stream_body,
+                    status=status,
+                    headers=headers,
+                    request_id=request_id,
+                    session_id=session_id,
+                    endpoint=endpoint,
+                )
             if privacy_enabled:
                 audit.log(
                     {
@@ -1102,10 +1121,7 @@ def create_app(config: GatewayConfig | None = None, upstream_client: UpstreamCli
 
         @app.get("/api/admin/overview")
         async def admin_overview(
-            authorization: str | None = Header(default=None),
-            x_api_key: str | None = Header(default=None),
         ) -> Response:
-            authenticate_admin(authorization, x_api_key)
             overview = admin.overview()
             overview.update({
                 "build_id": APG_BUILD_ID,
@@ -1116,10 +1132,7 @@ def create_app(config: GatewayConfig | None = None, upstream_client: UpstreamCli
         @app.get("/api/admin/local-models")
         async def admin_local_models(
             request: Request,
-            authorization: str | None = Header(default=None),
-            x_api_key: str | None = Header(default=None),
         ) -> Response:
-            authenticate_admin(authorization, x_api_key)
             allowed, reason = local_model_setup_access(request)
             return JSONResponse(
                 await asyncio.to_thread(
@@ -1133,10 +1146,7 @@ def create_app(config: GatewayConfig | None = None, upstream_client: UpstreamCli
         @app.post("/api/admin/local-models")
         async def admin_add_local_model(
             request: Request,
-            authorization: str | None = Header(default=None),
-            x_api_key: str | None = Header(default=None),
         ) -> Response:
-            authenticate_admin(authorization, x_api_key)
             require_local_model_setup_access(request)
             body = await admin_body(request)
             try:
@@ -1156,10 +1166,7 @@ def create_app(config: GatewayConfig | None = None, upstream_client: UpstreamCli
         async def admin_delete_local_model(
             model_id: str,
             request: Request,
-            authorization: str | None = Header(default=None),
-            x_api_key: str | None = Header(default=None),
         ) -> Response:
-            authenticate_admin(authorization, x_api_key)
             require_local_model_setup_access(request)
             try:
                 await asyncio.to_thread(local_models.delete_manual_model, model_id)
@@ -1171,10 +1178,7 @@ def create_app(config: GatewayConfig | None = None, upstream_client: UpstreamCli
         async def admin_delete_local_model_cache(
             model_id: str,
             request: Request,
-            authorization: str | None = Header(default=None),
-            x_api_key: str | None = Header(default=None),
         ) -> Response:
-            authenticate_admin(authorization, x_api_key)
             require_local_model_setup_access(request)
             try:
                 await asyncio.to_thread(local_models.delete_cache, model_id)
@@ -1185,10 +1189,7 @@ def create_app(config: GatewayConfig | None = None, upstream_client: UpstreamCli
         @app.post("/api/admin/local-models/prepare")
         async def admin_prepare_local_models(
             request: Request,
-            authorization: str | None = Header(default=None),
-            x_api_key: str | None = Header(default=None),
         ) -> Response:
-            authenticate_admin(authorization, x_api_key)
             require_local_model_setup_access(request)
             body = await admin_body(request)
             model_ids = body.get("model_ids", [])
@@ -1215,10 +1216,7 @@ def create_app(config: GatewayConfig | None = None, upstream_client: UpstreamCli
         @app.get("/api/admin/local-model-jobs/{job_id}")
         async def admin_local_model_job(
             job_id: str,
-            authorization: str | None = Header(default=None),
-            x_api_key: str | None = Header(default=None),
         ) -> Response:
-            authenticate_admin(authorization, x_api_key)
             try:
                 job = local_models.job(job_id)
             except LocalModelError as exc:
@@ -1227,19 +1225,13 @@ def create_app(config: GatewayConfig | None = None, upstream_client: UpstreamCli
 
         @app.get("/api/admin/privacy-control")
         async def admin_privacy_control(
-            authorization: str | None = Header(default=None),
-            x_api_key: str | None = Header(default=None),
         ) -> Response:
-            authenticate_admin(authorization, x_api_key)
             return JSONResponse(privacy_control_status(), headers={"Cache-Control": "no-store"})
 
         @app.put("/api/admin/privacy-control")
         async def update_admin_privacy_control(
             request: Request,
-            authorization: str | None = Header(default=None),
-            x_api_key: str | None = Header(default=None),
         ) -> Response:
-            authenticate_admin(authorization, x_api_key)
             body = await admin_body(request)
             enabled = body.get("enabled")
             if not isinstance(enabled, bool):
@@ -1260,18 +1252,12 @@ def create_app(config: GatewayConfig | None = None, upstream_client: UpstreamCli
 
         @app.get("/api/admin/connection")
         async def admin_connection(
-            authorization: str | None = Header(default=None),
-            x_api_key: str | None = Header(default=None),
         ) -> Response:
-            authenticate_admin(authorization, x_api_key)
             return JSONResponse(admin.connection_info(), headers={"Cache-Control": "no-store"})
 
         @app.post("/api/admin/connection/api-key")
         async def regenerate_admin_connection_api_key(
-            authorization: str | None = Header(default=None),
-            x_api_key: str | None = Header(default=None),
         ) -> Response:
-            authenticate_admin(authorization, x_api_key)
             generated = generate_local_api_key()
             try:
                 save_launcher_local_api_key(launcher_config_path, generated)
@@ -1292,18 +1278,12 @@ def create_app(config: GatewayConfig | None = None, upstream_client: UpstreamCli
 
         @app.get("/api/admin/upstream-configuration")
         async def admin_upstream_configuration(
-            authorization: str | None = Header(default=None),
-            x_api_key: str | None = Header(default=None),
         ) -> Response:
-            authenticate_admin(authorization, x_api_key)
             return JSONResponse(upstream_configuration_info(), headers={"Cache-Control": "no-store"})
 
         @app.get("/api/admin/upstream-configuration/models")
         async def list_admin_upstream_models(
-            authorization: str | None = Header(default=None),
-            x_api_key: str | None = Header(default=None),
         ) -> Response:
-            authenticate_admin(authorization, x_api_key)
             if not upstream_is_configured() or not active_upstream_profile_id:
                 raise HTTPException(status_code=409, detail="Configure and activate an upstream connection first")
 
@@ -1390,10 +1370,7 @@ def create_app(config: GatewayConfig | None = None, upstream_client: UpstreamCli
         @app.post("/api/admin/upstream-configuration/test")
         async def test_admin_upstream_configuration(
             request: Request,
-            authorization: str | None = Header(default=None),
-            x_api_key: str | None = Header(default=None),
         ) -> Response:
-            authenticate_admin(authorization, x_api_key)
             if not upstream_is_configured() or not active_upstream_profile_id:
                 raise HTTPException(status_code=409, detail="Configure and activate an upstream connection first")
             body = await admin_body(request)
@@ -1498,11 +1475,8 @@ def create_app(config: GatewayConfig | None = None, upstream_client: UpstreamCli
         @app.put("/api/admin/upstream-configuration")
         async def update_admin_upstream_configuration(
             request: Request,
-            authorization: str | None = Header(default=None),
-            x_api_key: str | None = Header(default=None),
         ) -> Response:
             nonlocal active_upstream_profile_id, runtime_upstream_profiles
-            authenticate_admin(authorization, x_api_key)
             body = await admin_body(request)
             profile_id = body.get("profile_id", "")
             name = body.get("name")
@@ -1589,11 +1563,8 @@ def create_app(config: GatewayConfig | None = None, upstream_client: UpstreamCli
         @app.post("/api/admin/upstream-configuration/{profile_id}/activate")
         async def activate_admin_upstream_configuration(
             profile_id: str,
-            authorization: str | None = Header(default=None),
-            x_api_key: str | None = Header(default=None),
         ) -> Response:
             nonlocal active_upstream_profile_id
-            authenticate_admin(authorization, x_api_key)
             try:
                 profile = await asyncio.to_thread(
                     activate_launcher_upstream_profile,
@@ -1622,11 +1593,8 @@ def create_app(config: GatewayConfig | None = None, upstream_client: UpstreamCli
         @app.delete("/api/admin/upstream-configuration/{profile_id}")
         async def delete_admin_upstream_configuration(
             profile_id: str,
-            authorization: str | None = Header(default=None),
-            x_api_key: str | None = Header(default=None),
         ) -> Response:
             nonlocal active_upstream_profile_id, runtime_upstream_profiles
-            authenticate_admin(authorization, x_api_key)
             try:
                 next_active = await asyncio.to_thread(
                     delete_launcher_upstream_profile,
@@ -1666,10 +1634,7 @@ def create_app(config: GatewayConfig | None = None, upstream_client: UpstreamCli
             phase: str = "",
             risk: str = "",
             endpoint: str = "",
-            authorization: str | None = Header(default=None),
-            x_api_key: str | None = Header(default=None),
         ) -> Response:
-            authenticate_admin(authorization, x_api_key)
             return JSONResponse(
                 admin.audit_events(limit=limit, query=query, phase=phase, risk=risk, endpoint=endpoint),
                 headers={"Cache-Control": "no-store"},
@@ -1682,10 +1647,7 @@ def create_app(config: GatewayConfig | None = None, upstream_client: UpstreamCli
             activity: str = "privacy",
             risk: str = "",
             endpoint: str = "",
-            authorization: str | None = Header(default=None),
-            x_api_key: str | None = Header(default=None),
         ) -> Response:
-            authenticate_admin(authorization, x_api_key)
             if activity not in {"privacy", "all", "replacement", "materialization", "error"}:
                 raise HTTPException(status_code=400, detail="Invalid audit activity filter")
             if risk not in {"", "critical", "high", "medium", "low"}:
@@ -1709,10 +1671,7 @@ def create_app(config: GatewayConfig | None = None, upstream_client: UpstreamCli
             risk: str = "",
             endpoint: str = "",
             include_raw: bool = False,
-            authorization: str | None = Header(default=None),
-            x_api_key: str | None = Header(default=None),
         ) -> Response:
-            authenticate_admin(authorization, x_api_key)
             if direction not in {"replacement", "materialization"}:
                 raise HTTPException(status_code=400, detail="Invalid audit operation direction")
             if risk not in {"", "critical", "high", "medium", "low"}:
@@ -1733,10 +1692,7 @@ def create_app(config: GatewayConfig | None = None, upstream_client: UpstreamCli
         async def admin_audit_request_detail(
             request_id: str,
             include_raw: bool = False,
-            authorization: str | None = Header(default=None),
-            x_api_key: str | None = Header(default=None),
         ) -> Response:
-            authenticate_admin(authorization, x_api_key)
             if len(request_id) != 16 or not request_id.startswith("req_") or any(char not in "0123456789abcdef" for char in request_id[4:]):
                 raise HTTPException(status_code=404, detail="Audit request not found")
             try:
@@ -1750,10 +1706,7 @@ def create_app(config: GatewayConfig | None = None, upstream_client: UpstreamCli
             state: str = "",
             kind: str = "",
             include_raw: bool = False,
-            authorization: str | None = Header(default=None),
-            x_api_key: str | None = Header(default=None),
         ) -> Response:
-            authenticate_admin(authorization, x_api_key)
             if state not in {"", "active", "tombstoned"} or kind not in {"", "secret", "pii", "path"}:
                 raise HTTPException(status_code=400, detail="Invalid protected-value filter")
             return JSONResponse(
@@ -1764,10 +1717,7 @@ def create_app(config: GatewayConfig | None = None, upstream_client: UpstreamCli
         @app.put("/api/admin/protected-values/retention")
         async def admin_update_mapping_retention(
             request: Request,
-            authorization: str | None = Header(default=None),
-            x_api_key: str | None = Header(default=None),
         ) -> Response:
-            authenticate_admin(authorization, x_api_key)
             body = await admin_body(request)
             enabled = body.get("enabled")
             idle_ttl_seconds = body.get("idle_ttl_seconds")
@@ -1795,10 +1745,7 @@ def create_app(config: GatewayConfig | None = None, upstream_client: UpstreamCli
         @app.post("/api/admin/protected-values/{public_id}/revoke")
         async def admin_revoke_protected_value(
             public_id: str,
-            authorization: str | None = Header(default=None),
-            x_api_key: str | None = Header(default=None),
         ) -> Response:
-            authenticate_admin(authorization, x_api_key)
             try:
                 result = admin.revoke(public_id)
             except AdminNotFoundError as exc:
@@ -1807,27 +1754,18 @@ def create_app(config: GatewayConfig | None = None, upstream_client: UpstreamCli
 
         @app.post("/api/admin/protected-values/purge-expired")
         async def admin_purge_expired(
-            authorization: str | None = Header(default=None),
-            x_api_key: str | None = Header(default=None),
         ) -> Response:
-            authenticate_admin(authorization, x_api_key)
             return JSONResponse(admin.purge_expired(), headers={"Cache-Control": "no-store"})
 
         @app.get("/api/admin/detector-configurations")
         async def admin_detector_configurations(
-            authorization: str | None = Header(default=None),
-            x_api_key: str | None = Header(default=None),
         ) -> Response:
-            authenticate_admin(authorization, x_api_key)
             return JSONResponse(detector_control.catalog(), headers={"Cache-Control": "no-store"})
 
         @app.post("/api/admin/detector-configurations")
         async def admin_create_detector_configuration(
             request: Request,
-            authorization: str | None = Header(default=None),
-            x_api_key: str | None = Header(default=None),
         ) -> Response:
-            authenticate_admin(authorization, x_api_key)
             try:
                 result = detector_control.create_configuration(await admin_body(request))
             except DetectorConfigurationNotFound as exc:
@@ -1849,10 +1787,7 @@ def create_app(config: GatewayConfig | None = None, upstream_client: UpstreamCli
         @app.get("/api/admin/detector-configurations/{configuration_id}")
         async def admin_get_detector_configuration(
             configuration_id: str,
-            authorization: str | None = Header(default=None),
-            x_api_key: str | None = Header(default=None),
         ) -> Response:
-            authenticate_admin(authorization, x_api_key)
             try:
                 result = detector_control.get_configuration(configuration_id)
             except DetectorConfigurationNotFound as exc:
@@ -1863,10 +1798,7 @@ def create_app(config: GatewayConfig | None = None, upstream_client: UpstreamCli
         async def admin_save_detector_configuration(
             configuration_id: str,
             request: Request,
-            authorization: str | None = Header(default=None),
-            x_api_key: str | None = Header(default=None),
         ) -> Response:
-            authenticate_admin(authorization, x_api_key)
             try:
                 result = detector_control.save_configuration(configuration_id, await admin_body(request))
             except DetectorConfigurationNotFound as exc:
@@ -1891,10 +1823,7 @@ def create_app(config: GatewayConfig | None = None, upstream_client: UpstreamCli
         @app.delete("/api/admin/detector-configurations/{configuration_id}")
         async def admin_delete_detector_configuration(
             configuration_id: str,
-            authorization: str | None = Header(default=None),
-            x_api_key: str | None = Header(default=None),
         ) -> Response:
-            authenticate_admin(authorization, x_api_key)
             try:
                 result = detector_control.delete_configuration(configuration_id)
             except DetectorConfigurationNotFound as exc:
@@ -1909,10 +1838,7 @@ def create_app(config: GatewayConfig | None = None, upstream_client: UpstreamCli
         @app.post("/api/admin/detector-configurations/{configuration_id}/activate")
         async def admin_activate_detector_configuration(
             configuration_id: str,
-            authorization: str | None = Header(default=None),
-            x_api_key: str | None = Header(default=None),
         ) -> Response:
-            authenticate_admin(authorization, x_api_key)
             try:
                 result = detector_control.activate_configuration(configuration_id)
             except DetectorConfigurationNotFound as exc:
@@ -1936,10 +1862,7 @@ def create_app(config: GatewayConfig | None = None, upstream_client: UpstreamCli
             configuration_id: str,
             module_id: str,
             request: Request,
-            authorization: str | None = Header(default=None),
-            x_api_key: str | None = Header(default=None),
         ) -> Response:
-            authenticate_admin(authorization, x_api_key)
             body = await admin_body(request)
             enabled = body.get("enabled")
             if not isinstance(enabled, bool):
@@ -1966,10 +1889,7 @@ def create_app(config: GatewayConfig | None = None, upstream_client: UpstreamCli
         async def admin_test_detector_configuration(
             configuration_id: str,
             request: Request,
-            authorization: str | None = Header(default=None),
-            x_api_key: str | None = Header(default=None),
         ) -> Response:
-            authenticate_admin(authorization, x_api_key)
             body = await admin_body(request)
             text = body.get("text")
             if not isinstance(text, str) or len(text) > 200_000:

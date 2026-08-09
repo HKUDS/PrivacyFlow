@@ -11,11 +11,6 @@ SUPPORTED_UPSTREAM_PROTOCOLS = frozenset(
         ANTHROPIC_MESSAGES,
     }
 )
-LEGACY_UPSTREAM_PROTOCOLS = {
-    "openai": OPENAI_CHAT_COMPLETIONS,
-    "anthropic": ANTHROPIC_MESSAGES,
-}
-
 UPSTREAM_PROTOCOL_ENDPOINTS = {
     OPENAI_CHAT_COMPLETIONS: "/v1/chat/completions",
     OPENAI_RESPONSES: "/v1/responses",
@@ -25,8 +20,7 @@ DEFAULT_UPSTREAM_PROTOCOLS = tuple(UPSTREAM_PROTOCOL_ENDPOINTS)
 
 
 def canonical_upstream_protocol(value: str) -> str:
-    normalized = value.strip().lower()
-    return LEGACY_UPSTREAM_PROTOCOLS.get(normalized, normalized)
+    return value.strip().lower()
 
 
 def upstream_protocol_for_path(path: str) -> str:

@@ -218,33 +218,14 @@ def test_runtime_commands_are_server_owned_and_target_isolated_environment(tmp_p
     assert not any(command[:4] == [service.python_executable, "-m", "pip", "install"] for command in commands)
 
 
-def test_v1_state_migrates_explicit_adapter_and_device(tmp_path) -> None:
-    old_id = "lmodel_old"
+def test_unsupported_local_model_state_is_rejected(tmp_path) -> None:
     (tmp_path / "local-models.json").write_text(json.dumps({
         "version": 1,
-        "manual_models": [{
-            "id": old_id,
-            "source_type": "huggingface",
-            "source": "example/pii",
-            "adapter": "gliner",
-            "device": "cpu",
-        }],
-        "records": {
-            old_id: {
-                "source_type": "huggingface",
-                "source": "example/pii",
-                "adapter": "gliner",
-                "device": "cpu",
-                "status": "ready",
-            },
-        },
+        "manual_models": [],
+        "records": {},
     }), encoding="utf-8")
-    service = _service(tmp_path)
-    model = service.snapshot(setup_allowed=True, unavailable_reason=None)["models"][0]
-    assert model["adapter_preference"] == "gliner"
-    assert model["device_preference"] == "cpu"
-    assert model["status"] == "ready"
-    assert json.loads((tmp_path / "local-models.json").read_text())["version"] == 2
+    with pytest.raises(LocalModelError, match="Unsupported local model state version"):
+        _service(tmp_path)
 
 
 def test_download_stops_before_network_when_disk_space_is_low(tmp_path, monkeypatch) -> None:

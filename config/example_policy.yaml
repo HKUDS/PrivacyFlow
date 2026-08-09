@@ -5,11 +5,7 @@ audit_log_path: .apg/audit.jsonl
 signing_secret: change-this-local-secret
 local_api_keys:
   - apg-local
-# Optional dedicated WebUI/control-plane credentials. When omitted, the
-# control plane accepts local_api_keys for backward compatibility.
 admin_enabled: true
-admin_api_keys:
-  - ${APG_ADMIN_API_KEY}
 workspace_id: default
 strict_mode: true
 pii_mode: pseudonymize
@@ -24,8 +20,8 @@ upstream:
   strip_local_v1: false
 
 detectors:
-  # Legacy YAML presets are exposed in the WebUI as read-only deployment
-  # templates. User-editable configurations live in detector-control.json v2.
+  # YAML presets are exposed in the WebUI as read-only deployment templates.
+  # User-editable configurations live in detector-control.json.
   preset: default
   flow_timeout_ms: 1500
   allow_model_download: true

@@ -142,10 +142,6 @@ LIVE_SCENARIOS: dict[str, LiveScenario] = {
     ),
 }
 
-# Backward-compatible name for callers that only need the selectable scenario keys.
-SCENARIO_PROMPTS = {name: scenario.prompt for name, scenario in LIVE_SCENARIOS.items()}
-
-
 _ENV_ALLOWLIST = {
     "PATH",
     "HOME",

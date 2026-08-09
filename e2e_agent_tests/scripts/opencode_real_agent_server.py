@@ -12,7 +12,6 @@ from gateway.detectors.rules import builtin_rules
 from gateway.server import create_app
 from gateway.upstream_protocol import (
     ANTHROPIC_MESSAGES,
-    LEGACY_UPSTREAM_PROTOCOLS,
     OPENAI_CHAT_COMPLETIONS,
     SUPPORTED_UPSTREAM_PROTOCOLS,
     canonical_upstream_protocol,
@@ -84,7 +83,7 @@ def main() -> None:
     parser.add_argument("--timeout", type=float, default=120.0)
     parser.add_argument(
         "--upstream-protocol",
-        choices=sorted({*SUPPORTED_UPSTREAM_PROTOCOLS, *LEGACY_UPSTREAM_PROTOCOLS}),
+        choices=sorted(SUPPORTED_UPSTREAM_PROTOCOLS),
         default=os.getenv("APG_UPSTREAM_PROTOCOL", OPENAI_CHAT_COMPLETIONS),
     )
     parser.add_argument("--upstream-base-url", default=os.getenv("APG_UPSTREAM_BASE_URL", "https://api.deepseek.com"))

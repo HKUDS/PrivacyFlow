@@ -82,7 +82,7 @@ def scrub_audit_value(value: Any, depth: int = 0) -> Any:
 
 
 _SCRUB_MARKERS = (
-    "<APG",           # Signed/legacy APG placeholders and redaction markers
+    "<APG",           # Signed APG placeholders and redaction markers
     "sk-",            # OpenAI / general API key prefix
     "-----BEGIN",     # PEM private key header
     "Bearer ",         # Bearer token prefix

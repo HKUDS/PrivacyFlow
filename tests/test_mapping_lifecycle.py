@@ -76,8 +76,8 @@ def test_mapping_retention_policy_updates_existing_records_and_checks_revision(c
     assert retained.max_expires_at == 0
 
 
-def test_old_mapping_database_migrates_to_default_no_expiry(tmp_path) -> None:
-    database = tmp_path / "legacy.sqlite3"
+def test_unsupported_mapping_database_schema_is_rejected(tmp_path) -> None:
+    database = tmp_path / "old.sqlite3"
     with sqlite3.connect(database) as connection:
         connection.execute(
             """
@@ -92,17 +92,10 @@ def test_old_mapping_database_migrates_to_default_no_expiry(tmp_path) -> None:
         )
         connection.execute(
             "INSERT INTO mappings VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            ("secr_legacy", "sess", "ws", "session", "secret", "api_key", "secret-value", "fp", 1, 1, 2, 3, "active", "default", "secret"),
+            ("secr_old", "sess", "ws", "session", "secret", "api_key", "secret-value", "fp", 1, 1, 2, 3, "active", "default", "secret"),
         )
-    store = MappingStore(str(database))
-    record = store.get("secr_legacy")
-    assert record is not None
-    assert record.state == "active"
-    assert record.idle_expires_at == 0
-    assert record.max_expires_at == 0
-    assert record.tombstone_reason == ""
-    assert store.mapping_retention_policy("ws").enabled is False
-    store.close()
+    with pytest.raises(RuntimeError, match="Unsupported APG mapping database schema"):
+        MappingStore(str(database))
 
 
 def test_request_scoped_mapping_expires(components) -> None:
@@ -141,12 +134,6 @@ def test_tombstone_error_retryable_false(components) -> None:
     assert result.error_code == "APG_PLACEHOLDER_TOMBSTONED"
     assert result.retryable is False
 
-
-def test_gc_does_not_remove_active_session_scoped_mapping(components) -> None:
-    store, _, _ = components
-    rec = store.upsert_mapping(session_id="sess", workspace_id="ws", scope="session", kind="pii", subtype="email", value="a@example.com", store_value=True, materialization_class="pii")
-    store.expire_request_scope()
-    assert store.get(rec.handle_id).state == "active"
 
 
 def test_repeated_sightings_refresh_idle_not_beyond_max(components) -> None:

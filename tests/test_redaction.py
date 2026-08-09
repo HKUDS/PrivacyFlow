@@ -5,7 +5,10 @@ from pathlib import Path
 
 from gateway.detector_manager import DetectorManager
 from gateway.detectors.rules import builtin_rules
+from gateway.mapping_store import MappingStore
 from gateway.path_alias_manager import PathAliasManager
+from gateway.placeholder_parser import PLACEHOLDER_RE, PlaceholderSigner
+from gateway.policy_engine import PolicyEngine
 from gateway.redaction_engine import RedactionEngine
 
 
@@ -16,6 +19,36 @@ def test_api_key_redacted_before_upstream(redactor) -> None:
     assert "sk-proj-" not in text
     assert "<APG:v1:secret:" in text
     assert events[0]["subtype"] == "api_key"
+
+
+def test_placeholder_is_stable_after_restart_and_request_replay(redactor) -> None:
+    raw = "sk-proj-abcdefghijklmnopqrstuvwxyz123456"
+    first, _ = redactor.sanitize_text(raw, "sess_stable")
+    match = PLACEHOLDER_RE.search(first)
+    assert match is not None
+    record = redactor.mapping_store.get(match.group("handle"))
+    assert record is not None
+
+    signer = PlaceholderSigner("test-secret", "ws")
+    restarted = RedactionEngine(
+        DetectorManager(),
+        MappingStore(redactor.mapping_store.path),
+        signer,
+        PolicyEngine(),
+        "ws",
+    )
+    second, _ = restarted.sanitize_text(raw, "sess_stable")
+    assert second == first
+
+    replayed, replay_events = restarted.sanitize_text(first, "sess_stable")
+    assert replayed == first
+    assert replayed.count("<APG:v1:") == 1
+    assert replay_events[0]["action"] == "preserve"
+
+    previous_valid_form = signer.issue("secret", record.handle_id, "sess_stable", record.created_at + 1)
+    canonicalized, canonical_events = restarted.sanitize_text(previous_valid_form, "sess_stable")
+    assert canonicalized == first
+    assert canonical_events[0]["action"] == "canonicalize"
 
 
 def test_env_assignment_preserves_key_and_redacts_only_value(redactor) -> None:

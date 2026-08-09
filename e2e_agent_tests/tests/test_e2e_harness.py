@@ -247,7 +247,6 @@ def test_live_agent_final_output_excludes_tool_trajectory() -> None:
 def test_live_marker_check_ignores_all_reserved_format_examples() -> None:
     assert not _contains_non_example_apg_marker("format: <APG:v1:pii:...>")
     assert not _contains_non_example_apg_marker("format: <APG:v1:secret:...>")
-    assert not _contains_non_example_apg_marker("legacy format: <APG_PII:handle>")
     assert _contains_non_example_apg_marker("format: <APG:v1:pii:....>")
     assert _contains_non_example_apg_marker("shorthand: <APG:...>")
     assert _contains_non_example_apg_marker(

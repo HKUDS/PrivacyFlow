@@ -395,10 +395,10 @@ def test_webui_assets_and_admin_api_require_no_authentication(tmp_path) -> None:
         assert "setIconButton" in app_js.text
         assert "visibilityIcon" not in app_js.text
         assert 'iconMarkup(revealed ? "eye-off" : "eye")' in app_js.text
-        for legacy_symbol in ("↻", "×", "↑", "↓", "＋"):
-            assert legacy_symbol not in page.text
-            assert legacy_symbol not in app_js.text
-            assert legacy_symbol not in i18n_js.text
+        for text_symbol in ("↻", "×", "↑", "↓", "＋"):
+            assert text_symbol not in page.text
+            assert text_symbol not in app_js.text
+            assert text_symbol not in i18n_js.text
         assert 'data-audit-direction="replacement"' in page.text
         assert 'data-audit-direction="materialization"' in page.text
         assert "替换记录" in page.text
@@ -468,11 +468,11 @@ def test_webui_can_persist_and_hot_apply_first_run_upstream_key(tmp_path, monkey
     launcher_path.write_text(
         json.dumps(
             {
-                "admin_api_key": "admin-key",
                 "local_api_key": "agent-key",
                 "signing_secret": "test-signing-secret",
                 "strip_local_v1": True,
-                "upstream_base_url": "https://api.deepseek.com",
+                "upstream_profiles": [],
+                "active_upstream_profile_id": "",
             }
         ),
         encoding="utf-8",
@@ -502,7 +502,7 @@ def test_webui_can_persist_and_hot_apply_first_run_upstream_key(tmp_path, monkey
         assert len(status_body["profiles"]) == 1
         assert status_body["profiles"][0]["has_api_key"] is False
         assert status_body["profiles"][0]["active"] is True
-        first_profile_id = status_body["active_profile_id"]
+        runtime_profile_id = status_body["active_profile_id"]
         assert '"api_key":' not in status.text
 
         unavailable = client.post(
@@ -537,13 +537,14 @@ def test_webui_can_persist_and_hot_apply_first_run_upstream_key(tmp_path, monkey
 
         configured = client.put(
             "/api/admin/upstream-configuration",
-            json={"profile_id": first_profile_id, "name": "Anthropic primary", "protocol": ANTHROPIC_MESSAGES, "base_url": "https://new.example/anthropic/", "api_key": "saved-provider-key"},
+            json={"profile_id": runtime_profile_id, "name": "Anthropic primary", "protocol": ANTHROPIC_MESSAGES, "base_url": "https://new.example/anthropic/", "api_key": "saved-provider-key"},
         )
         assert configured.status_code == 200
         assert configured.json()["configured"] is True
         assert configured.json()["base_url"] == "https://new.example/anthropic"
         assert configured.json()["protocol"] == ANTHROPIC_MESSAGES
-        assert configured.json()["active_profile_id"] == first_profile_id
+        first_profile_id = configured.json()["active_profile_id"]
+        assert first_profile_id != runtime_profile_id
         assert configured.json()["profiles"][0]["name"] == "Anthropic primary"
         assert "saved-provider-key" not in configured.text
 
@@ -1261,30 +1262,6 @@ def test_request_audit_pairs_replacement_and_materialization_without_persisting_
     serialized_operations = repr(operation_rows)
     assert secret not in serialized_operations
     assert "<APG:v1:" not in serialized_operations
-
-
-def test_request_audit_keeps_legacy_jsonl_as_summary_only(tmp_path) -> None:
-    cfg = _config(tmp_path)
-    with TestClient(create_app(cfg, AdminFakeUpstream())) as client:
-        client.app.state.admin_service.audit.log(
-            {
-                "request_id": "req_abcdef123456",
-                "session_id": "sess_legacy",
-                "workspace_id": "default",
-                "endpoint": "/v1/messages",
-                "phase": "request",
-                "detections": [{"type": "secret", "subtype": "legacy", "risk": "high", "action": "redact"}],
-            }
-        )
-        summary = client.get("/api/admin/audit/requests", headers=_admin_headers()).json()["requests"][0]
-        assert summary["replacement_count"] == 1
-        assert summary["details_available"] is False
-        detail = client.get(
-            "/api/admin/audit/requests/req_abcdef123456",
-            headers=_admin_headers(),
-        ).json()
-        assert detail["legacy_summary_only"] is True
-        assert detail["replacements"] == []
 
 
 def test_detector_control_hot_reload_and_persistence(tmp_path) -> None:
