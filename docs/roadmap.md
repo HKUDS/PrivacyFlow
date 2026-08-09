@@ -2,12 +2,16 @@
 
 APG currently provides native Chat Completions, Responses, and Anthropic
 Messages proxying; stateful streaming; signed placeholders; path aliases;
-local tool-argument materialization; retention and tombstones; detector and
+response-field-classified tool-argument materialization; retention and tombstones; detector and
 local-model management; safe audit views; and a loopback-only WebUI.
 
 Future work is intentionally limited to the privacy proxy boundary:
 
 - improve detector precision and streaming protocol coverage;
+- add explicit policy enforcement for detector `block` actions and, if kept in
+  scope, per-tool materialization rules rather than field-shape classification;
+- define scanning contracts for opaque multimodal payloads without corrupting
+  native provider formats;
 - add explicit scanning entry points for additional native upload APIs when a
   provider contract can be preserved without protocol conversion;
 - expand reproducible real-agent validation and failure diagnostics.

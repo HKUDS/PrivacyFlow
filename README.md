@@ -11,8 +11,8 @@
 <p align="center"><strong>Keep secrets local. Keep agents working.</strong></p>
 
 <p align="center">
-  A local privacy boundary for agents that use cloud LLMs.<br>
-  Detect sensitive values, replace them before upload, and restore them only at authorized local sinks.
+  A protocol-aware local privacy proxy for agents that use cloud LLMs.<br>
+  Replace detected sensitive text before upload, then validate and restore handles in local response text and structured tool arguments.
 </p>
 
 <p align="center">
@@ -83,10 +83,10 @@ reappear under unexpected conditions.
 | Gemini | After uploading audio for transcription, a user received an unrelated business-meeting transcript containing names, corporate email addresses, contracts, and document links. The poster said some of the people and details could be verified. [View the original post](https://www.reddit.com/r/GeminiAI/comments/1v8700z/gemini_gave_me_someone_elses_transcript/) |
 
 APG does not need to assume that every anomaly is a data breach. It replaces
-sensitive values before a request leaves the device. If an upstream service
-experiences incorrect routing, logging, context contamination, or another
-unexpected failure, it sees placeholders rather than the user's API keys,
-passwords, or personal information.
+values detected in supported textual fields before a request leaves the device.
+If an upstream service experiences incorrect routing, logging, context
+contamination, or another unexpected failure, those replaced values appear as
+placeholders rather than their original literals.
 
 Exposing a secret can also interrupt the task itself. A safety-aligned model may
 warn the user to revoke a credential, refuse to continue, or avoid using the
@@ -94,35 +94,39 @@ value—even when the intended operation is legitimate. The user is then forced
 to replace, paste, or manage sensitive values manually, adding friction and
 more human-in-the-loop work.
 
-APG keeps the literal value local and gives the model a stable placeholder
-instead. The model only needs to know that a secret exists and where it should
-be used; it rarely needs to know the secret itself. APG verifies and restores
-the original value only at an authorized local destination, so the task can
-continue without directly exposing sensitive data to the cloud.
+APG keeps a detected literal value local and gives the model a stable
+placeholder instead. The model only needs to know that a secret exists and
+where it should be used; it rarely needs to know the secret itself. APG verifies
+the handle and restores it in two protocol-defined response classes: ordinary
+client-visible text and recognized structured tool-call arguments. These are
+field classifications, not tool authorization or execution approval.
 
 | Detect locally | Protect before upload | Restore locally |
 | --- | --- | --- |
-| Credentials, PII, local paths, and high-entropy values | Signed placeholders and stable path aliases replace raw values | Verified values reappear in local answers and structured tool arguments |
+| Credentials, PII, local paths, and optional high-entropy findings in scanned text fields | Signed placeholders and stable path aliases replace detected values | Verified values reappear in client-visible answers and recognized structured tool arguments |
 
 ### What makes APG different
 
 - **Transparent protection** — the model works with stable placeholders; the
-  user receives authorized values back without manually decoding them.
-- **Local control plane** — provider credentials, protected-value mappings,
-  detector configuration, audit records, and optional models stay on the
-  machine.
+  local Agent client receives validated values back without manually decoding them.
+- **Local control plane** — provider credentials are configured locally and
+  used only for upstream authentication rather than returned to the Agent;
+  mappings, detector configuration, audit records, and optional models stay on
+  the machine.
 - **Defense against placeholder spoofing** — materialization checks signature,
-  session, workspace, mapping state, expiry, revocation, and sink.
+  session, workspace, mapping state, expiry, revocation, and response-field class.
 - **Inspectable behavior** — dry-run detectors, review protected mappings, and
   audit every replacement and restoration without storing raw values in logs.
 
 ## 🛡️ How it works
 
 APG handles both directions locally. Before a request leaves the device, it
-detects sensitive values and replaces them with signed placeholders or stable
-path aliases. When the model response returns, APG verifies those placeholders
-and restores the original values only in authorized local responses or
-structured tool arguments. The cloud model only works with the placeholders.
+walks supported textual JSON fields, detects sensitive values, and replaces
+them with signed placeholders or stable path aliases. When the model response
+returns, APG treats ordinary response text as `local_user` and recognized
+structured tool-call argument fields as `local_tool`, validates handles, and
+restores their local mappings before returning the response to the Agent. These
+labels describe protocol locations; APG does not approve or execute the tool.
 
 Given this local input:
 
@@ -138,7 +142,7 @@ Email <APG:v1:pii:...>, open /workspace/project-hash,
 and use key <APG:v1:secret:...>.
 ```
 
-After the model returns the placeholders, the authorized local result is:
+After the model returns the placeholders, the client-visible local result is:
 
 ```text
 Email alice@example.test, open /Users/alice/private/project,
@@ -146,9 +150,15 @@ and use key sk-example-not-a-real-key.
 ```
 
 If the model needs a protected value, it keeps the placeholder unchanged. APG
-verifies the placeholder and restores the original only in the authorized local
-response or decoded structured tool argument. Raw values are never restored
-into upstream/model-visible traffic.
+verifies the placeholder and restores the original in ordinary local response
+text or a recognized decoded structured tool argument. A later request is
+scanned again before it can reach the model.
+
+This contract covers supported textual JSON and SSE fields. Protocol identifiers
+and opaque multimodal payload fields such as `image_url`, `file_data`, audio, and
+image blocks are deliberately passed through unchanged to avoid corrupting the
+wire format. APG therefore does not claim complete request-wide or multimodal
+data-loss prevention.
 
 ## ⚡ Quick Start
 
@@ -251,7 +261,9 @@ into another protocol.
 
 Risk levels are audit metadata. They do not change how protected data is
 replaced; enforcement remains in the policy, mapping, placeholder, and
-materialization layers.
+materialization layers. A detector finding whose suggested action is `block`
+is currently replaced like other secret findings; it does not reject the whole
+upstream request.
 
 ### Control and observability
 
@@ -281,8 +293,9 @@ is disabled, and local model directories remain read-only.
 
 ## 🔒 Security boundary
 
-APG protects sensitive values in traffic that actually passes through APG. Its
-scope is intentionally narrower than a sandbox or endpoint security product.
+APG protects detected values in supported textual fields of traffic that
+actually passes through APG. Its scope is intentionally narrower than a DLP,
+sandbox, or endpoint security product.
 
 | APG does | APG does not |
 | --- | --- |
@@ -291,6 +304,11 @@ scope is intentionally narrower than a sandbox or endpoint security product.
 | Validate signed placeholders before local restoration | Control destinations contacted by locally executed tools |
 | Keep mappings, configuration, models, and audit state local | Replace a secrets manager, network policy, EDR, or OS sandbox |
 | Record sanitized replacement/restoration operations | Make a remotely exposed management endpoint safe |
+
+Scanning is limited to supported textual protocol fields. Opaque multimodal
+payloads and protocol identifiers pass through unchanged. Structured tool-call
+arguments are classified by their response shape; APG does not verify that the
+named tool is local, permitted, or safe before restoring a valid handle.
 
 The management API and WebUI intentionally have **no application-layer
 authentication**. They must remain loopback-only. Never publish port `8765`,
@@ -351,8 +369,9 @@ Local state defaults to `.apg/`:
 | `runtimes/` | Isolated model runtime |
 
 Secret-bearing files are created with restrictive permissions where supported.
-Place the state directory on encrypted storage and restrict access to the APG
-process user.
+Provider keys and active mapping values are stored locally in plaintext rather
+than encrypted by APG. Place the state directory on encrypted storage and
+restrict access to the APG process user.
 
 ## ✅ Validation
 

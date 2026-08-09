@@ -4,12 +4,12 @@ APG is a transparent OpenAI/Anthropic-compatible privacy proxy. It does **not** 
 
 ## What APG guarantees
 
-1. **Upstream redaction.** Any raw secret, PII, or sensitive local path that appears anywhere in the request JSON sent to a `/v1/*` endpoint is replaced with a signed placeholder or alias before forwarding to the upstream model. The cloud LLM never sees the raw value.
+1. **Supported textual-field redaction.** Detected secrets, PII, and sensitive local paths in supported request JSON strings are replaced before forwarding. Protocol identifiers and opaque multimodal fields such as `image_url`, `file_data`, audio, image, and screenshot blocks pass through unchanged; unknown formats can also be missed.
 2. **Transparent local response restoration.** If the model emits an exact valid APG placeholder in response text, APG restores the original value for the local user. A raw secret echoed directly by the model is still folded, and invalid, forged, expired, revoked, or cross-session placeholders fail closed.
-3. **Transparent tool-call materialization.** When the upstream LLM responds with structured `tool_calls[].function.arguments` (OpenAI) or `content[].tool_use.input` (Anthropic) fields that contain APG placeholders, APG parses the complete argument object, materializes placeholders **only inside decoded string values**, and serializes fresh JSON. The harness receives valid JSON containing the real credential and can execute the tool with it.
-4. **Fail-closed for malformed arguments.** Invalid argument JSON is never materialized through raw string replacement. Streaming responses return a protocol-native safe error and record `tool_argument_json_errors`; non-streaming responses return HTTP `502` with `APG_TOOL_ARGUMENTS_INVALID`.
+3. **Response-field-classified tool-call materialization.** When the upstream LLM responds with recognized Chat, Responses, or Anthropic tool-argument fields containing APG placeholders, APG materializes them before returning the response. JSON-object formats are decoded and re-serialized; Responses custom-tool text remains protocol text. The `local_tool` classification comes from field shape and is not a permission decision.
+4. **Fail-closed where structured JSON is required.** Invalid argument JSON is not materialized through raw string replacement on Chat, Anthropic, and non-streaming structured-object paths. Those paths return a protocol-native safe error or HTTP `502` with `APG_TOOL_ARGUMENTS_INVALID`. Responses streaming argument/input events are buffered and materialized as their native protocol text.
 5. **Fail-closed for forged placeholders.** Hallucinated or unsigned placeholders inside otherwise valid arguments are left intact rather than partially replaced; the harness will normally see a tool call that fails when the bogus value is used.
-6. **Per-session HMAC.** Placeholders carry `kind`, `handle_id`, `session_id`, `issued_at`, and a short HMAC over a workspace/session/policy scope. Materialization fails if the MAC, session, workspace, expiry, tombstone state, or sink policy does not match.
+6. **Session-bound HMAC.** Placeholders carry `kind`, `handle_id`, `session_id`, `issued_at`, and a short HMAC over workspace/session/policy-bound data. Materialization fails if the MAC, session, workspace, expiry, tombstone state, or response-field policy does not match.
 7. **Hierarchical path aliases.** Once a workspace path is aliased, descendant paths reuse that parent alias plus a relative suffix. This keeps remote tool context navigable while preserving session/workspace isolation and local restoration.
 
 ## What the harness owns
@@ -17,9 +17,10 @@ APG is a transparent OpenAI/Anthropic-compatible privacy proxy. It does **not** 
 Anything APG does not enforce is explicitly the harness' responsibility. Concretely:
 
 - **Tool permission.** Whether a particular tool may be invoked at all, by which model, in which mode.
+- **Tool locality.** APG does not prove that a recognized tool-call field will be executed locally; `local_tool` is only an internal field-class label.
 - **Domain routing.** Whether `tool_call.arguments` may bind to `https://api.openai.com` vs an attacker-controlled URL. APG does not inspect domains; it materializes the secret regardless of the destination.
 - **Outbound execution approval.** Whether the harness executes a materialized tool call, asks the user, or refuses. APG has no approval flow.
-- **Tool schema and semantic validation.** APG guarantees JSON syntax for supported structured tool calls; the harness still decides whether fields satisfy the selected tool's schema and whether their meaning is safe.
+- **Tool schema and semantic validation.** APG validates JSON syntax on native paths that require a decoded argument object; the harness still decides whether fields satisfy the selected tool's schema and whether their meaning is safe.
 - **Local file writes.** APG does not gate file writes. If a redacted view of `.env` is shown to the LLM and the LLM proposes writing it back, the harness (or the host VCS / editor) must prevent destructive whole-file overwrite of the original secret.
 - **Secret lifecycle and rotation.** APG's mapping store is a local runtime cache. Long-term secret storage, key rotation, and revocation live in the harness' keystore.
 - **Local response and trajectory retention.** A trusted client may record user-visible text or a tool argument after APG materializes it locally. APG protects upstream/model-visible traffic; the harness must apply its own retention and access policy to local responses and trajectories.
@@ -36,7 +37,7 @@ A cloud LLM under prompt injection can return a tool call that points the agent 
 
 ## Storage caveat
 
-To make materialization possible, the APG SQLite mapping store holds the raw secret value for the active session. The database file is created with mode `0600`. Operators must:
+To make materialization possible, the APG SQLite mapping store holds active raw values in plaintext. Provider credentials are likewise stored in the private launcher JSON. APG does not encrypt these files; it creates them with restrictive permissions where supported. Operators must:
 
 - Place `APG_DATABASE_PATH` on encrypted storage (FileVault, LUKS, etc.).
 - Restrict filesystem access to the user running APG.
@@ -49,17 +50,14 @@ APG retains raw mapping values locally by default so long-running agents do not 
 - `POST /v1/chat/completions` — OpenAI-compatible proxy
 - `POST /v1/responses` — non-streaming and statefully scanned streaming Responses proxy
 - `POST /v1/messages` — native Anthropic Messages proxy
-- `GET /v1/models` — passthrough models list
+- `GET /v1/models` — upstream model lookup normalized into a client-compatible list
 - `POST /v1/apg/detect` — dry-run detector inspection
-
-The previous `/v1/apg/capability/{assess,execute,approve}` endpoints, the `apg` `use_secret` MCP tool, and the `apg-approve`/`apg-secret` CLIs have been removed. Tool capability and approval flows now belong to the harness.
 
 ## Stable placeholders
 
 ```text
 <APG:v1:secret:secr_abc123:sess_abcd:1710000000:mac>
 <APG:v1:pii:pii_abc123:sess_abcd:1710000000:mac>
-<APG:v1:path:path_abc123:sess_abcd:1710000000:mac>
 ```
 
 The harness should not need to handle `<APG:v1:...>` markers itself. In normal response text, APG has already restored valid same-session placeholders and folded invalid ones. Inside materialized `tool_call.arguments`, valid placeholders have likewise been replaced with raw values before the harness proceeds.
