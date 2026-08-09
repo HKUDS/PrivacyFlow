@@ -30,6 +30,10 @@
   <a href="#-documentation">Docs</a>
 </p>
 
+<p align="center">
+  <img src="docs/agent-privacy-gateway-architecture.png" width="100%" alt="Agent Privacy Gateway architecture: sensitive values are replaced locally before cloud upload and restored in conversations and tool-use arguments so the Agent keeps working normally">
+</p>
+
 ## Why APG?
 
 When users rely on agents for real work, they often need those agents to read
