@@ -22,6 +22,38 @@ class EmptyUpstream:
         return 200, {"content-type": "application/json"}, {"choices": [{"message": {"content": "ok"}}]}
 
 
+def test_gateway_rejects_all_agent_requests_when_key_set_is_empty(tmp_path) -> None:
+    cfg = GatewayConfig(
+        database_path=str(tmp_path / "state.sqlite3"),
+        audit_log_path=str(tmp_path / "audit.jsonl"),
+        signing_secret="secret",
+        local_api_keys=set(),
+        upstream=UpstreamConfig(api_key="provider-key"),
+    )
+    with TestClient(create_app(cfg, EmptyUpstream())) as client:
+        response = client.post(
+            "/v1/chat/completions",
+            headers={"Authorization": "Bearer arbitrary"},
+            json={"messages": [{"content": "hello"}]},
+        )
+    assert response.status_code == 401
+
+
+def test_non_loopback_admin_bind_warns_without_crashing(tmp_path) -> None:
+    cfg = GatewayConfig(
+        bind_host="0.0.0.0",
+        database_path=str(tmp_path / "state.sqlite3"),
+        audit_log_path=str(tmp_path / "audit.jsonl"),
+        signing_secret="secret",
+        local_api_keys={"local"},
+        upstream=UpstreamConfig(api_key="provider-key"),
+    )
+    with pytest.warns(RuntimeWarning, match="without authentication"):
+        app = create_app(cfg, EmptyUpstream())
+    with TestClient(app) as client:
+        assert client.get("/api/admin/overview").status_code == 200
+
+
 def test_explicit_session_is_bound_to_local_api_key(tmp_path) -> None:
     manager = SessionManager(str(tmp_path / "sessions.sqlite3"))
     session_id = manager.session_for_key("key-a")

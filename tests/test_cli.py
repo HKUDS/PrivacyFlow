@@ -13,13 +13,11 @@ from gateway.cli import (
     delete_launcher_upstream_profile,
     normalize_upstream_base_url,
     prepare_launcher_config,
-    save_launcher_upstream_configuration,
     save_launcher_upstream_profile,
 )
 from gateway.cli.launcher import terminal_hyperlink
 from gateway.upstream_protocol import (
     ANTHROPIC_MESSAGES,
-    DEFAULT_UPSTREAM_PROTOCOLS,
     OPENAI_CHAT_COMPLETIONS,
     OPENAI_RESPONSES,
 )
@@ -70,7 +68,6 @@ def test_first_start_creates_private_reusable_config_without_prompting_for_upstr
     assert config["_resolved_upstream_protocol"] == ""
     assert config["_launcher_config_path"] == str(path.resolve())
     assert config["local_api_key"].startswith("apg_local_")
-    assert "admin_api_key" not in config
     assert config["upstream_profiles"] == []
     assert config["active_upstream_profile_id"] == ""
     assert config["strip_local_v1"] is True
@@ -92,7 +89,14 @@ def test_saved_webui_upstream_key_is_private_and_reused(tmp_path: Path) -> None:
     path = tmp_path / ".apg" / "launcher.json"
     prepare_launcher_config(path, environ={})
 
-    save_launcher_upstream_configuration(path, "anthropic", "https://api.example.com/anthropic/", "saved-provider-key")
+    save_launcher_upstream_profile(
+        path,
+        profile_id="",
+        name="Anthropic",
+        protocol=ANTHROPIC_MESSAGES,
+        base_url="https://api.example.com/anthropic/",
+        api_key="saved-provider-key",
+    )
 
     assert os.stat(path).st_mode & 0o777 == 0o600
     stored = json.loads(path.read_text(encoding="utf-8"))
@@ -113,7 +117,7 @@ def test_environment_overrides_launcher_defaults_without_persisting_provider_key
         environ={
             "APG_UPSTREAM_BASE_URL": "https://environment.example/v1",
             "APG_UPSTREAM_API_KEY": "ephemeral-provider-key",
-            "APG_UPSTREAM_PROTOCOL": "anthropic",
+            "APG_UPSTREAM_PROTOCOL": ANTHROPIC_MESSAGES,
         },
     )
     stored = json.loads(path.read_text(encoding="utf-8"))
@@ -122,16 +126,15 @@ def test_environment_overrides_launcher_defaults_without_persisting_provider_key
     environment = {
         "APG_UPSTREAM_BASE_URL": "https://environment.example/v1",
         "APG_UPSTREAM_API_KEY": "environment-wins",
-        "APG_UPSTREAM_PROTOCOL": "anthropic",
+        "APG_UPSTREAM_PROTOCOL": ANTHROPIC_MESSAGES,
         "APG_LOCAL_API_KEYS": "custom-local-key",
     }
     config["_resolved_upstream_api_key"] = environment["APG_UPSTREAM_API_KEY"]
     apply_launcher_environment(config, environ=environment)
     assert environment["APG_UPSTREAM_API_KEY"] == "environment-wins"
     assert environment["APG_UPSTREAM_BASE_URL"] == "https://environment.example/v1"
-    assert environment["APG_UPSTREAM_PROTOCOL"] == "anthropic"
+    assert environment["APG_UPSTREAM_PROTOCOL"] == ANTHROPIC_MESSAGES
     assert environment["APG_LOCAL_API_KEYS"] == "custom-local-key"
-    assert "APG_ADMIN_API_KEYS" not in environment
     assert environment["APG_UPSTREAM_STRIP_LOCAL_V1"] == "true"
     assert environment["APG_LAUNCHER_CONFIG_PATH"] == str(path.resolve())
 
@@ -153,56 +156,6 @@ def test_environment_overrides_launcher_defaults_without_persisting_provider_key
 def test_upstream_base_url_rejects_unsafe_or_incomplete_values(value: str) -> None:
     with pytest.raises(LauncherConfigError):
         normalize_upstream_base_url(value)
-
-
-def test_existing_launcher_connection_migrates_to_openai_chat_completions_protocol(tmp_path: Path) -> None:
-    path = tmp_path / ".apg" / "launcher.json"
-    path.parent.mkdir()
-    path.write_text(
-        json.dumps(
-            {
-                "upstream_base_url": "https://api.example.com/v1",
-                "upstream_api_key": "provider-key",
-            }
-        ),
-        encoding="utf-8",
-    )
-
-    config = prepare_launcher_config(path, environ={})
-
-    assert config["_resolved_upstream_protocol"] == OPENAI_CHAT_COMPLETIONS
-    stored = json.loads(path.read_text(encoding="utf-8"))
-    assert stored["upstream_profiles"][0]["protocol"] == OPENAI_CHAT_COMPLETIONS
-    assert "upstream_protocol" not in stored
-
-
-@pytest.mark.parametrize(
-    ("legacy", "canonical"),
-    [
-        ("openai", OPENAI_CHAT_COMPLETIONS),
-        ("anthropic", ANTHROPIC_MESSAGES),
-    ],
-)
-def test_existing_legacy_protocol_is_migrated(tmp_path: Path, legacy: str, canonical: str) -> None:
-    path = tmp_path / ".apg" / "launcher.json"
-    path.parent.mkdir()
-    path.write_text(
-        json.dumps(
-            {
-                "upstream_protocol": legacy,
-                "upstream_base_url": "https://api.example.com",
-                "upstream_api_key": "provider-key",
-            }
-        ),
-        encoding="utf-8",
-    )
-
-    config = prepare_launcher_config(path, environ={})
-
-    assert config["_resolved_upstream_protocol"] == canonical
-    stored = json.loads(path.read_text(encoding="utf-8"))
-    assert stored["upstream_profiles"][0]["protocol"] == canonical
-    assert "upstream_protocol" not in stored
 
 
 def test_multiple_upstream_profiles_can_be_saved_activated_and_deleted(tmp_path: Path) -> None:
@@ -247,7 +200,7 @@ def test_multiple_upstream_profiles_can_be_saved_activated_and_deleted(tmp_path:
     assert stored["active_upstream_profile_id"] == second["id"]
 
 
-def test_upstream_profile_migrates_single_protocol_and_normalizes_full_endpoint(tmp_path: Path) -> None:
+def test_upstream_profile_normalizes_protocols_and_full_endpoint(tmp_path: Path) -> None:
     path = tmp_path / ".apg" / "launcher.json"
     path.parent.mkdir(parents=True)
     path.write_text(
@@ -257,34 +210,33 @@ def test_upstream_profile_migrates_single_protocol_and_normalizes_full_endpoint(
                 "local_api_key": "local-key",
                 "upstream_profiles": [
                     {
-                        "id": "legacy",
-                        "name": "Legacy",
+                        "id": "profile-one",
+                        "name": "Profile one",
                         "protocol": OPENAI_RESPONSES,
                         "base_url": "https://provider.example/api/v1",
                         "api_key": "provider-key",
                     }
                 ],
-                "active_upstream_profile_id": "legacy",
+                "active_upstream_profile_id": "profile-one",
             }
         ),
         encoding="utf-8",
     )
 
     prepared = prepare_launcher_config(path, environ={})
-    assert prepared["upstream_profiles"][0]["protocols"] == list(DEFAULT_UPSTREAM_PROTOCOLS)
+    assert "protocols" not in prepared["upstream_profiles"][0]
     assert prepared["upstream_profiles"][0]["endpoint_overrides"] == {}
 
     saved = save_launcher_upstream_profile(
         path,
-        profile_id="legacy",
+        profile_id="profile-one",
         name="Multi format",
         protocol=OPENAI_CHAT_COMPLETIONS,
-        protocols=[OPENAI_CHAT_COMPLETIONS, OPENAI_RESPONSES],
         base_url="https://provider.example/api/v1/chat/completions",
         api_key="",
         endpoint_overrides={OPENAI_RESPONSES: "https://responses.example/custom/responses"},
     )
-    assert saved["protocols"] == list(DEFAULT_UPSTREAM_PROTOCOLS)
+    assert "protocols" not in saved
     assert saved["base_url"] == "https://provider.example/api/v1"
     assert saved["endpoint_overrides"] == {
         OPENAI_RESPONSES: "https://responses.example/custom/responses"

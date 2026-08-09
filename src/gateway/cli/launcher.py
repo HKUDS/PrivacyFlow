@@ -12,7 +12,6 @@ from typing import Any
 from urllib.parse import urlparse, urlsplit, urlunparse
 
 from gateway.upstream_protocol import (
-    DEFAULT_UPSTREAM_PROTOCOLS,
     OPENAI_CHAT_COMPLETIONS,
     SUPPORTED_UPSTREAM_PROTOCOLS,
     UPSTREAM_PROTOCOL_ENDPOINTS,
@@ -22,6 +21,13 @@ from gateway.upstream_protocol import (
 
 DEFAULT_LAUNCHER_PATH = Path(".apg/launcher.json")
 DEFAULT_UPSTREAM_PROFILE_NAME = "默认配置"
+PERSISTED_LAUNCHER_KEYS = {
+    "signing_secret",
+    "local_api_key",
+    "strip_local_v1",
+    "upstream_profiles",
+    "active_upstream_profile_id",
+}
 
 
 class LauncherConfigError(RuntimeError):
@@ -95,14 +101,15 @@ def prepare_launcher_config(
     if not config.get("local_api_key"):
         config["local_api_key"] = generate_local_api_key()
         changed = True
-    if "admin_api_key" in config:
-        config.pop("admin_api_key", None)
-        changed = True
     if "strip_local_v1" not in config:
         config["strip_local_v1"] = True
         changed = True
     profiles, active_profile_id, profiles_changed = _normalize_upstream_profiles(config)
     changed = changed or profiles_changed
+    changed = changed or any(
+        key not in PERSISTED_LAUNCHER_KEYS and not key.startswith("_")
+        for key in config
+    )
 
     active_profile = next((profile for profile in profiles if profile["id"] == active_profile_id), None)
     provider_key = environment.get("APG_UPSTREAM_API_KEY", "").strip() or str(
@@ -166,46 +173,6 @@ def save_launcher_local_api_key(path: Path, api_key: str) -> str:
     return normalized
 
 
-def save_launcher_upstream_api_key(path: Path, api_key: str) -> None:
-    config = prepare_launcher_config(path, environ={})
-    active = next(
-        (
-            profile
-            for profile in config["upstream_profiles"]
-            if profile["id"] == config["active_upstream_profile_id"]
-        ),
-        None,
-    )
-    save_launcher_upstream_profile(
-        path,
-        profile_id=str((active or {}).get("id", "")),
-        name=str((active or {}).get("name") or DEFAULT_UPSTREAM_PROFILE_NAME),
-        protocol=str((active or {}).get("protocol", "")),
-        protocols=(active or {}).get("protocols"),
-        base_url=str((active or {}).get("base_url", "")),
-        api_key=api_key,
-        endpoint_overrides=(active or {}).get("endpoint_overrides"),
-    )
-
-
-def save_launcher_upstream_configuration(path: Path, protocol: str, base_url: str, api_key: str) -> tuple[str, str, str]:
-    config = prepare_launcher_config(path, environ={})
-    active_id = str(config.get("active_upstream_profile_id", ""))
-    active = next(
-        (profile for profile in config["upstream_profiles"] if profile["id"] == active_id),
-        None,
-    )
-    profile = save_launcher_upstream_profile(
-        path,
-        profile_id=active_id,
-        name=str((active or {}).get("name") or DEFAULT_UPSTREAM_PROFILE_NAME),
-        protocol=protocol,
-        base_url=base_url,
-        api_key=api_key,
-    )
-    return str(profile["protocol"]), str(profile["base_url"]), str(profile["api_key"])
-
-
 def save_launcher_upstream_profile(
     path: Path,
     *,
@@ -214,12 +181,10 @@ def save_launcher_upstream_profile(
     protocol: str,
     base_url: str,
     api_key: str,
-    protocols: Sequence[str] | None = None,
     endpoint_overrides: Mapping[str, str] | None = None,
     proxy: str | None = None,
 ) -> dict[str, Any]:
     normalized_protocol = normalize_upstream_protocol(protocol)
-    normalized_protocols = list(DEFAULT_UPSTREAM_PROTOCOLS)
     normalized_base_url = normalize_upstream_base_url(base_url)
     normalized_overrides = normalize_upstream_endpoint_overrides(endpoint_overrides or {})
     normalized_name = normalize_upstream_profile_name(name)
@@ -239,7 +204,6 @@ def save_launcher_upstream_profile(
         "id": resolved_id,
         "name": normalized_name,
         "protocol": normalized_protocol,
-        "protocols": normalized_protocols,
         "base_url": normalized_base_url,
         "api_key": normalized_key,
         "endpoint_overrides": normalized_overrides,
@@ -319,17 +283,6 @@ def normalize_upstream_protocol(protocol: str) -> str:
     return normalized
 
 
-def normalize_upstream_protocols(protocols: Sequence[str]) -> list[str]:
-    normalized: list[str] = []
-    for protocol in protocols:
-        value = normalize_upstream_protocol(str(protocol))
-        if value not in normalized:
-            normalized.append(value)
-    if not normalized:
-        raise LauncherConfigError("Select at least one upstream API format.")
-    return normalized
-
-
 def normalize_upstream_base_url(base_url: str) -> str:
     normalized = _validate_upstream_url(base_url)
     parsed = urlparse(normalized)
@@ -389,7 +342,6 @@ def _normalize_upstream_profiles(config: dict[str, Any]) -> tuple[list[dict[str,
                 continue
             profile_id = str(raw.get("id") or f"up_{secrets.token_urlsafe(12)}")
             name = str(raw.get("name") or f"配置 {index + 1}")
-            protocols = list(DEFAULT_UPSTREAM_PROTOCOLS)
             protocol = canonical_upstream_protocol(str(raw.get("protocol", "")))
             if protocol not in SUPPORTED_UPSTREAM_PROTOCOLS:
                 protocol = OPENAI_CHAT_COMPLETIONS
@@ -407,7 +359,6 @@ def _normalize_upstream_profiles(config: dict[str, Any]) -> tuple[list[dict[str,
                 "id": profile_id,
                 "name": name,
                 "protocol": protocol,
-                "protocols": protocols,
                 "base_url": str(raw.get("base_url", "")).rstrip("/"),
                 "api_key": str(raw.get("api_key", "")).strip(),
                 "endpoint_overrides": endpoint_overrides,
@@ -417,36 +368,11 @@ def _normalize_upstream_profiles(config: dict[str, Any]) -> tuple[list[dict[str,
                 changed = True
             profiles.append(profile)
     else:
-        legacy_base_url = str(config.get("upstream_base_url", "")).rstrip("/")
-        legacy_api_key = str(config.get("upstream_api_key", "")).strip()
-        legacy_protocol = canonical_upstream_protocol(
-            str(
-                config.get("upstream_protocol")
-                or (OPENAI_CHAT_COMPLETIONS if legacy_base_url or legacy_api_key else "")
-            )
-        )
-        if legacy_base_url or legacy_api_key:
-            profiles.append(
-                {
-                    "id": f"up_{secrets.token_urlsafe(12)}",
-                    "name": DEFAULT_UPSTREAM_PROFILE_NAME,
-                    "protocol": legacy_protocol,
-                    "protocols": list(DEFAULT_UPSTREAM_PROTOCOLS),
-                    "base_url": legacy_base_url,
-                    "api_key": legacy_api_key,
-                    "endpoint_overrides": {},
-                    "proxy": str(config.get("upstream_proxy", "")).strip(),
-                }
-            )
         changed = True
     active_id = str(config.get("active_upstream_profile_id", ""))
     if not any(profile["id"] == active_id for profile in profiles):
         active_id = str(profiles[0]["id"]) if profiles else ""
         changed = True
-    for key in ("upstream_protocol", "upstream_base_url", "upstream_api_key", "upstream_proxy"):
-        if key in config:
-            config.pop(key, None)
-            changed = True
     config["upstream_profiles"] = profiles
     config["active_upstream_profile_id"] = active_id
     return profiles, active_id, changed
@@ -465,7 +391,7 @@ def _read_launcher_config(path: Path) -> dict[str, Any]:
 
 
 def _persistent_launcher_config(config: Mapping[str, Any]) -> dict[str, Any]:
-    return {key: value for key, value in config.items() if not key.startswith("_")}
+    return {key: config[key] for key in PERSISTED_LAUNCHER_KEYS if key in config}
 
 
 def _write_launcher_config(path: Path, config: Mapping[str, Any]) -> None:

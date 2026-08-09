@@ -32,6 +32,11 @@ _TERMINAL_API_PATHS = (
 )
 
 
+def _is_json_content_type(value: str) -> bool:
+    media_type = value.split(";", 1)[0].strip().lower()
+    return media_type == "application/json" or media_type.endswith("+json")
+
+
 def _terminal_api_path(path: str) -> str:
     normalized = path.rstrip("/")
     return next((suffix for suffix in _TERMINAL_API_PATHS if normalized.endswith(suffix)), "")
@@ -124,7 +129,7 @@ class UpstreamClient:
         client = self._get_client()
         resp = await client.request(method, self.resolve_upstream_url(upstream_path), headers=headers, json=payload)
         content_type = resp.headers.get("content-type", "")
-        if "application/json" in content_type:
+        if _is_json_content_type(content_type):
             try:
                 body: Any = resp.json()
             except (json.JSONDecodeError, UnicodeDecodeError):

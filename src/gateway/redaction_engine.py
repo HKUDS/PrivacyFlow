@@ -5,7 +5,6 @@ import copy
 import json
 import re
 import secrets
-import time
 from collections import Counter
 from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
@@ -16,7 +15,7 @@ from gateway.mapping_store import MappingRecord, MappingStore
 from gateway.materialization_engine import MaterializationEngine
 from gateway.models import Detection
 from gateway.path_alias_manager import PathAliasManager
-from gateway.placeholder_parser import PlaceholderSigner
+from gateway.placeholder_parser import PLACEHOLDER_RE, ParsedPlaceholder, PlaceholderSigner
 from gateway.policy_engine import PolicyEngine
 
 PROTOCOL_KEYS = {
@@ -427,7 +426,8 @@ class BalancedStreamScanner:
         return prefix + PROTECTED_VALUE, [*events, self._fold_event("stream_pending_limit")]
 
     def _consume_discard(self, text: str) -> tuple[str, list[dict[str, Any]]]:
-        assert self.discard_mode is not None
+        if self.discard_mode is None:
+            raise RuntimeError("_consume_discard called without discard_mode set")
         if self.discard_mode == "apg":
             end = text.find(">")
             remainder = text[end + 1 :] if end >= 0 else None
@@ -523,14 +523,6 @@ class RedactionEngine:
         # largest fixed cost, and it is recomputed on every call when mappings
         # have not changed.
         self._path_mapping_cache: dict[tuple[str, str], tuple[int, PathMapping]] = {}
-        # Cached signed placeholders per (kind, handle, session). Reusing the
-        # same placeholder string for the same protected value keeps the
-        # sanitized request content stable across messages; a fresh per-issue
-        # timestamp would change the request every turn and defeat DeepSeek's
-        # prompt cache, forcing a full prefill of the conversation prefix.
-        # Materialization still validates signature, session, and mapping state
-        # (revocation/expiry) at restore time, and no caller applies an age cap.
-        self._placeholder_cache: dict[tuple[str, str, str], str] = {}
         # Which mapping kinds the active detector configuration can produce,
         # cached per DetectorManager instance (the server swaps it on config
         # activate). The known-value merge re-protects only these kinds so a
@@ -587,14 +579,27 @@ class RedactionEngine:
         fold_apg_markers: bool = True,
         source_kind: str = "text",
     ) -> tuple[str, list[dict[str, Any]]]:
+        marker_events: list[dict[str, Any]] = []
+        protected_marker_spans: list[tuple[int, int]] = []
+        if scope != "response":
+            text, marker_events, protected_marker_spans = self._canonicalize_request_placeholders(text, session_id)
         detections = self.detector_manager.scan(text, kind=source_kind)
+        if protected_marker_spans:
+            detections = [
+                detection
+                for detection in detections
+                if not any(
+                    detection.span_start < end and start < detection.span_end
+                    for start, end in protected_marker_spans
+                )
+            ]
         if scope != "response":
             detections = self._merge_known_value_detections(text, detections, session_id)
         if not detections:
-            return text, []
+            return text, marker_events
         out: list[str] = []
         cursor = 0
-        events: list[dict[str, Any]] = []
+        events: list[dict[str, Any]] = list(marker_events)
         active_paths_for_aliasing: list[str] | None = None
         for det in detections:
             out.append(text[cursor:det.span_start])
@@ -619,7 +624,7 @@ class RedactionEngine:
                 out.append(raw)
                 cursor = det.span_end
                 continue
-            if fold_apg_markers and (det.type == "APG_MARKER" or det.subtype in {"signed_placeholder", "redaction_marker"}) and scope == "response":
+            if fold_apg_markers and (det.type == "APG_MARKER" or det.subtype in {"signed_placeholder", "redaction_marker"}):
                 replacement = "APG-managed protected value"
                 events.append(
                     {
@@ -693,9 +698,9 @@ class RedactionEngine:
                     materialization_class=materialization_class,
                 )
                 placeholder_kind = "pii" if det.type == "pii" and decision.action == "pseudonymize" else mapping_kind
-                replacement = self._issue_placeholder(placeholder_kind, rec.handle_id, session_id)
+                replacement = self._issue_placeholder(placeholder_kind, rec)
                 parsed = self.signer.parse(replacement)
-                issued_at = parsed[0].issued_at if parsed else int(time.time())
+                issued_at = parsed[0].issued_at if parsed else rec.created_at
                 representation_type = "signed_placeholder"
             event = {
                 "type": det.type,
@@ -799,28 +804,84 @@ class RedactionEngine:
         self._supported_kinds_cache = (self.detector_manager, result)
         return result
 
-    def _issue_placeholder(self, kind: str, handle_id: str, session_id: str) -> str:
-        """Issue a signed placeholder, reusing one string per protected value.
+    def _issue_placeholder(self, kind: str, record: MappingRecord) -> str:
+        """Derive the canonical placeholder from durable mapping fields."""
+        return self.signer.issue(kind, record.handle_id, record.session_id, record.created_at)
 
-        A placeholder embeds an issuance timestamp and MAC, so issuing a fresh
-        one for the same value on every request makes the sanitized request
-        differ between messages and defeats DeepSeek's prompt cache after the
-        first changed placeholder. Reusing the cached string keeps the prefix
-        stable; materialization still validates the signature, session, and
-        mapping state (revocation/expiry) when the value is restored, and the
-        age cap is not applied by any caller.
+    def _canonicalize_request_placeholders(
+        self,
+        text: str,
+        session_id: str,
+    ) -> tuple[str, list[dict[str, Any]], list[tuple[int, int]]]:
+        """Preserve valid handles and fold invalid ones before generic detection.
+
+        A signed placeholder is a protocol object, not another secret value.
+        Passing it through generic detection used to wrap valid handles in a
+        second mapping. Canonical handles use the mapping creation timestamp,
+        which keeps their representation stable across process restarts.
         """
-        key = (kind, handle_id, session_id)
-        cached = self._placeholder_cache.get(key)
-        if cached is not None:
-            return cached
-        placeholder = self.signer.issue(kind, handle_id, session_id)
-        if len(self._placeholder_cache) >= 10_000:
-            # Bound memory. Clearing re-issues fresh placeholders (one
-            # cache-miss turn) but prevents unbounded growth across sessions.
-            self._placeholder_cache = {}
-        self._placeholder_cache[key] = placeholder
-        return placeholder
+        matches = list(PLACEHOLDER_RE.finditer(text))
+        if not matches:
+            return text, [], []
+        out: list[str] = []
+        events: list[dict[str, Any]] = []
+        protected_spans: list[tuple[int, int]] = []
+        cursor = 0
+        output_length = 0
+        for match in matches:
+            prefix = text[cursor:match.start()]
+            out.append(prefix)
+            output_length += len(prefix)
+            placeholder = ParsedPlaceholder(
+                raw=match.group(0),
+                kind=match.group("kind"),
+                handle_id=match.group("handle"),
+                session_id=match.group("session"),
+                issued_at=int(match.group("issued")),
+                mac=match.group("mac"),
+            )
+            record: MappingRecord | None = None
+            result_code = "APG_PLACEHOLDER_INVALID_MAC"
+            valid = self.signer.is_valid(placeholder)
+            if valid:
+                valid, record, result_code = self.mapping_store.validate_active(
+                    placeholder.handle_id,
+                    session_id,
+                    self.workspace_id,
+                )
+                if valid and placeholder.session_id != session_id:
+                    valid = False
+                    result_code = "APG_PLACEHOLDER_SCOPE_MISMATCH"
+                if valid and record is not None and placeholder.kind != record.kind:
+                    valid = False
+                    result_code = "APG_PLACEHOLDER_POLICY_MISMATCH"
+            if valid and record is not None:
+                replacement = self._issue_placeholder(placeholder.kind, record)
+                start = output_length
+                out.append(replacement)
+                output_length += len(replacement)
+                protected_spans.append((start, output_length))
+                action = "preserve" if replacement == placeholder.raw else "canonicalize"
+                result_code = "OK"
+            else:
+                replacement = "APG-managed protected value"
+                out.append(replacement)
+                output_length += len(replacement)
+                action = "fold"
+            events.append(
+                {
+                    "type": "APG_MARKER",
+                    "subtype": "signed_placeholder",
+                    "detector": "placeholder_parser",
+                    "risk": "high",
+                    "action": action,
+                    "result_code": result_code,
+                    "safe_preview": "<APG:...>",
+                }
+            )
+            cursor = match.end()
+        out.append(text[cursor:])
+        return "".join(out), events, protected_spans
 
     def _merge_known_value_detections(
         self,
@@ -923,10 +984,6 @@ class RedactionEngine:
 
         return walk(copy.deepcopy(data)), events
 
-    def materialize_local_json(self, data: Any, session_id: str) -> Any:
-        materialized, _ = self.materialize_local_json_with_events(data, session_id)
-        return materialized
-
     def materialize_local_text(self, text: str, session_id: str) -> str:
         materialized, _ = self.materialize_local_text_with_events(text, session_id)
         return materialized
@@ -1028,9 +1085,6 @@ class RedactionEngine:
             return self.path_aliases.alias_for(best_parent) + best_suffix
         return self.path_aliases.alias_for(raw)
 
-    def active_path_aliases(self, session_id: str) -> list[str]:
-        return [alias for alias, _, _ in self._active_path_mapping(session_id)]
-
     @staticmethod
     def _placeholder_replace_key(ph: Any) -> str:
         """Return the text to replace when restoring a placeholder.
@@ -1086,10 +1140,6 @@ class RedactionEngine:
     def stream_requires_strict_buffering(self) -> bool:
         modules = self.detector_manager.hierarchical.flow.modules
         return any(module.enabled and not module.stream_safe for module in modules)
-
-    def materialize_local_tool_args(self, data: Any, session_id: str) -> Any:
-        materialized, _ = self.materialize_local_tool_args_with_events(data, session_id)
-        return materialized
 
     def materialize_local_tool_arguments_json_with_events(
         self,

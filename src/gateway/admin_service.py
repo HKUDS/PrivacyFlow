@@ -315,7 +315,6 @@ class AdminService:
             "parse_errors": group["parse_errors"],
             "raw_values_included": include_raw,
             "details_available": bool(operations),
-            "legacy_summary_only": not operations,
             "details_truncated": bool(self.store.audit_operation_omitted_count(request_id, self.config.workspace_id) or group["operation_details_omitted"]),
             "omitted_count": self.store.audit_operation_omitted_count(request_id, self.config.workspace_id) + group["operation_details_omitted"],
             "replacements": replacements,

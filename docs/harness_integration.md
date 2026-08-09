@@ -21,7 +21,7 @@ Anything APG does not enforce is explicitly the harness' responsibility. Concret
 - **Outbound execution approval.** Whether the harness executes a materialized tool call, asks the user, or refuses. APG has no approval flow.
 - **Tool schema and semantic validation.** APG guarantees JSON syntax for supported structured tool calls; the harness still decides whether fields satisfy the selected tool's schema and whether their meaning is safe.
 - **Local file writes.** APG does not gate file writes. If a redacted view of `.env` is shown to the LLM and the LLM proposes writing it back, the harness (or the host VCS / editor) must prevent destructive whole-file overwrite of the original secret.
-- **Secret lifecycle and rotation.** APG's mapping store is a short-lived per-session cache. Long-term secret storage, key rotation, and revocation live in the harness' keystore.
+- **Secret lifecycle and rotation.** APG's mapping store is a local runtime cache. Long-term secret storage, key rotation, and revocation live in the harness' keystore.
 - **Local response and trajectory retention.** A trusted client may record user-visible text or a tool argument after APG materializes it locally. APG protects upstream/model-visible traffic; the harness must apply its own retention and access policy to local responses and trajectories.
 
 ## Residual prompt-injection risk
@@ -42,13 +42,13 @@ To make materialization possible, the APG SQLite mapping store holds the raw sec
 - Restrict filesystem access to the user running APG.
 - Delete or rotate `.apg/state.sqlite3` between unrelated sessions.
 
-APG retains raw mapping values locally by default so long-running agents do not lose materialization capability. Administrators can enable a workspace-wide idle duration in the WebUI; expired mappings are then tombstoned with `value=NULL`, while manual revocation remains available at any time. The `state/gc.py` helper and regular tombstone sweeps only clear mappings with an active deadline.
+APG retains raw mapping values locally by default so long-running agents do not lose materialization capability. Administrators can enable a workspace-wide idle duration in the WebUI; expired mappings are then tombstoned with `value=NULL`, while manual revocation remains available at any time. Regular tombstone sweeps only clear mappings with an active deadline.
 
 ## Endpoint index
 
 - `POST /v1/chat/completions` — OpenAI-compatible proxy
 - `POST /v1/responses` — non-streaming and statefully scanned streaming Responses proxy
-- `POST /v1/messages` — Anthropic-compatible proxy (OpenAI ↔ Anthropic translation)
+- `POST /v1/messages` — native Anthropic Messages proxy
 - `GET /v1/models` — passthrough models list
 - `POST /v1/apg/detect` — dry-run detector inspection
 

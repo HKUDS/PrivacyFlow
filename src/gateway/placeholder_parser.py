@@ -11,7 +11,6 @@ PLACEHOLDER_RE = re.compile(r"<APG:v1:(?P<kind>[a-z_]+):(?P<handle>[^:<>]+):(?P<
 APG_PLACEHOLDER_FORMAT_EXAMPLES = (
     "<APG:v1:pii:...>",
     "<APG:v1:secret:...>",
-    "<APG_PII:handle>",
 )
 APG_PLACEHOLDER_FORMAT_EXAMPLE = APG_PLACEHOLDER_FORMAT_EXAMPLES[0]
 
@@ -52,7 +51,7 @@ class PlaceholderSigner:
         _require_no_delimiter(kind, "kind")
         _require_no_delimiter(handle_id, "handle_id")
         _require_no_delimiter(session_id, "session_id")
-        issued = int(issued_at or time.time())
+        issued = int(time.time()) if issued_at is None else int(issued_at)
         mac = self._mac(kind, handle_id, session_id, issued)
         return f"<APG:v1:{kind}:{handle_id}:{session_id}:{issued}:{mac}>"
 

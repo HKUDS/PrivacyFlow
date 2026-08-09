@@ -1274,12 +1274,8 @@ function renderAuditRequestDetail(detail) {
   if (detail.upstream_error_event) fields.push(["上游事件", detail.upstream_error_event]);
   if (upstreamTrace) fields.push(["上游请求标识", upstreamTrace]);
   let content = `<dl class="detail-grid">${fields.map(([key, value]) => `<dt>${escapeHtml(key)}</dt><dd>${escapeHtml(value)}</dd>`).join("")}</dl>`;
-  if (detail.legacy_summary_only) {
-    content += `<div class="audit-legacy-note"><strong>无逐项详情</strong><span>该请求来自旧版安全审计，只保留了汇总记录。</span></div>`;
-  } else {
-    content += renderOperationSection("上行替换", "UPSTREAM REPLACEMENTS", detail.replacements, "replacement");
-    content += renderOperationSection("本地还原", "LOCAL MATERIALIZATIONS", detail.materializations, "materialization");
-  }
+  content += renderOperationSection("上行替换", "UPSTREAM REPLACEMENTS", detail.replacements, "replacement");
+  content += renderOperationSection("本地还原", "LOCAL MATERIALIZATIONS", detail.materializations, "materialization");
   if (detail.materialization_failures.length || Object.keys(detail.failure_reasons || {}).length || detail.parse_errors) {
     content += renderAuditFailureSection(detail);
   }

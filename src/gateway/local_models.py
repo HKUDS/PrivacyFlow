@@ -1252,56 +1252,19 @@ class LocalModelService:
             return empty
         try:
             data = json.loads(self.state_path.read_text(encoding="utf-8"))
-        except (OSError, ValueError):
-            return empty
+        except OSError as exc:
+            raise LocalModelError("MODEL_STATE_READ_FAILED", "Could not read local model state") from exc
+        except ValueError as exc:
+            raise LocalModelError("MODEL_STATE_INVALID", "Local model state is not valid JSON") from exc
         if not isinstance(data, dict):
-            return empty
+            raise LocalModelError("MODEL_STATE_INVALID", "Local model state must be a JSON object")
+        if data.get("version") != STATE_VERSION:
+            raise LocalModelError("MODEL_STATE_VERSION_UNSUPPORTED", "Unsupported local model state version")
         manual = data.get("manual_models", [])
         records = data.get("records", {})
         if not isinstance(manual, list) or not isinstance(records, dict):
-            return empty
-        if data.get("version") == STATE_VERSION:
-            return {"version": STATE_VERSION, "manual_models": manual, "records": records}
-        if data.get("version") != 1:
-            return empty
-        migrated_manual: dict[str, dict[str, Any]] = {}
-        id_map: dict[str, str] = {}
-        for item in manual:
-            if not isinstance(item, dict) or not item.get("source"):
-                continue
-            source = str(item["source"])
-            model_id = local_model_id(source)
-            id_map[str(item.get("id", model_id))] = model_id
-            migrated_manual[source] = {
-                "id": model_id,
-                "source_type": str(item.get("source_type", "huggingface")),
-                "source": source,
-                "adapter_preference": str(item.get("adapter", "auto")),
-                "device_preference": str(item.get("device", "auto")),
-                "created_at": item.get("created_at", _now()),
-            }
-        migrated_records: dict[str, dict[str, Any]] = {}
-        for old_id, value in records.items():
-            if not isinstance(value, dict) or not value.get("source"):
-                continue
-            source = str(value["source"])
-            model_id = id_map.get(str(old_id), local_model_id(source))
-            migrated = dict(value)
-            migrated["adapter_preference"] = str(value.get("adapter", "auto"))
-            migrated["device_preference"] = str(value.get("device", "auto"))
-            migrated["resolved_adapter"] = str(value.get("adapter", ""))
-            migrated["resolved_device"] = str(value.get("device", ""))
-            if migrated.get("status") in {"installing", "dependencies_ready", "downloaded", "restart_required"}:
-                migrated["status"] = "not_prepared"
-            migrated_records[model_id] = migrated
-        state = {
-            "version": STATE_VERSION,
-            "manual_models": list(migrated_manual.values()),
-            "records": migrated_records,
-        }
-        self._state = state
-        self._persist_state()
-        return state
+            raise LocalModelError("MODEL_STATE_INVALID", "Local model state has invalid collections")
+        return {"version": STATE_VERSION, "manual_models": manual, "records": records}
 
     def _persist_state(self) -> None:
         self.state_path.parent.mkdir(parents=True, exist_ok=True)

@@ -177,26 +177,14 @@ class MappingStore:
             """
         )
         mapping_columns = {str(row["name"]) for row in self.conn.execute("PRAGMA table_info(mappings)").fetchall()}
-        if "tombstone_reason" not in mapping_columns:
-            self.conn.execute("ALTER TABLE mappings ADD COLUMN tombstone_reason TEXT NOT NULL DEFAULT ''")
-        now = int(time.time())
-        self.conn.execute(
-            """
-            INSERT OR IGNORE INTO mapping_retention_policies (
-              workspace_id, enabled, idle_ttl_seconds, revision, updated_at
-            )
-            SELECT DISTINCT workspace_id, 0, 86400, 0, ? FROM mappings WHERE workspace_id<>''
-            """,
-            (now,),
-        )
-        self.conn.execute(
-            """
-            UPDATE mappings SET idle_expires_at=0, max_expires_at=0
-            WHERE state='active' AND workspace_id IN (
-              SELECT workspace_id FROM mapping_retention_policies WHERE enabled=0
-            )
-            """
-        )
+        required_columns = {
+            "handle_id", "session_id", "workspace_id", "scope", "kind", "subtype",
+            "value", "fingerprint", "created_at", "last_seen_at", "idle_expires_at",
+            "max_expires_at", "state", "policy_hash", "materialization_class", "tombstone_reason",
+        }
+        if not required_columns <= mapping_columns:
+            self.conn.close()
+            raise RuntimeError("Unsupported APG mapping database schema. Remove the old local state before starting APG.")
         self.conn.commit()
 
     def mapping_retention_policy(self, workspace_id: str) -> MappingRetentionPolicy:
@@ -223,7 +211,8 @@ class MappingStore:
                     "SELECT * FROM mapping_retention_policies WHERE workspace_id=?",
                     (workspace_id,),
                 ).fetchone()
-        assert row is not None
+        if row is None:
+            raise RuntimeError(f"Mapping retention policy for workspace {workspace_id} not found after insert")
         return _row_to_retention_policy(row)
 
     def set_mapping_retention_policy(
@@ -279,7 +268,8 @@ class MappingStore:
                 "SELECT * FROM mapping_retention_policies WHERE workspace_id=?",
                 (workspace_id,),
             ).fetchone()
-        assert updated is not None
+        if updated is None:
+            raise RuntimeError(f"Mapping retention policy for workspace {workspace_id} not found after update")
         return _row_to_retention_policy(updated)
 
     def upsert_mapping(
@@ -687,20 +677,6 @@ class MappingStore:
                 (reason, handle_id),
             )
             self._write_generation += 1
-
-    def expire_request_scope(self) -> int:
-        now = int(time.time())
-        with self._lock, self.conn:
-            cur = self.conn.execute(
-                """
-                UPDATE mappings SET state='tombstoned', value=NULL, tombstone_reason='expired'
-                WHERE scope='request' AND idle_expires_at>0 AND idle_expires_at < ? AND state='active'
-                """,
-                (now,),
-            )
-            if cur.rowcount:
-                self._write_generation += 1
-            return cur.rowcount
 
     def tombstone_expired(self) -> int:
         now = int(time.time())

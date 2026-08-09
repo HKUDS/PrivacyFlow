@@ -431,9 +431,7 @@ input:focus, select:focus, textarea:focus { border-color: var(--green); box-shad
 .operation-metadata span { min-height: 20px; padding: 3px 6px; border-radius: 3px; color: var(--muted); background: #e9eeeb; overflow-wrap: anywhere; font-size: 9px; }
 .operation-metadata .mapping-id { color: var(--green-dark); background: var(--green-soft); font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
 .operation-state { display: block; margin-top: 8px; color: var(--coral); font-size: 9px; }
-.audit-operation-empty, .audit-legacy-note, .audit-truncated-note { padding: 12px; border: 1px dashed var(--line-strong); border-radius: 4px; color: var(--muted); background: var(--surface-soft); font-size: 10px; }
-.audit-legacy-note { margin-top: 20px; display: grid; gap: 4px; }
-.audit-legacy-note strong { color: var(--ink); }
+.audit-operation-empty, .audit-truncated-note { padding: 12px; border: 1px dashed var(--line-strong); border-radius: 4px; color: var(--muted); background: var(--surface-soft); font-size: 10px; }
 .audit-truncated-note { margin-top: 14px; color: #7d4806; background: var(--amber-soft); }
 .failure-section { border-top-color: #e8b2ad; }
 .failure-reason { min-height: 38px; padding: 8px 10px; border-left: 3px solid var(--coral); background: var(--coral-soft); display: flex; align-items: center; justify-content: space-between; gap: 12px; }
@@ -1635,7 +1633,6 @@ tbody tr:hover td { background: var(--surface-soft); }
 .retention-toggle-row strong { font-size: var(--fs-sm); font-weight: 600; }
 
 .audit-operation-empty,
-.audit-legacy-note,
 .audit-truncated-note {
   border-radius: var(--r-sm);
   color: var(--muted);

@@ -50,7 +50,10 @@ def _load_yaml(path: Path) -> dict[str, Any]:
     except ModuleNotFoundError as exc:  # pragma: no cover - install-time guard
         raise RuntimeError("PyYAML is required to load YAML config files") from exc
     with path.open("r", encoding="utf-8") as f:
-        return yaml.safe_load(f) or {}
+        value = yaml.safe_load(f) or {}
+    if not isinstance(value, dict):
+        raise RuntimeError("APG configuration root must be a YAML object. (APG_CONFIG_ROOT_INVALID)")
+    return value
 
 
 def load_config(path: str | None = None) -> GatewayConfig:
@@ -84,10 +87,19 @@ def load_config(path: str | None = None) -> GatewayConfig:
             "or 'anthropic_messages'. (APG_UPSTREAM_PROTOCOL_INVALID)"
         )
     keys = os.getenv("APG_LOCAL_API_KEYS")
-    local_api_keys = set(keys.split(",")) if keys else set(raw.get("local_api_keys", ["apg-local"]))
+    raw_keys = keys.split(",") if keys is not None else raw.get("local_api_keys", ["apg-local"])
+    if not isinstance(raw_keys, (list, tuple, set)):
+        raw_keys = [raw_keys]
+    local_api_keys = {str(key).strip() for key in raw_keys if str(key).strip()}
     signing_secret = os.getenv("APG_SIGNING_SECRET", raw.get("signing_secret", "dev-only-change-me"))
 
-    if "apg-local" in local_api_keys and not os.getenv("APG_LOCAL_API_KEYS"):
+    if not local_api_keys:
+        _warn_or_raise(
+            strict_mode,
+            "No local Agent API key is configured. Set APG_LOCAL_API_KEYS to at least one non-empty key.",
+            "APG_STRICT_LOCAL_KEY_EMPTY",
+        )
+    elif "apg-local" in local_api_keys and keys is None:
         _warn_or_raise(
             strict_mode,
             "Using default API key 'apg-local' under strict_mode=True. "

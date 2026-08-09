@@ -119,14 +119,14 @@ def test_stream_preserves_example_and_restores_real_placeholder(redactor) -> Non
     assert events + tail_events
 
 
-def test_stream_ignores_example_even_if_old_state_stored_it_as_a_secret(redactor) -> None:
-    session_id = "sess_reserved_old_state"
+def test_stream_ignores_example_even_if_mapping_contains_it(redactor) -> None:
+    session_id = "sess_reserved_example"
     redactor.mapping_store.upsert_mapping(
         session_id=session_id,
         workspace_id="ws",
         scope="request",
         kind="secret",
-        subtype="legacy_value",
+        subtype="reserved_example",
         value=APG_PLACEHOLDER_FORMAT_EXAMPLE,
         store_value=True,
         materialization_class="secret",
