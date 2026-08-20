@@ -71,8 +71,9 @@ class AuditOperationRecord:
 
 
 class MappingStore:
-    def __init__(self, path: str) -> None:
+    def __init__(self, path: str, namespace: str = "APG") -> None:
         self.path = path
+        self.namespace = namespace if namespace in {"PF", "APG"} else "APG"
         Path(path).parent.mkdir(parents=True, exist_ok=True)
         self.conn = sqlite3.connect(path, check_same_thread=False)
         self._lock = threading.RLock()
@@ -90,6 +91,9 @@ class MappingStore:
         # permissions; callers are responsible for placing the database in a
         # protected directory and, where appropriate, using disk encryption.
         self._tighten_sqlite_file_permissions(path)
+
+    def _code(self, suffix: str) -> str:
+        return f"{self.namespace}_{suffix}"
 
     def _tighten_sqlite_file_permissions(self, path: str) -> None:
         """Restrict every SQLite file to the owning user.
@@ -184,7 +188,10 @@ class MappingStore:
         }
         if not required_columns <= mapping_columns:
             self.conn.close()
-            raise RuntimeError("Unsupported APG mapping database schema. Remove the old local state before starting APG.")
+            raise RuntimeError(
+                f"Unsupported {('PrivacyFlow' if self.namespace == 'PF' else 'APG')} mapping database schema. "
+                f"Run '{'privacyflow' if self.namespace == 'PF' else 'apg'} migrate' for an older local state."
+            )
         self.conn.commit()
 
     def mapping_retention_policy(self, workspace_id: str) -> MappingRetentionPolicy:
@@ -634,14 +641,14 @@ class MappingStore:
         with self._lock, self.conn:
             rec = self.get(handle_id)
             if not rec:
-                return False, None, "APG_PLACEHOLDER_UNRESOLVED"
+                return False, None, self._code("PLACEHOLDER_UNRESOLVED")
             # Check tombstone state BEFORE scope check — tombstoned records
             # have their metadata cleared and would spuriously fail scope check
             if rec.state == "tombstoned":
-                code = "APG_PLACEHOLDER_EXPIRED" if rec.tombstone_reason == "expired" else "APG_PLACEHOLDER_TOMBSTONED"
+                code = self._code("PLACEHOLDER_EXPIRED") if rec.tombstone_reason == "expired" else self._code("PLACEHOLDER_TOMBSTONED")
                 return False, rec, code
             if rec.session_id != session_id or rec.workspace_id != workspace_id:
-                return False, rec, "APG_PLACEHOLDER_SCOPE_MISMATCH"
+                return False, rec, self._code("PLACEHOLDER_SCOPE_MISMATCH")
             expired = (
                 (rec.idle_expires_at > 0 and rec.idle_expires_at < now)
                 or (rec.max_expires_at > 0 and rec.max_expires_at < now)
@@ -651,7 +658,7 @@ class MappingStore:
                     "UPDATE mappings SET state='tombstoned', value=NULL, tombstone_reason='expired' WHERE handle_id=?",
                     (handle_id,),
                 )
-                return False, rec, "APG_PLACEHOLDER_EXPIRED"
+                return False, rec, self._code("PLACEHOLDER_EXPIRED")
             retention = self.mapping_retention_policy(workspace_id)
             if retention.enabled:
                 new_idle = now + retention.idle_ttl_seconds

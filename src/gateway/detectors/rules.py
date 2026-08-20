@@ -317,8 +317,8 @@ def _detector_name(rule: DetectionRule, default: str) -> str:
         return "rules.pii"
     if rule.id.startswith("secret."):
         return "rules.secrets"
-    if rule.id.startswith("apg."):
-        return "rules.apg_markers"
+    if rule.id.startswith(("pf.", "apg.")):
+        return "rules.pf_markers"
     return default
 
 
@@ -331,9 +331,9 @@ def _source_action(rule: DetectionRule, source_kind: str) -> SuggestedAction:
 
 BUILTIN_RULES: tuple[dict[str, Any], ...] = (
     {
-        "id": "apg.signed_placeholder",
-        "pattern": r"<APG:v1:(?P<kind>[a-z_]+):(?P<handle>[^:<>]+):(?P<session>[^:<>]+):(?P<issued>\d+):(?P<mac>[A-Za-z0-9_-]+)>",
-        "type": "APG_MARKER",
+        "id": "pf.signed_placeholder",
+        "pattern": r"<(?:PF|APG):v1:(?P<kind>[a-z_]+):(?P<handle>[^:<>]+):(?P<session>[^:<>]+):(?P<issued>\d+):(?P<mac>[A-Za-z0-9_-]+)>",
+        "type": "PF_MARKER",
         "subtype": "signed_placeholder",
         "risk": "medium",
         "suggested_action": "warn",
@@ -341,9 +341,9 @@ BUILTIN_RULES: tuple[dict[str, Any], ...] = (
         "preview_keep": 0,
     },
     {
-        "id": "apg.redaction_marker",
-        "pattern": r"<APG[^\r\n>]*>",
-        "type": "APG_MARKER",
+        "id": "pf.redaction_marker",
+        "pattern": r"<(?:PF|APG)[^\r\n>]*>",
+        "type": "PF_MARKER",
         "subtype": "redaction_marker",
         "risk": "high",
         "suggested_action": "warn",

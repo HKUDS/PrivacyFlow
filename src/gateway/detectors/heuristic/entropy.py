@@ -30,7 +30,7 @@ class EntropyContextDetector(Detector):
         text = normalized.normalized
         for match in self.TOKEN_RE.finditer(text):
             value = match.group(0)
-            if len(value) < self.min_length or value.startswith("APG"):
+            if len(value) < self.min_length or value.startswith(("PF", "APG")):
                 continue
             if _assignment_lhs(value, text, match.end()):
                 continue
@@ -82,7 +82,7 @@ def shannon_entropy(value: str) -> float:
 
 
 def _tool_identifier(value: str) -> bool:
-    return value.startswith(("apg_", "mcp__")) and re.fullmatch(r"[a-z][a-z0-9_]*", value) is not None
+    return value.startswith(("pf_", "apg_", "mcp__")) and re.fullmatch(r"[a-z][a-z0-9_]*", value) is not None
 
 
 def _assignment_lhs(value: str, text: str, end: int) -> bool:

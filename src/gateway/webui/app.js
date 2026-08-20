@@ -5,9 +5,8 @@ const PAGE_META = {
   overview: ["LOCAL CONTROL PLANE", "概览", "最近 24 小时的网关活动"],
   audit: ["SAFE AUDIT TRAIL", "审计记录", "上行替换与本地还原"],
   protected: ["LOCAL MAPPING REGISTRY", "受保护值", "本地映射生命周期与撤销"],
-  detectors: ["DETECTION PIPELINE", "检测器配置", "按检测内容组织的本地模块流水线"],
-  "local-models": ["LOCAL MODEL RUNTIME", "本地模型管理", "添加模型后由 APG 自动准备、下载并验证"],
-  "agent-connectors": ["LOCAL AGENT CONFIGURATION", "Agent 快速接入", "一键接入 APG，并可完整恢复原配置"],
+  "local-models": ["LOCAL MODEL RUNTIME", "本地模型管理", "添加模型后由 PrivacyFlow 自动准备、下载并验证"],
+  "agent-connectors": ["LOCAL AGENT CONFIGURATION", "Agent 快速接入", "一键接入 PrivacyFlow，并可完整恢复原配置"],
 };
 const UPSTREAM_PROTOCOL_LABELS = {
   openai_chat_completions: "OpenAI Chat Completions",
@@ -32,16 +31,6 @@ const state = {
   protected: null,
   protectedShowRaw: false,
   protectedLoadVersion: 0,
-  detectorCatalog: null,
-  detectorConfiguration: null,
-  detectorDraft: null,
-  editingModuleIndex: null,
-  moduleDraft: null,
-  moduleDraftSourceName: "",
-  moduleDrag: null,
-  detectionTooltip: null,
-  detectionTooltipMark: null,
-  detectionTooltipPinned: false,
   localModels: null,
   capabilities: [],
   buildId: "",
@@ -58,7 +47,7 @@ const state = {
 const $ = (selector, root = document) => root.querySelector(selector);
 const $$ = (selector, root = document) => [...root.querySelectorAll(selector)];
 const escapeHtml = (value) => String(value ?? "").replace(/[&<>'"]/g, (char) => ({"&":"&amp;","<":"&lt;",">":"&gt;","'":"&#39;",'"':"&quot;"}[char]));
-const DYNAMIC_ICONS = new Set(["arrow-right", "ban", "brain-circuit", "check-circle-2", "circle-x", "copy", "download", "eye", "eye-off", "folder-tree", "gauge", "grip-vertical", "hard-drive", "package-check", "pencil", "plug-zap", "plus", "power", "regex-reference", "rotate-cw", "search", "server-cog", "trash-2", "triangle-alert", "undo-2", "wrench"]);
+const DYNAMIC_ICONS = new Set(["arrow-right", "ban", "brain-circuit", "check-circle-2", "circle-x", "copy", "download", "eye", "eye-off", "folder-tree", "gauge", "grip-vertical", "hard-drive", "package-check", "pencil", "plug-zap", "plus", "power", "rotate-cw", "search", "server-cog", "trash-2", "triangle-alert", "undo-2", "wrench"]);
 
 document.addEventListener("DOMContentLoaded", init);
 
@@ -69,27 +58,16 @@ function init() {
   syncVisibilityButtons();
   showView(PAGE_META[state.view] ? state.view : "overview", false);
   connect();
-  window.addEventListener("apg:localechange", () => {
+  window.addEventListener("pf:localechange", () => {
     syncVisibilityButtons();
     showView(state.view, false);
     state.loaded.clear();
     loadView(state.view, true);
   });
-  document.addEventListener("click", (event) => {
-    if (state.detectionTooltip && !event.target.closest(".text-highlight")) closeDetectionTooltip();
-  });
-  document.addEventListener("keydown", (event) => {
-    if (event.key === "Escape") closeDetectionTooltip();
-  });
-  window.addEventListener("resize", closeDetectionTooltip);
-  window.addEventListener("scroll", closeDetectionTooltip, true);
 }
 
 function iconMarkup(name) {
   if (!DYNAMIC_ICONS.has(name)) throw new Error(`Unsupported dynamic icon: ${name}`);
-  if (name === "regex-reference") {
-    return `<svg class="lucide detector-regex-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M7 3C4.4 5.2 3 8.3 3 12s1.4 6.8 4 9"></path><path d="M17 3c2.6 2.2 4 5.3 4 9s-1.4 6.8-4 9"></path><circle cx="9" cy="13" r="1.15" fill="currentColor" stroke="none"></circle><path d="M14 7v6M11.4 8.5l5.2 3M16.6 8.5l-5.2 3"></path></svg>`;
-  }
   return `<i data-lucide="${name}"></i>`;
 }
 
@@ -181,32 +159,6 @@ function bindActions() {
   $("#mapping-retention-duration").addEventListener("input", syncMappingRetentionControls);
   $("#mapping-retention-unit").addEventListener("change", syncMappingRetentionControls);
   $("#save-mapping-retention").addEventListener("click", () => saveMappingRetention().catch(handleError));
-  $("#configuration-select").addEventListener("change", (event) => selectDetectorConfiguration(event.target.value));
-  $("#new-configuration").addEventListener("click", openConfigurationCreator);
-  $("#duplicate-configuration").addEventListener("click", duplicateDetectorConfiguration);
-  $("#save-configuration").addEventListener("click", saveDetectorConfiguration);
-  $("#delete-configuration").addEventListener("click", deleteDetectorConfiguration);
-  $("#add-module").addEventListener("click", () => openModuleEditor(null));
-  $("#configuration-form").addEventListener("submit", createDetectorConfiguration);
-  $("#module-form").addEventListener("submit", applyModuleDraft);
-  $("#module-type").addEventListener("change", async (event) => {
-    state.moduleDraft.type = event.target.value;
-    state.moduleDraft.config = defaultModuleConfig(event.target.value);
-    if (event.target.value === "local_model") {
-      $("#module-error").textContent = "";
-      try {
-        await refreshLocalModelCatalog();
-      } catch (error) {
-        state.localModels = {models: []};
-        $("#module-error").textContent = error.message;
-      }
-    }
-    renderModuleSpecificFields();
-  });
-  for (const id of ["configuration-name", "configuration-description", "configuration-timeout"]) {
-    $("#" + id).addEventListener("input", updateConfigurationFields);
-  }
-  $("#run-detection").addEventListener("click", runDetection);
   $("#manual-model-form").addEventListener("submit", addManualLocalModel);
   $("#prepare-all-models").addEventListener("click", () => prepareLocalModels([], ["inspect", "runtime", "download", "verify"]));
   $("#local-model-list").addEventListener("click", handleLocalModelAction);
@@ -259,7 +211,7 @@ function showView(view, updateHash = true) {
 }
 
 async function loadView(view, force = false) {
-  const loaders = {overview: loadOverview, audit: loadAudit, protected: loadProtected, detectors: loadDetectors, "local-models": loadLocalModels, "agent-connectors": loadAgentConnectors};
+  const loaders = {overview: loadOverview, audit: loadAudit, protected: loadProtected, "local-models": loadLocalModels, "agent-connectors": loadAgentConnectors};
   if (!force && state.loaded.has(view)) return;
   $("#refresh-button").classList.add("is-loading");
   try { await loaders[view](); state.loaded.add(view); }
@@ -297,7 +249,7 @@ async function loadAgentConnectors() {
 function renderAgentConnectors() {
   const list = $("#connector-list");
   if (state.agentConnectors?.unsupported) {
-    list.innerHTML = `<div class="connector-empty"><strong>${escapeHtml(uiText("APG 需要重启或更新"))}</strong><span>${escapeHtml(uiText("当前后端不支持 Agent 快速接入。"))}</span></div>`;
+    list.innerHTML = `<div class="connector-empty"><strong>${escapeHtml(uiText("PrivacyFlow 需要重启或更新"))}</strong><span>${escapeHtml(uiText("当前后端不支持 Agent 快速接入。"))}</span></div>`;
     return;
   }
   const connectors = state.agentConnectors?.connectors || [];
@@ -314,7 +266,7 @@ function renderAgentConnectors() {
     const path = (connector.paths || []).join(" · ");
     return `<article class="connector-row ${connector.status === "configuration_changed" ? "has-warning" : ""}">
       <div class="connector-identity">${connectorIconMarkup(connector.id)}<div><strong>${escapeHtml(connector.name)}</strong><span class="mono">${escapeHtml(path)}</span></div></div>
-      <div class="connector-details"><span>${escapeHtml(uiText("所需协议"))}</span><strong>${escapeHtml(protocolLabel(connector.protocol))}</strong>${connector.model ? `<small>${escapeHtml(uiText("默认模型"))}: ${escapeHtml(connector.model)}</small>` : ""}${connector.executable ? `<small class="mono">${escapeHtml(connector.executable)}</small>` : connector.detection === "not_found_on_apg_path" ? `<small>${escapeHtml(uiText("命令未出现在 APG 的 PATH 中"))}</small>` : ""}</div>
+      <div class="connector-details"><span>${escapeHtml(uiText("所需协议"))}</span><strong>${escapeHtml(protocolLabel(connector.protocol))}</strong>${connector.model ? `<small>${escapeHtml(uiText("默认模型"))}: ${escapeHtml(connector.model)}</small>` : ""}${connector.executable ? `<small class="mono">${escapeHtml(connector.executable)}</small>` : connector.detection === "not_found_on_pf_path" ? `<small>${escapeHtml(uiText("命令未出现在 PrivacyFlow 的 PATH 中"))}</small>` : ""}</div>
       <span class="badge ${status.className}">${escapeHtml(status.label)}</span>
       <button class="${connected ? "secondary-button" : "primary-button"} labeled-icon-button" type="button" data-connector-action="${connected ? "restore" : "connect"}" data-connector-id="${escapeHtml(connector.id)}" ${disabled ? "disabled" : ""}>${iconMarkup(actionIcon)}<span>${escapeHtml(actionLabel)}</span></button>
     </article>`;
@@ -375,7 +327,7 @@ async function openConnectorDialog(connector) {
   $("#connector-submit").disabled = true;
   $("#connector-modal").showModal();
   try {
-    const result = await api("/upstream-configuration/models", {headers: {"X-APG-Model-Catalog": "rich"}});
+    const result = await api("/upstream-configuration/models", {headers: {"X-PF-Model-Catalog": "rich"}});
     const models = result.ok && Array.isArray(result.models) ? result.models : [];
     const options = result.ok && Array.isArray(result.model_options) && result.model_options.length
       ? result.model_options
@@ -453,7 +405,7 @@ async function connectAgent(event) {
     await api(`/agent-connectors/${encodeURIComponent(connector.id)}/connect`, {method: "POST", body: JSON.stringify({model})});
     $("#connector-modal").close();
     await loadAgentConnectors();
-    toast(`${connector.name} ${uiText("已接入 APG")}`);
+    toast(`${connector.name} ${uiText("已接入 PrivacyFlow")}`);
   } catch (error) {
     if (error.status === 409 && error.code === "CONNECTOR_CONFIG_CONFLICT") {
       state.connectorMigrationTarget = connector;
@@ -489,7 +441,7 @@ async function confirmConnectorMigration(event) {
     state.connectorMigrationTarget = null;
     state.connectorMigrationModel = "";
     await loadAgentConnectors();
-    toast(`${connector.name} ${uiText("已接入 APG")}`);
+    toast(`${connector.name} ${uiText("已接入 PrivacyFlow")}`);
   } catch (error) {
     $("#connector-migrate-error").textContent = connectorErrorMessage(error);
   } finally {
@@ -571,8 +523,8 @@ function renderLocalModels() {
   const notice = $("#local-model-setup-notice");
   notice.classList.toggle("is-hidden", allowed && !unsupported);
   notice.innerHTML = allowed && !unsupported ? "" : unsupported
-    ? `${iconMarkup("rotate-cw")}<div><strong>${escapeHtml(uiText("APG 需要重启或更新"))}</strong><span>${escapeHtml(uiText("当前后端不支持新版本地模型管理，请重启 APG 或更新到相同版本。"))}</span></div>`
-    : `${iconMarkup("ban")}<div><strong>${escapeHtml(uiText("本地模型设置已停用"))}</strong><span>${escapeHtml(uiText("安装和下载只允许从绑定到 loopback 的 APG 服务本机执行。"))}</span></div>`;
+    ? `${iconMarkup("rotate-cw")}<div><strong>${escapeHtml(uiText("PrivacyFlow 需要重启或更新"))}</strong><span>${escapeHtml(uiText("当前后端不支持新版本地模型管理，请重启 PrivacyFlow 或更新到相同版本。"))}</span></div>`
+    : `${iconMarkup("ban")}<div><strong>${escapeHtml(uiText("本地模型设置已停用"))}</strong><span>${escapeHtml(uiText("安装和下载只允许从绑定到 loopback 的 PrivacyFlow 服务本机执行。"))}</span></div>`;
   if (!allowed || unsupported) renderIcons(notice);
   for (const id of ["local-model-entry", "local-model-list-title", "local-runtime-details"]) {
     const element = document.getElementById(id);
@@ -669,7 +621,7 @@ function renderLocalModelCard(model) {
         ${runtimeFault ? `<button class="secondary-button labeled-icon-button" type="button" data-local-model-action="runtime" data-model-id="${escapeHtml(model.id)}" ${disabled ? "disabled" : ""}>${iconMarkup("wrench")}<span>${escapeHtml(uiText("修复运行环境"))}</span></button>` : ""}
         ${model.status === "ready" && model.source_type !== "local" ? `<button class="secondary-button icon-action-button" type="button" data-local-model-action="download" data-model-id="${escapeHtml(model.id)}" aria-label="${escapeHtml(uiText("重新下载模型"))}" title="${escapeHtml(uiText("重新下载模型"))}" ${disabled ? "disabled" : ""}>${iconMarkup("download")}</button>` : ""}
         ${model.status === "ready" || model.last_error?.code === "MODEL_VERIFICATION_FAILED" ? `<button class="secondary-button icon-action-button" type="button" data-local-model-action="verify" data-model-id="${escapeHtml(model.id)}" aria-label="${escapeHtml(uiText("重新验证模型"))}" title="${escapeHtml(uiText("重新验证模型"))}" ${disabled ? "disabled" : ""}>${iconMarkup("rotate-cw")}</button>` : ""}
-        ${model.cache_managed ? `<button class="secondary-button danger-text icon-action-button" type="button" data-local-model-action="cache" data-model-id="${escapeHtml(model.id)}" aria-label="${escapeHtml(uiText("清理模型缓存"))}" title="${escapeHtml(uiText(model.active_in_use ? "当前启用配置正在使用该模型" : "清理模型缓存"))}" ${cacheDisabled ? "disabled" : ""}>${iconMarkup("trash-2")}</button>` : ""}
+        ${model.cache_managed ? `<button class="secondary-button danger-text icon-action-button" type="button" data-local-model-action="cache" data-model-id="${escapeHtml(model.id)}" aria-label="${escapeHtml(uiText("清理模型缓存"))}" title="${escapeHtml(uiText(model.active_in_use ? "内置保护流程正在使用该模型" : "清理模型缓存"))}" ${cacheDisabled ? "disabled" : ""}>${iconMarkup("trash-2")}</button>` : ""}
         ${model.manual ? `<button class="secondary-button danger-text icon-action-button" type="button" data-local-model-action="delete" data-model-id="${escapeHtml(model.id)}" aria-label="${escapeHtml(uiText("移除手动模型"))}" title="${escapeHtml(uiText("移除手动模型"))}" ${disabled ? "disabled" : ""}>${iconMarkup("ban")}</button>` : ""}
       </div>
     </article>
@@ -716,7 +668,7 @@ function localDeviceReason(value) {
 
 function localModelErrorMessage(code, fallback) {
   const message = ({
-    LOCAL_MODEL_SETUP_LOCAL_ONLY: "安装和下载只能从 APG 服务本机执行。",
+    LOCAL_MODEL_SETUP_LOCAL_ONLY: "安装和下载只能从 PrivacyFlow 服务本机执行。",
     INVALID_MODEL_SOURCE: "请输入有效的 Hugging Face 仓库 ID 或本地模型目录。",
     INVALID_SOURCE_TYPE: "请选择有效的模型来源。",
     INVALID_ADAPTER: "请选择受支持的模型运行方式。",
@@ -727,7 +679,7 @@ function localModelErrorMessage(code, fallback) {
     MODEL_CONFIG_MISSING: "模型目录缺少 config.json。",
     MODEL_CONFIG_INVALID: "模型目录中的 config.json 无效。",
     MODEL_WEIGHTS_MISSING: "模型目录中没有可用的权重文件。",
-    REMOTE_CODE_UNSUPPORTED: "该模型需要执行远程自定义代码，APG 不支持。",
+    REMOTE_CODE_UNSUPPORTED: "该模型需要执行远程自定义代码，PrivacyFlow 不支持。",
     DEVICE_UNAVAILABLE: "明确选择的计算设备当前不可用。",
     RUNTIME_MISSING: "模型运行环境尚未准备。",
     RUNTIME_CREATE_FAILED: "无法创建受管模型运行环境。",
@@ -735,13 +687,13 @@ function localModelErrorMessage(code, fallback) {
     MODEL_VERIFICATION_FAILED: "模型加载或最小推理验证失败。",
     MODEL_NOT_READY: "模型尚未准备完成。",
     LOCAL_MODEL_MISSING: "指定的本地模型目录不存在。",
-    LOCAL_PATH_NOT_MANAGED: "APG 不会删除用户自己的本地模型目录。",
-    MODEL_IN_ACTIVE_USE: "当前启用配置正在使用该模型，不能清理缓存。",
+    LOCAL_PATH_NOT_MANAGED: "PrivacyFlow 不会删除用户自己的本地模型目录。",
+    MODEL_IN_ACTIVE_USE: "内置保护流程正在使用该模型，不能清理缓存。",
     MODEL_NOT_DOWNLOADED: "请先下载或定位模型，再执行验证。",
     DEPENDENCIES_MISSING: "请先安装该模型所需的运行依赖。",
     DISK_SPACE_LOW: "模型缓存至少需要 512 MiB 可用磁盘空间。",
     CUDA_NOT_DETECTED: "未检测到可用的 NVIDIA CUDA 驱动。",
-    CUDA_VERSION_UNSUPPORTED: "当前 CUDA 驱动不在 APG 自动安装支持范围内。",
+    CUDA_VERSION_UNSUPPORTED: "当前 CUDA 驱动不在 PrivacyFlow 自动安装支持范围内。",
     CUDA_UNSUPPORTED_PLATFORM: "macOS 不支持 NVIDIA CUDA，请选择 CPU 或 Apple MPS。",
     JOB_IN_PROGRESS: "已有本地模型任务正在运行，请等待它完成。",
     NO_MODELS: "当前没有可准备的本地模型。",
@@ -749,7 +701,7 @@ function localModelErrorMessage(code, fallback) {
     COMMAND_START_FAILED: "无法启动本地模型操作。",
     COMMAND_FAILED: "依赖安装、模型下载或验证失败。",
     DOWNLOAD_RESULT_INVALID: "模型下载结果无效。",
-    DOWNLOAD_PATH_INVALID: "下载结果不在 APG 管理的模型缓存中。",
+    DOWNLOAD_PATH_INVALID: "下载结果不在 PrivacyFlow 管理的模型缓存中。",
   })[code] || fallback || "本地模型操作失败";
   return uiText(message);
 }
@@ -788,7 +740,7 @@ async function addManualLocalModel(event) {
     toast(uiText("模型已添加，正在准备"));
   } catch (error) {
     $("#manual-model-error").textContent = error.status === 404
-      ? uiText("APG 需要重启或更新")
+      ? uiText("PrivacyFlow 需要重启或更新")
       : localModelErrorMessage(error.code, error.message);
   } finally {
     button.disabled = !state.localModels?.setup_allowed;
@@ -813,7 +765,7 @@ async function handleLocalModelAction(event) {
   }
   if (action === "save-preferences") return saveLocalModelPreferences(modelId, button.closest(".local-model-card"));
   if (action === "cache") {
-    return confirmAction("清理模型缓存", "将删除 APG 管理的模型文件，但不会删除检测器配置。", () => deleteLocalModelCache(modelId));
+    return confirmAction("清理模型缓存", "将删除 PrivacyFlow 管理的模型文件，但不会删除用户自己的本地模型目录。", () => deleteLocalModelCache(modelId));
   }
   if (action === "delete") {
     return confirmAction("移除手动模型", "该模型将从管理清单中移除，已下载的共享缓存不会自动删除。", () => deleteManualLocalModel(modelId));
@@ -942,7 +894,7 @@ async function loadOverview() {
   renderEventRows($("#overview-events"), data.recent, true);
   const system = data.system;
   $("#system-strip").innerHTML = [
-    ["工作区", system.workspace], ["上游", system.upstream], ["检测配置", system.detector_configuration],
+    ["工作区", system.workspace], ["上游", system.upstream], ["保护规则", system.detector_configuration],
     ["PII", system.pii_mode], ["严格模式", system.strict_mode ? "开启" : "关闭"], ["管理面板", system.local_only ? "仅本机" : "远程绑定"],
   ].map(([label, value]) => `<span class="system-item">${escapeHtml(label)}<strong>${escapeHtml(value)}</strong></span>`).join("");
   state.loaded.add("overview");
@@ -963,12 +915,12 @@ function renderPrivacyControl() {
   $("#privacy-control-status").textContent = !available ? "不可用" : effective ? "保护已开启" : "旁路模式";
   $("#privacy-control-description").textContent = !available
     ? control.unavailable_reason === "no_detector_configuration"
-      ? "没有可用的检测配置，APG 全局保护暂时无法启用。"
+      ? "内置保护规则不可用，PrivacyFlow 全局保护暂时无法启用。"
       : "请先选择并启用可用的上游配置。"
-    : "一键开启或关闭 APG 保护。";
+    : "一键开启或关闭 PrivacyFlow 保护。";
   $("#privacy-control-configuration").textContent = control.active_detector_configuration_name
-    ? `当前检测配置：${control.active_detector_configuration_name}`
-    : "未选择检测配置";
+    ? `内置保护规则：${control.active_detector_configuration_name}`
+    : "内置保护规则不可用";
 }
 
 async function refreshPrivacyControl() {
@@ -985,7 +937,7 @@ async function updatePrivacyControl(event) {
       body: JSON.stringify({enabled: input.checked}),
     });
     renderPrivacyControl();
-    toast(state.privacyControl.effective ? "APG 全局保护已开启" : "APG 已切换为旁路模式");
+    toast(state.privacyControl.effective ? "PrivacyFlow 全局保护已开启" : "PrivacyFlow 已切换为旁路模式");
   } catch (error) {
     await refreshPrivacyControl().catch(() => {});
     handleError(error);
@@ -1195,7 +1147,7 @@ function renderUpstreamProtocolResults(results) {
     const status = result.status_code ? `HTTP ${result.status_code}` : uiText("未收到 HTTP 响应");
     const target = `${uiText("实际端点")} ${result.target_endpoint || "—"}`;
     const trace = Object.entries(result.upstream_trace_headers || {}).map(([key, value]) => `${key}: ${value}`).join(" · ");
-    const mismatch = error.code === "APG_UPSTREAM_PROTOCOL_MISMATCH"
+    const mismatch = error.code === "PF_UPSTREAM_PROTOCOL_MISMATCH"
       ? uiText("HTTP 成功，但响应结构不符合该 API 格式。")
       : "";
     const reason = mismatch || [error.code, error.type, error.message].filter(Boolean).join(" · ");
@@ -1793,726 +1745,8 @@ async function purgeExpired() {
   await loadProtected();
 }
 
-async function loadDetectors() {
-  const selected = state.detectorConfiguration?.id;
-  state.detectorCatalog = await api("/detector-configurations");
-  renderConfigurationOptions();
-  const available = [...state.detectorCatalog.templates, ...state.detectorCatalog.configurations];
-  const configurationId = available.some((item) => item.id === selected) ? selected : state.detectorCatalog.active_configuration_id;
-  await loadDetectorConfiguration(configurationId);
-  state.loaded.add("detectors");
-}
-
-function renderConfigurationOptions() {
-  const select = $("#configuration-select");
-  const options = (items) => items.map((item) => `<option value="${escapeHtml(item.id)}">${escapeHtml(uiText(item.name))}${item.is_active ? ` · ${escapeHtml(uiText("当前启用"))}` : ""}</option>`).join("");
-  select.innerHTML = `<optgroup label="${escapeHtml(uiText("内置与部署模板"))}">${options(state.detectorCatalog.templates)}</optgroup><optgroup label="${escapeHtml(uiText("用户配置"))}">${options(state.detectorCatalog.configurations)}</optgroup>`;
-  if (state.detectorConfiguration) select.value = state.detectorConfiguration.id;
-}
-
-async function loadDetectorConfiguration(configurationId) {
-  const data = await api(`/detector-configurations/${encodeURIComponent(configurationId)}`);
-  state.detectorConfiguration = data;
-  state.detectorDraft = structuredClone(data);
-  $("#configuration-select").value = data.id;
-  renderDetectorConfiguration();
-}
-
-function selectDetectorConfiguration(configurationId) {
-  if (!configurationId || configurationId === state.detectorConfiguration?.id) return;
-  if (detectorConfigurationDirty()) {
-    $("#configuration-select").value = state.detectorConfiguration.id;
-    return confirmAction(uiText("放弃未保存更改"), uiText("切换配置将丢弃当前草稿并立即启用所选配置。"), () => activateDetectorConfiguration(configurationId));
-  }
-  activateDetectorConfiguration(configurationId);
-}
-
-function renderDetectorConfiguration() {
-  const configuration = state.detectorDraft;
-  if (!configuration) return;
-  const readonly = configuration.readonly;
-  $("#configuration-name").value = uiText(configuration.name);
-  $("#configuration-description").value = uiText(configuration.description || "");
-  $("#configuration-timeout").value = configuration.flow_timeout_ms ?? "";
-  for (const id of ["configuration-name", "configuration-description", "configuration-timeout"]) $("#" + id).disabled = readonly;
-  $("#configuration-status").innerHTML = `${configuration.is_active ? '<span class="badge green">当前启用</span>' : ""}${configuration.readonly ? '<span class="configuration-readonly-note">默认预设不可编辑，请复制或新建自定义配置。模块开关仍可直接调整。</span>' : ""}`;
-  setIconButton($("#duplicate-configuration"), "copy", readonly ? "复制并编辑检测器配置" : "复制检测器配置");
-  $("#save-configuration").disabled = readonly || !detectorConfigurationDirty();
-  $("#delete-configuration").disabled = readonly;
-  $("#add-module").disabled = readonly;
-  renderDetectorModules();
-  $("#detection-output").innerHTML = `<span class="muted">等待测试</span>`;
-  $("#detection-diagnostics").innerHTML = "";
-}
-
-function renderDetectorModules() {
-  const readonly = state.detectorDraft.readonly;
-  const modules = state.detectorDraft.modules || [];
-  const target = $("#detector-modules");
-  if (!modules.length) {
-    target.innerHTML = `<div class="empty-pipeline"><strong>配置中还没有检测模块</strong><span>新增模块后，它们会按这里的顺序依次执行。</span></div>`;
-    return;
-  }
-  target.innerHTML = modules.map((module, index) => {
-    const type = moduleTypeLabel(module.type);
-    const typeIcon = moduleTypeIcon(module.type);
-    const unavailable = module.type === "local_model" && module.enabled && module.runtime_available === false;
-    const status = !module.enabled ? "disabled" : unavailable ? "unavailable" : module.editable === false ? "managed" : "activated";
-    const statusClass = status === "activated" ? "green" : status === "unavailable" ? "red" : "neutral";
-    const statusMarkup = status === "unavailable"
-      ? `<button class="badge ${statusClass} module-status-link" type="button" data-view="local-models" data-local-model-target="${escapeHtml(module.local_model_id || "")}" title="打开本地模型管理">${escapeHtml(moduleStatusLabel(status))}</button>`
-      : `<span class="badge ${statusClass}">${escapeHtml(moduleStatusLabel(status))}</span>`;
-    const editable = !readonly && module.editable !== false;
-    const dragControl = editable ? `<button class="module-drag-handle" type="button" title="拖动排序" aria-label="拖动排序 ${escapeHtml(module.name)}" aria-keyshortcuts="Alt+ArrowUp Alt+ArrowDown" aria-grabbed="false" data-module-drag="${index}">${iconMarkup("grip-vertical")}</button>` : `<span class="module-drag-spacer" aria-hidden="true"></span>`;
-    const controls = editable ? `<div class="module-actions"><button type="button" title="编辑模块" aria-label="编辑 ${escapeHtml(module.name)}" data-module-edit="${index}">${iconMarkup("pencil")}</button><button type="button" title="复制模块" aria-label="复制 ${escapeHtml(module.name)}" data-module-copy="${index}">${iconMarkup("copy")}</button><button type="button" class="danger" title="删除模块" aria-label="删除 ${escapeHtml(module.name)}" data-module-delete="${index}">${iconMarkup("trash-2")}</button></div>` : "";
-    return `<div class="module-row" data-module-row="${index}">${dragControl}<span class="module-order">${index + 1}</span><div class="module-name"><span class="module-symbol module-symbol-${escapeHtml(module.type)}" aria-hidden="true" title="${escapeHtml(type)}">${iconMarkup(typeIcon)}</span><div><strong>${escapeHtml(module.name)}</strong><span>${escapeHtml(type)}</span></div></div>${statusMarkup}${controls}<label class="toggle"><input type="checkbox" data-module-toggle="${index}" ${module.enabled ? "checked" : ""} aria-label="启用 ${escapeHtml(module.name)}"><span></span></label></div>`;
-  }).join("");
-  renderIcons(target);
-  $$('[data-module-toggle]', target).forEach((input) => input.addEventListener("change", () => updateModuleEnabled(Number(input.dataset.moduleToggle), input.checked)));
-  $$('[data-module-drag]', target).forEach((button) => {
-    button.addEventListener("pointerdown", beginModuleDrag);
-    button.addEventListener("keydown", handleModuleDragKeydown);
-  });
-  $$('[data-module-edit]', target).forEach((button) => button.addEventListener("click", () => openModuleEditor(Number(button.dataset.moduleEdit))));
-  $$('[data-module-copy]', target).forEach((button) => button.addEventListener("click", () => duplicateModule(Number(button.dataset.moduleCopy))));
-  $$('[data-module-delete]', target).forEach((button) => button.addEventListener("click", () => removeModule(Number(button.dataset.moduleDelete))));
-}
-
-function updateConfigurationFields(event) {
-  if (!state.detectorDraft || state.detectorDraft.readonly) return;
-  if (event.target.id === "configuration-name") state.detectorDraft.name = event.target.value;
-  else if (event.target.id === "configuration-description") state.detectorDraft.description = event.target.value;
-  else if (event.target.id === "configuration-timeout") state.detectorDraft.flow_timeout_ms = event.target.value ? Number(event.target.value) : null;
-  renderDetectorSaveState();
-}
-
-function renderDetectorSaveState() {
-  $("#save-configuration").disabled = state.detectorDraft.readonly || !detectorConfigurationDirty();
-}
-
-function detectorConfigurationPayload(configuration) {
-  return {
-    revision: configuration.revision,
-    name: configuration.name,
-    description: configuration.description || "",
-    flow_timeout_ms: configuration.flow_timeout_ms,
-    content_tags: configuration.content_tags || [],
-    modules: configuration.modules,
-  };
-}
-
-function detectorConfigurationDirty() {
-  if (!state.detectorConfiguration || !state.detectorDraft || state.detectorDraft.readonly) return false;
-  return JSON.stringify(detectorConfigurationPayload(state.detectorConfiguration)) !== JSON.stringify(detectorConfigurationPayload(state.detectorDraft));
-}
-
-async function saveDetectorConfiguration() {
-  if (!detectorConfigurationDirty()) return;
-  try {
-    const data = await api(`/detector-configurations/${encodeURIComponent(state.detectorDraft.id)}`, {method: "PUT", body: JSON.stringify(detectorConfigurationPayload(state.detectorDraft))});
-    state.detectorConfiguration = data;
-    state.detectorDraft = structuredClone(data);
-    await refreshDetectorCatalog(data.id);
-    renderDetectorConfiguration();
-    toast("检测器配置已保存并校验");
-  } catch (error) { handleError(error); }
-}
-
-async function activateDetectorConfiguration(configurationId) {
-  const previousId = state.detectorConfiguration?.id || state.detectorCatalog?.active_configuration_id || "";
-  const select = $("#configuration-select");
-  select.disabled = true;
-  try {
-    const data = await api(`/detector-configurations/${encodeURIComponent(configurationId)}/activate`, {method: "POST"});
-    await refreshDetectorCatalog(data.id);
-    await loadDetectorConfiguration(data.id);
-    state.loaded.delete("overview");
-    toast(`${uiText("已切换检测器配置")}：${uiText(data.name)}`);
-  } catch (error) {
-    if (previousId) select.value = previousId;
-    handleError(error);
-  } finally {
-    select.disabled = false;
-  }
-}
-
-function deleteDetectorConfiguration() {
-  const configuration = state.detectorDraft;
-  if (configuration.readonly) return;
-  confirmAction("删除检测器配置", `${configuration.name} 将被永久删除。`, async () => {
-    if (configuration.is_active) {
-      const fallback = state.detectorCatalog.templates?.find((item) => item.id !== configuration.id);
-      if (!fallback) throw new Error(uiText("没有可用于接替的默认检测器配置。"));
-      await api(`/detector-configurations/${encodeURIComponent(fallback.id)}/activate`, {method: "POST"});
-    }
-    const catalog = await api(`/detector-configurations/${encodeURIComponent(configuration.id)}`, {method: "DELETE"});
-    state.detectorCatalog = catalog;
-    renderConfigurationOptions();
-    await loadDetectorConfiguration(catalog.active_configuration_id);
-    toast("检测器配置已删除");
-  });
-}
-
-function openConfigurationCreator() {
-  $("#configuration-form").reset();
-  $("#configuration-error").textContent = "";
-  const all = [...state.detectorCatalog.templates, ...state.detectorCatalog.configurations];
-  $("#configuration-source").innerHTML = `<option value="">${escapeHtml(uiText("空白配置"))}</option>${all.map((item) => `<option value="${escapeHtml(item.id)}">${escapeHtml(uiText(item.name))}</option>`).join("")}`;
-  $("#configuration-source").value = state.detectorConfiguration?.id || "builtin.comprehensive";
-  $("#configuration-form [name=name]").value = uiText("新检测配置");
-  $("#configuration-modal").showModal();
-}
-
-async function createDetectorConfiguration(event) {
-  event.preventDefault();
-  const form = new FormData(event.target);
-  $("#configuration-error").textContent = "";
-  try {
-    const data = await api("/detector-configurations", {method: "POST", body: JSON.stringify({name: form.get("name"), source_id: form.get("source_id")})});
-    $("#configuration-modal").close();
-    await activateDetectorConfiguration(data.id);
-    toast(uiText("检测器配置已创建并启用"));
-  } catch (error) { $("#configuration-error").textContent = error.message; }
-}
-
-async function duplicateDetectorConfiguration() {
-  try {
-    const data = await api("/detector-configurations", {method: "POST", body: JSON.stringify({source_id: state.detectorDraft.id})});
-    await activateDetectorConfiguration(data.id);
-    toast(uiText("已创建并启用可编辑副本"));
-  } catch (error) { handleError(error); }
-}
-
-async function refreshDetectorCatalog(selectedId) {
-  state.detectorCatalog = await api("/detector-configurations");
-  renderConfigurationOptions();
-  if (selectedId) $("#configuration-select").value = selectedId;
-}
-
-async function updateModuleEnabled(index, enabled) {
-  if (state.detectorDraft.readonly) {
-    const configurationId = state.detectorDraft.id;
-    const moduleId = state.detectorDraft.modules[index].id;
-    try {
-      const data = await api(`/detector-configurations/${encodeURIComponent(configurationId)}/modules/${encodeURIComponent(moduleId)}/enabled`, {
-        method: "PUT",
-        body: JSON.stringify({enabled}),
-      });
-      state.detectorConfiguration = data;
-      state.detectorDraft = structuredClone(data);
-      state.loaded.delete("overview");
-      renderDetectorConfiguration();
-      toast(enabled ? "检测模块已启用" : "检测模块已停用");
-    } catch (error) {
-      await loadDetectorConfiguration(configurationId);
-      handleError(error);
-    }
-    return;
-  }
-  state.detectorDraft.modules[index].enabled = enabled;
-  renderDetectorConfiguration();
-}
-
-function moveModule(index, direction) {
-  const target = index + direction;
-  if (target < 0 || target >= state.detectorDraft.modules.length) return false;
-  const modules = state.detectorDraft.modules;
-  [modules[index], modules[target]] = [modules[target], modules[index]];
-  renderDetectorConfiguration();
-  return true;
-}
-
-function beginModuleDrag(event) {
-  if (event.pointerType === "mouse" && event.button !== 0) return;
-  const handle = event.currentTarget;
-  state.moduleDrag = {
-    handle,
-    pointerId: event.pointerId,
-    sourceIndex: Number(handle.dataset.moduleDrag),
-    targetIndex: null,
-    placement: null,
-    startX: event.clientX,
-    startY: event.clientY,
-    active: false,
-  };
-  handle.setPointerCapture?.(event.pointerId);
-  handle.addEventListener("pointermove", updateModuleDrag);
-  handle.addEventListener("pointerup", finishModuleDrag);
-  handle.addEventListener("pointercancel", cancelModuleDrag);
-}
-
-function updateModuleDrag(event) {
-  const drag = state.moduleDrag;
-  if (!drag || drag.pointerId !== event.pointerId) return;
-  if (!drag.active && Math.hypot(event.clientX - drag.startX, event.clientY - drag.startY) < 5) return;
-  drag.active = true;
-  event.preventDefault();
-  drag.handle.setAttribute("aria-grabbed", "true");
-  drag.handle.closest(".module-row")?.classList.add("is-dragging");
-  document.body.classList.add("is-module-dragging");
-  clearModuleDropTarget();
-  const row = document.elementFromPoint(event.clientX, event.clientY)?.closest("[data-module-row]");
-  if (!row || !$("#detector-modules").contains(row)) {
-    drag.targetIndex = null;
-    drag.placement = null;
-    return;
-  }
-  const targetIndex = Number(row.dataset.moduleRow);
-  if (targetIndex === drag.sourceIndex) {
-    drag.targetIndex = null;
-    drag.placement = null;
-    return;
-  }
-  const bounds = row.getBoundingClientRect();
-  drag.targetIndex = targetIndex;
-  drag.placement = event.clientY < bounds.top + bounds.height / 2 ? "before" : "after";
-  row.classList.add(drag.placement === "before" ? "is-drop-before" : "is-drop-after");
-}
-
-function finishModuleDrag(event, cancelled = false) {
-  const drag = state.moduleDrag;
-  if (!drag || drag.pointerId !== event.pointerId) return;
-  drag.handle.removeEventListener("pointermove", updateModuleDrag);
-  drag.handle.removeEventListener("pointerup", finishModuleDrag);
-  drag.handle.removeEventListener("pointercancel", cancelModuleDrag);
-  if (drag.handle.hasPointerCapture?.(event.pointerId)) drag.handle.releasePointerCapture(event.pointerId);
-  drag.handle.setAttribute("aria-grabbed", "false");
-  drag.handle.closest(".module-row")?.classList.remove("is-dragging");
-  document.body.classList.remove("is-module-dragging");
-  clearModuleDropTarget();
-  state.moduleDrag = null;
-  if (!cancelled && drag.active && drag.targetIndex !== null) {
-    reorderModule(drag.sourceIndex, drag.targetIndex, drag.placement);
-  }
-}
-
-function cancelModuleDrag(event) {
-  finishModuleDrag(event, true);
-}
-
-function clearModuleDropTarget() {
-  $$(".module-row.is-drop-before, .module-row.is-drop-after", $("#detector-modules")).forEach((row) => {
-    row.classList.remove("is-drop-before", "is-drop-after");
-  });
-}
-
-function reorderModule(sourceIndex, targetIndex, placement) {
-  const modules = state.detectorDraft.modules;
-  let insertionIndex = targetIndex + (placement === "after" ? 1 : 0);
-  const [module] = modules.splice(sourceIndex, 1);
-  if (sourceIndex < insertionIndex) insertionIndex -= 1;
-  modules.splice(insertionIndex, 0, module);
-  renderDetectorConfiguration();
-  requestAnimationFrame(() => $(`[data-module-drag="${insertionIndex}"]`)?.focus());
-}
-
-function handleModuleDragKeydown(event) {
-  if (!event.altKey || !["ArrowUp", "ArrowDown"].includes(event.key)) return;
-  event.preventDefault();
-  const index = Number(event.currentTarget.dataset.moduleDrag);
-  const direction = event.key === "ArrowUp" ? -1 : 1;
-  const target = index + direction;
-  if (moveModule(index, direction)) requestAnimationFrame(() => $(`[data-module-drag="${target}"]`)?.focus());
-}
-
-function duplicateModule(index) {
-  const module = structuredClone(state.detectorDraft.modules[index]);
-  module.id = randomId("mod");
-  module.name += " 副本";
-  module.editable = true;
-  state.detectorDraft.modules.splice(index + 1, 0, module);
-  renderDetectorConfiguration();
-}
-
-function removeModule(index) {
-  const module = state.detectorDraft.modules[index];
-  confirmAction("删除检测模块", `${module.name} 将从配置草稿中移除。`, () => {
-    state.detectorDraft.modules.splice(index, 1);
-    renderDetectorConfiguration();
-  });
-}
-
-async function openModuleEditor(index) {
-  const editing = index !== null;
-  state.editingModuleIndex = index;
-  state.moduleDraft = index === null ? {
-    id: randomId("mod"), name: "新检测模块", type: "regex", enabled: true,
-    timeout_ms: null, failure_mode: "open", editable: true, config: defaultModuleConfig("regex"),
-  } : structuredClone(state.detectorDraft.modules[index]);
-  state.moduleDraftSourceName = state.moduleDraft.name;
-  $("#module-form").reset();
-  $("#module-error").textContent = "";
-  $("#module-modal-title").textContent = index === null ? "新增检测模块" : "编辑检测模块";
-  $("#module-form [name=name]").value = uiText(state.moduleDraft.name);
-  $("#module-type").value = state.moduleDraft.type;
-  $("#module-type").disabled = editing;
-  $("#module-type-field").hidden = editing;
-  $("#module-name-field").classList.toggle("full-row", editing);
-  $("#module-form [name=timeout_ms]").value = state.moduleDraft.timeout_ms ?? "";
-  $("#module-form [name=failure_mode]").value = state.moduleDraft.failure_mode || "open";
-  if (state.moduleDraft.type === "local_model") {
-    try {
-      await refreshLocalModelCatalog();
-    } catch (error) {
-      state.localModels = {models: []};
-      $("#module-error").textContent = error.message;
-    }
-  }
-  renderModuleSpecificFields();
-  $("#module-modal").showModal();
-}
-
-function defaultModuleConfig(type) {
-  if (type === "regex") return {rules: []};
-  if (type === "entropy") return {min_length: 20, min_entropy: 3.5, risk: "medium"};
-  if (type === "path") return {detect_unix_home: true, detect_macos_private: true, detect_shell_config: true, detect_windows_user: true, exclude_patterns: [], path_risk: "medium"};
-  return {adapter: "transformers_token_classification", model_name: "", threshold: 0.75, device: "cpu", aggregation_strategy: "simple", labels: ["email", "phone_number", "user_name"]};
-}
-
-function renderModuleSpecificFields() {
-  const module = state.moduleDraft;
-  const target = $("#module-specific-fields");
-  if (module.type === "regex") {
-    target.innerHTML = `<div class="specific-heading"><div><p class="section-kicker">REGEX RULES</p><strong>${module.config.rules.length} 条规则</strong></div><button class="secondary-button icon-action-button" type="button" id="add-regex-rule" aria-label="添加正则规则" title="添加正则规则">${iconMarkup("plus")}</button></div><div class="rule-editor-list">${module.config.rules.map(renderRegexRule).join("")}</div>`;
-    renderIcons(target);
-    $("#add-regex-rule").addEventListener("click", () => {
-      syncModuleSpecificFields();
-      state.moduleDraft.config.rules.push({id: `custom.rule_${randomHex(8)}`, pattern: "", type: "MACHINE_SECRET", subtype: "custom_secret", risk: "high", flags: [], validators: [], require_validators: [], reject_validators: [], preview_keep: 0, enabled: true, metadata: {source: "webui"}});
-      renderModuleSpecificFields();
-    });
-    $$('[data-remove-rule]', target).forEach((button) => button.addEventListener("click", (event) => {
-      event.preventDefault();
-      event.stopPropagation();
-      syncModuleSpecificFields();
-      state.moduleDraft.config.rules.splice(Number(button.dataset.removeRule), 1);
-      renderModuleSpecificFields();
-    }));
-  } else if (module.type === "entropy") {
-    const config = module.config;
-    target.innerHTML = `<div class="form-grid specific-grid"><label><span>最小 Token 长度</span><input id="entropy-min-length" type="number" min="8" max="512" value="${config.min_length}"></label><label><span>熵阈值</span><input id="entropy-threshold" type="number" min="0" max="8" step="0.1" value="${config.min_entropy}"></label>${riskField("entropy", "模块", config.risk || "medium")}</div>`;
-  } else if (module.type === "path") {
-    const config = module.config;
-    target.innerHTML = `<div class="check-grid"><label><input id="path-unix" type="checkbox" ${config.detect_unix_home ? "checked" : ""}> Unix / macOS Home</label><label><input id="path-private" type="checkbox" ${config.detect_macos_private ? "checked" : ""}> macOS /private</label><label><input id="path-shell" type="checkbox" ${config.detect_shell_config ? "checked" : ""}> Shell 配置目录</label><label><input id="path-windows" type="checkbox" ${config.detect_windows_user ? "checked" : ""}> Windows User 路径</label></div><div class="form-grid specific-grid"><label class="full-row"><span>排除模式（逗号分隔 glob）</span><input id="path-excludes" value="${escapeHtml(config.exclude_patterns.join(", "))}"></label>${riskField("path", "模块", config.path_risk)}</div>`;
-  } else {
-    const config = module.config;
-    const models = availableLocalModels();
-    const selected = models.find((model) => model.source === config.model_name);
-    const unavailable = Boolean(config.model_name) && !selected;
-    const placeholder = unavailable
-      ? `当前配置的模型不可用：${config.model_name}`
-      : models.length ? "请选择可用模型" : "没有可用模型";
-    const options = models.map((model) => {
-      const device = String(model.resolved_device || "").toUpperCase();
-      const label = `${model.display_name || model.source}${device ? ` · ${device}` : ""}`;
-      return `<option value="${escapeHtml(model.id)}" ${model.id === selected?.id ? "selected" : ""}>${escapeHtml(label)}</option>`;
-    }).join("");
-    target.innerHTML = `<div class="form-grid specific-grid"><label class="full-row"><span>使用的本地模型</span><select id="model-selection" required ${models.length ? "" : "disabled"}><option value="" ${selected ? "" : "selected"} disabled>${escapeHtml(placeholder)}</option>${options}</select></label><label><span>模型分数阈值</span><input id="model-threshold" type="number" min="0" max="1" step="0.01" value="${config.threshold}"></label>${config.adapter === "gliner" ? `<label class="full-row"><span>实体标签（逗号分隔）</span><input id="model-labels" value="${escapeHtml(config.labels.join(", "))}"></label>` : `<label><span>聚合方式</span><select id="model-aggregation"><option value="simple">Simple</option><option value="first">First</option><option value="average">Average</option><option value="max">Max</option></select></label>`}<div class="model-policy-note full-row"><span>${escapeHtml(models.length ? "只能选择已在本地模型管理中准备并验证成功的模型。" : "请先在本地模型管理中完成模型准备，然后返回选择。")}</span><button class="secondary-button" type="button" data-view="local-models" data-close-modal>${escapeHtml("前往本地模型管理")}</button></div></div>`;
-    if ($("#model-aggregation")) $("#model-aggregation").value = config.aggregation_strategy;
-    $("#model-selection").addEventListener("change", (event) => {
-      const model = models.find((item) => item.id === event.target.value);
-      if (!model) return;
-      state.moduleDraft.config = {
-        ...state.moduleDraft.config,
-        model_name: model.source,
-        adapter: model.resolved_adapter,
-        device: model.resolved_device,
-      };
-      renderModuleSpecificFields();
-    });
-  }
-}
-
-function renderRegexRule(rule, index) {
-  const name = uiText(String(rule.metadata?.display_name || rule.id));
-  return `<details class="rule-editor" data-rule-card="${index}" ${rule.pattern ? "" : "open"}><summary class="rule-editor-heading"><strong>${escapeHtml(name)}</strong><label class="inline-check"><input data-rule-field="enabled" type="checkbox" ${rule.enabled !== false ? "checked" : ""}>启用</label><button class="row-action danger icon-row-button" type="button" data-remove-rule="${index}" aria-label="删除正则规则 ${escapeHtml(name)}" title="删除正则规则">${iconMarkup("trash-2")}</button></summary><div class="form-grid"><label><span>规则名称</span><input data-rule-field="name" value="${escapeHtml(name)}"></label><label class="full-row"><span>正则表达式</span><textarea data-rule-field="pattern" rows="3">${escapeHtml(rule.pattern)}</textarea></label><label><span>数据类型</span><select data-rule-field="type">${selectOptions(["MACHINE_SECRET", "PII", "LOCAL_CONTEXT", "CREDENTIAL_FILE", "UNKNOWN_SECRET_CANDIDATE"], rule.type)}</select></label><label><span>风险等级（仅用于审计）</span><select data-rule-field="risk">${selectOptions(["critical", "high", "medium", "low"], rule.risk)}</select></label><details class="rule-advanced full-row"><summary>高级选项（选填）</summary><div class="form-grid"><label><span>Flags（逗号分隔）</span><input data-rule-field="flags" value="${escapeHtml((rule.flags || []).join(", "))}"></label><label><span>Validators（选填）</span><input data-rule-field="validators" value="${escapeHtml((rule.validators || []).join(", "))}"></label><label><span>必须通过的 Validators（选填）</span><input data-rule-field="require_validators" value="${escapeHtml((rule.require_validators || []).join(", "))}"></label><label><span>拒绝的 Validators（选填）</span><input data-rule-field="reject_validators" value="${escapeHtml((rule.reject_validators || []).join(", "))}"></label></div></details></div></details>`;
-}
-
-function riskField(prefix, label, risk) {
-  return `<label><span>${label}风险等级（仅用于审计）</span><select id="${prefix}-risk">${selectOptions(["critical", "high", "medium", "low"], risk)}</select></label>`;
-}
-
-function syncModuleSpecificFields() {
-  const module = state.moduleDraft;
-  if (module.type === "regex") {
-    module.config.rules = $$('[data-rule-card]').map((card) => {
-      const field = (name) => card.querySelector(`[data-rule-field="${name}"]`);
-      const previous = module.config.rules[Number(card.dataset.ruleCard)] || {};
-      const displayName = field("name").value.trim() || previous.id;
-      return {...previous, metadata: {...(previous.metadata || {}), display_name: displayName}, pattern: field("pattern").value, type: field("type").value, risk: field("risk").value, flags: commaList(field("flags").value), validators: commaList(field("validators").value), require_validators: commaList(field("require_validators").value), reject_validators: commaList(field("reject_validators").value), enabled: field("enabled").checked};
-    });
-  } else if (module.type === "entropy") {
-    module.config = {...module.config, min_length: Number($("#entropy-min-length").value), min_entropy: Number($("#entropy-threshold").value), risk: $("#entropy-risk").value};
-  } else if (module.type === "path") {
-    module.config = {...module.config, detect_unix_home: $("#path-unix").checked, detect_macos_private: $("#path-private").checked, detect_shell_config: $("#path-shell").checked, detect_windows_user: $("#path-windows").checked, exclude_patterns: commaList($("#path-excludes").value), path_risk: $("#path-risk").value};
-  } else {
-    const model = availableLocalModels().find((item) => item.id === $("#model-selection").value);
-    if (!model) throw new Error("请先准备并选择一个可用的本地模型");
-    module.config = {...module.config, adapter: model.resolved_adapter, model_name: model.source, threshold: Number($("#model-threshold").value), device: model.resolved_device, aggregation_strategy: $("#model-aggregation")?.value || module.config.aggregation_strategy, labels: $("#model-labels") ? commaList($("#model-labels").value) : module.config.labels};
-  }
-}
-
-function applyModuleDraft(event) {
-  event.preventDefault();
-  const form = new FormData(event.target);
-  $("#module-error").textContent = "";
-  try {
-    syncModuleSpecificFields();
-    const submittedName = String(form.get("name") || "").trim();
-    state.moduleDraft.name = submittedName === uiText(state.moduleDraftSourceName)
-      ? state.moduleDraftSourceName
-      : submittedName;
-    state.moduleDraft.timeout_ms = form.get("timeout_ms") ? Number(form.get("timeout_ms")) : null;
-    state.moduleDraft.failure_mode = form.get("failure_mode") || "open";
-    if (!state.moduleDraft.name) throw new Error("请输入模块名称");
-    if (state.editingModuleIndex === null) state.detectorDraft.modules.push(state.moduleDraft);
-    else state.detectorDraft.modules[state.editingModuleIndex] = state.moduleDraft;
-    $("#module-modal").close();
-    renderDetectorConfiguration();
-  } catch (error) { $("#module-error").textContent = error.message; }
-}
-
-function renderDetectionDiagnostics(diagnostics) {
-  const visibleDiagnostics = diagnostics.filter((item) => item.id !== "apg_core");
-  $("#detection-diagnostics").innerHTML = visibleDiagnostics.length ? `<div class="diagnostic-heading"><p class="section-kicker">EXECUTION TRACE</p><span>${visibleDiagnostics.length} 个步骤</span></div>${visibleDiagnostics.map((item, index) => `<div class="diagnostic-row"><span class="diagnostic-order">${index + 1}</span><strong>${escapeHtml(item.id)}</strong><span>${escapeHtml(item.type)}</span><span>${item.findings} 命中</span><span>${Number(item.elapsed_ms).toFixed(2)} ms</span><b class="badge ${item.status === "ok" ? "green" : ["disabled", "unavailable"].includes(item.status) ? "neutral" : "red"}">${escapeHtml(item.status)}</b></div>`).join("")}` : "";
-}
-
-function moduleTypeLabel(type) {
-  return ({regex: "正则检测", entropy: "熵值检测", path: "路径检测", local_model: "本地小模型", deployment: "部署模块"})[type] || type;
-}
-
-function moduleTypeIcon(type) {
-  return ({regex: "regex-reference", entropy: "gauge", path: "folder-tree", local_model: "brain-circuit", deployment: "server-cog"})[type] || "search";
-}
-
-function selectOptions(values, selected) {
-  return values.map((value) => `<option value="${escapeHtml(value)}" ${value === selected ? "selected" : ""}>${escapeHtml(value)}</option>`).join("");
-}
-
-function commaList(value) {
-  return String(value || "").split(",").map((item) => item.trim()).filter(Boolean);
-}
-
-function randomHex(length) {
-  const bytes = crypto.getRandomValues(new Uint8Array(Math.ceil(length / 2)));
-  return [...bytes].map((value) => value.toString(16).padStart(2, "0")).join("").slice(0, length);
-}
-
-function randomId(prefix) {
-  return `${prefix}_${randomHex(12)}`;
-}
-
-async function runDetection() {
-  const text = $("#detection-input").value;
-  if (!text.trim()) return toast("请输入测试文本", true);
-  if (detectorConfigurationDirty()) return toast("请先保存配置草稿再试跑", true);
-  const output = $("#detection-output");
-  output.innerHTML = `<span class="muted">正在检测…</span>`;
-  $("#detection-diagnostics").innerHTML = "";
-  try {
-    const data = await api(`/detector-configurations/${encodeURIComponent(state.detectorDraft.id)}/test`, {method: "POST", body: JSON.stringify({text})});
-    renderHighlightedDetection(output, text, data.findings);
-    renderDetectionDiagnostics(data.diagnostics);
-  } catch (error) { output.innerHTML = `<span class="form-error">${escapeHtml(error.message)}</span>`; handleError(error); }
-}
-
-function renderHighlightedDetection(output, text, findings) {
-  closeDetectionTooltip();
-  output.replaceChildren();
-  if (!findings.length) {
-    const empty = document.createElement("span");
-    empty.className = "muted";
-    empty.textContent = "未发现敏感内容";
-    output.append(empty);
-    return;
-  }
-
-  const characters = Array.from(text);
-  const groups = mergeFindingRanges(characters.length, findings);
-  const summary = document.createElement("div");
-  summary.className = "highlight-summary";
-  const summaryText = document.createElement("strong");
-  summaryText.textContent = `发现 ${groups.length} 处敏感内容`;
-  const localOnly = document.createElement("span");
-  localOnly.textContent = "本地检测 · 悬停或点击高亮查看模块";
-  summary.append(summaryText, localOnly);
-
-  const source = document.createElement("pre");
-  source.className = "highlighted-source";
-  let cursor = 0;
-  groups.forEach((group, index) => {
-    if (group.start > cursor) source.append(document.createTextNode(characters.slice(cursor, group.start).join("")));
-    const mark = document.createElement("mark");
-    mark.className = `text-highlight risk-${group.risk}`;
-    const moduleNames = findingGroupModuleNames(group);
-    mark.tabIndex = 0;
-    mark.setAttribute("role", "button");
-    mark.setAttribute("aria-expanded", "false");
-    mark.setAttribute("aria-label", `检测模块：${moduleNames.join("、")}`);
-    mark.append(document.createTextNode(characters.slice(group.start, group.end).join("")));
-    const marker = document.createElement("sup");
-    marker.className = "highlight-index";
-    marker.textContent = String(index + 1);
-    mark.append(marker);
-    mark.addEventListener("pointerenter", () => {
-      if (!state.detectionTooltipPinned) showDetectionTooltip(mark, group, false);
-    });
-    mark.addEventListener("pointerleave", () => {
-      if (!state.detectionTooltipPinned) closeDetectionTooltip();
-    });
-    mark.addEventListener("focus", () => {
-      if (!state.detectionTooltipPinned) showDetectionTooltip(mark, group, false);
-    });
-    mark.addEventListener("blur", () => {
-      if (!state.detectionTooltipPinned) closeDetectionTooltip();
-    });
-    mark.addEventListener("click", (event) => {
-      event.stopPropagation();
-      if (state.detectionTooltipMark === mark && state.detectionTooltipPinned) closeDetectionTooltip();
-      else showDetectionTooltip(mark, group, true);
-    });
-    source.append(mark);
-    cursor = group.end;
-  });
-  if (cursor < characters.length) source.append(document.createTextNode(characters.slice(cursor).join("")));
-
-  const legend = document.createElement("div");
-  legend.className = "highlight-legend";
-  groups.forEach((group, index) => {
-    const row = document.createElement("div");
-    row.className = "highlight-detail";
-    const number = document.createElement("span");
-    number.className = `detail-index risk-${group.risk}`;
-    number.textContent = String(index + 1);
-    const content = document.createElement("div");
-    const title = document.createElement("strong");
-    title.textContent = unique(group.findings.map((finding) => findingSubtypeLabel(finding.subtype))).join(" + ");
-    const detectors = document.createElement("span");
-    detectors.textContent = findingGroupModuleNames(group).join(" + ");
-    content.append(title, detectors);
-    const risk = document.createElement("b");
-    risk.textContent = riskLabel(group.risk);
-    row.append(number, content, risk);
-    legend.append(row);
-  });
-
-  output.append(summary, source, legend);
-}
-
-function findingGroupModuleNames(group) {
-  return unique(group.findings.flatMap(findingModuleNames));
-}
-
-function findingModuleNames(finding) {
-  const modules = state.detectorDraft?.modules || [];
-  const ruleId = String(finding.metadata?.rule_id || "");
-  const names = [];
-  for (const detector of finding.detectors || []) {
-    if (detector === "rules.apg_markers" || ruleId.startsWith("apg.")) {
-      names.push(uiText("APG 内置安全防线"));
-      continue;
-    }
-    const matched = modules.filter((module) => {
-      if (detector === `rules.${module.id}` || detector === `models.${module.id}`) return true;
-      if (module.type === "regex" && ruleId) {
-        return (module.config?.rules || []).some((rule) => rule.id === ruleId);
-      }
-      if (module.type === "path" && detector === "paths") return true;
-      if (module.type === "entropy" && detector === "heuristic.entropy_context") return true;
-      return false;
-    });
-    if (matched.length) names.push(...matched.map((module) => uiText(module.name)));
-    else names.push(detector);
-  }
-  return unique(names);
-}
-
-function showDetectionTooltip(mark, group, pinned) {
-  closeDetectionTooltip();
-  const tooltip = document.createElement("div");
-  tooltip.className = "detection-tooltip";
-  tooltip.id = "detection-highlight-tooltip";
-  tooltip.setAttribute("role", "tooltip");
-  const label = document.createElement("span");
-  label.textContent = uiText("检测模块");
-  const modules = document.createElement("strong");
-  modules.textContent = findingGroupModuleNames(group).join(" + ");
-  const details = document.createElement("small");
-  details.textContent = `${unique(group.findings.map((finding) => findingSubtypeLabel(finding.subtype))).join(" + ")} · ${group.risk}`;
-  tooltip.append(label, modules, details);
-  document.body.append(tooltip);
-
-  const markBounds = mark.getBoundingClientRect();
-  const tooltipBounds = tooltip.getBoundingClientRect();
-  const margin = 12;
-  const centered = markBounds.left + markBounds.width / 2 - tooltipBounds.width / 2;
-  const left = Math.max(margin, Math.min(window.innerWidth - tooltipBounds.width - margin, centered));
-  let top = markBounds.bottom + 8;
-  if (top + tooltipBounds.height > window.innerHeight - margin) top = markBounds.top - tooltipBounds.height - 8;
-  tooltip.style.left = `${left}px`;
-  tooltip.style.top = `${Math.max(margin, top)}px`;
-
-  mark.setAttribute("aria-expanded", "true");
-  mark.setAttribute("aria-describedby", tooltip.id);
-  state.detectionTooltip = tooltip;
-  state.detectionTooltipMark = mark;
-  state.detectionTooltipPinned = pinned;
-}
-
-function closeDetectionTooltip() {
-  if (state.detectionTooltipMark) {
-    state.detectionTooltipMark.setAttribute("aria-expanded", "false");
-    state.detectionTooltipMark.removeAttribute("aria-describedby");
-  }
-  state.detectionTooltip?.remove();
-  state.detectionTooltip = null;
-  state.detectionTooltipMark = null;
-  state.detectionTooltipPinned = false;
-}
-
-function mergeFindingRanges(textLength, findings) {
-  const riskOrder = {critical: 4, high: 3, medium: 2, low: 1};
-  const ranges = findings
-    .map((finding) => ({
-      start: Math.max(0, Math.min(textLength, Number(finding.original_start))),
-      end: Math.max(0, Math.min(textLength, Number(finding.original_end))),
-      findings: [finding],
-      risk: finding.risk || "low",
-    }))
-    .filter((range) => Number.isFinite(range.start) && Number.isFinite(range.end) && range.end > range.start)
-    .sort((left, right) => left.start - right.start || left.end - right.end);
-  const merged = [];
-  ranges.forEach((range) => {
-    const previous = merged[merged.length - 1];
-    if (previous && range.start < previous.end) {
-      previous.end = Math.max(previous.end, range.end);
-      previous.findings.push(...range.findings);
-      if ((riskOrder[range.risk] || 0) > (riskOrder[previous.risk] || 0)) previous.risk = range.risk;
-    } else {
-      merged.push(range);
-    }
-  });
-  return merged;
-}
-
 function unique(values) {
   return [...new Set(values)];
-}
-
-function findingSubtypeLabel(value) {
-  const labels = {
-    api_key: "API 密钥",
-    access_url_token: "访问链接令牌",
-    credential_username: "登录账号",
-    credential_password: "登录密码",
-    local_path: "本地路径",
-    email: "电子邮箱",
-    phone: "电话号码",
-    private_key: "私钥",
-    bearer_token: "Bearer Token",
-    database_url: "数据库连接",
-    high_entropy_token: "高熵 Token",
-  };
-  return uiText(labels[value] || value);
 }
 
 function confirmAction(title, message, action) {
@@ -2549,12 +1783,8 @@ function valueStateLabel(value) {
 
 function stateLabel(value) { return ({active: "活跃", expired: "已过期", revoked: "已撤销"})[value] || value; }
 function riskLabel(value) { return ({critical: "严重", high: "高", medium: "中", low: "低"})[value] || value; }
-function moduleStatusLabel(value) {
-  if (displayLocale() === "en-US") return value;
-  return ({activated: "已启用", disabled: "已停用", managed: "内置", unavailable: "不可用"})[value] || value;
-}
-function uiText(value) { return window.APG_I18N?.translate(String(value ?? "")) ?? String(value ?? ""); }
-function displayLocale() { return window.APG_I18N?.locale === "en" ? "en-US" : "zh-CN"; }
+function uiText(value) { return window.PF_I18N?.translate(String(value ?? "")) ?? String(value ?? ""); }
+function displayLocale() { return window.PF_I18N?.locale === "en" ? "en-US" : "zh-CN"; }
 function formatNumber(value) { return new Intl.NumberFormat(displayLocale()).format(Number(value || 0)); }
 function formatTime(timestamp) { return timestamp ? new Intl.DateTimeFormat(displayLocale(), {hour: "2-digit", minute: "2-digit"}).format(new Date(timestamp * 1000)) : "-"; }
 function formatDateTime(timestamp) { return timestamp ? new Intl.DateTimeFormat(displayLocale(), {month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", second: "2-digit"}).format(new Date(timestamp * 1000)) : "-"; }
@@ -2581,7 +1811,7 @@ function handleError(error) {
 
 function connectorErrorMessage(error) {
   const message = ({
-    CONNECTOR_CONFIG_CONFLICT: "检测到已有 Agent 配置。确认迁移后，APG 会先保存完整快照再替换；取消则不改动。",
+    CONNECTOR_CONFIG_CONFLICT: "检测到已有 Agent 配置。确认迁移后，PrivacyFlow 会先保存完整快照再替换；取消则不改动。",
     CONNECTOR_CONCURRENT_CHANGE: "配置在接入前发生了变化，请重新打开快速接入并确认迁移。",
     CONNECTOR_EXTERNAL_CHANGES: "接入后的配置已被外部修改，请先恢复原配置。",
     CONNECTOR_PROTOCOL_PROBE_FAILED: "所选模型未通过该 Agent 所需的协议测试。",

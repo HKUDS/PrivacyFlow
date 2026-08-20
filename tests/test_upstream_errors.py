@@ -47,7 +47,7 @@ def test_upstream_connect_error_returns_502_without_traceback(tmp_path) -> None:
     resp = client.post("/v1/chat/completions", headers={"Authorization": "Bearer local"}, json={"messages": [{"content": "hello"}]})
     assert resp.status_code == 502
     body = resp.json()
-    assert body["error"]["code"] == "APG_UPSTREAM_UNREACHABLE"
+    assert body["error"]["code"] == "PF_UPSTREAM_UNREACHABLE"
     assert body["error"]["retryable"] is True
     # Must not leak upstream host or traceback in body.
     assert "traceback" not in resp.text.lower()
@@ -59,7 +59,7 @@ def test_upstream_timeout_returns_504(tmp_path) -> None:
     client = TestClient(create_app(_cfg(tmp_path), _ExplodingUpstream(exc)))
     resp = client.post("/v1/chat/completions", headers={"Authorization": "Bearer local"}, json={"messages": [{"content": "hello"}]})
     assert resp.status_code == 504
-    assert resp.json()["error"]["code"] == "APG_UPSTREAM_TIMEOUT"
+    assert resp.json()["error"]["code"] == "PF_UPSTREAM_TIMEOUT"
 
 
 def test_upstream_models_timeout_returns_504(tmp_path) -> None:
@@ -67,7 +67,7 @@ def test_upstream_models_timeout_returns_504(tmp_path) -> None:
     client = TestClient(create_app(_cfg(tmp_path), _ExplodingUpstream(exc)))
     resp = client.get("/v1/models", headers={"Authorization": "Bearer local"})
     assert resp.status_code == 502
-    assert resp.json()["error"]["code"] == "APG_UPSTREAM_UNREACHABLE"
+    assert resp.json()["error"]["code"] == "PF_UPSTREAM_UNREACHABLE"
 
 
 def test_upstream_models_are_normalized_for_agent_clients(tmp_path) -> None:
@@ -274,4 +274,4 @@ def test_upstream_audit_log_records_error_phase(tmp_path) -> None:
     client = TestClient(create_app(_cfg(tmp_path, ) if False else GatewayConfig(database_path=str(tmp_path / "state.sqlite3"), audit_log_path=str(audit), signing_secret="secret", local_api_keys={"local"}, upstream=UpstreamConfig(api_key="up")), _ExplodingUpstream(exc)))
     client.post("/v1/chat/completions", headers={"Authorization": "Bearer local"}, json={"messages": [{"content": "hello"}]})
     lines = audit.read_text().splitlines()
-    assert any('"phase": "upstream_error"' in line and '"code": "APG_UPSTREAM_UNREACHABLE"' in line for line in lines)
+    assert any('"phase": "upstream_error"' in line and '"code": "PF_UPSTREAM_UNREACHABLE"' in line for line in lines)

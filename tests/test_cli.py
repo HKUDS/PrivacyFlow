@@ -85,6 +85,27 @@ def test_first_start_creates_private_reusable_config_without_prompting_for_upstr
     assert reused["_resolved_upstream_api_key"] == ""
 
 
+def test_new_launcher_exports_only_canonical_pf_environment(tmp_path: Path) -> None:
+    path = tmp_path / ".privacyflow" / "launcher.json"
+    config = prepare_launcher_config(path, environ={})
+    environment: dict[str, str] = {}
+
+    apply_launcher_environment(config, environ=environment)
+
+    assert environment["PF_LOCAL_API_KEYS"].startswith("pf_local_")
+    assert environment["PF_PRIMARY_LOCAL_API_KEY"].startswith("pf_local_")
+    assert environment["PF_LAUNCHER_CONFIG_PATH"] == str(path.resolve())
+    assert not any(name.startswith("APG_") for name in environment)
+
+
+def test_custom_launcher_parent_permissions_are_not_changed(tmp_path: Path) -> None:
+    os.chmod(tmp_path, 0o755)
+
+    prepare_launcher_config(tmp_path / "launcher.json", environ={})
+
+    assert os.stat(tmp_path).st_mode & 0o777 == 0o755
+
+
 def test_saved_webui_upstream_key_is_private_and_reused(tmp_path: Path) -> None:
     path = tmp_path / ".apg" / "launcher.json"
     prepare_launcher_config(path, environ={})
@@ -135,8 +156,10 @@ def test_environment_overrides_launcher_defaults_without_persisting_provider_key
     assert environment["APG_UPSTREAM_BASE_URL"] == "https://environment.example/v1"
     assert environment["APG_UPSTREAM_PROTOCOL"] == ANTHROPIC_MESSAGES
     assert environment["APG_LOCAL_API_KEYS"] == "custom-local-key"
-    assert environment["APG_UPSTREAM_STRIP_LOCAL_V1"] == "true"
-    assert environment["APG_LAUNCHER_CONFIG_PATH"] == str(path.resolve())
+    assert environment["PF_UPSTREAM_STRIP_LOCAL_V1"] == "true"
+    assert environment["PF_LAUNCHER_CONFIG_PATH"] == str(path.resolve())
+    assert "APG_UPSTREAM_STRIP_LOCAL_V1" not in environment
+    assert "APG_LAUNCHER_CONFIG_PATH" not in environment
 
 
 @pytest.mark.parametrize(

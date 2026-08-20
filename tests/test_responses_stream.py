@@ -7,7 +7,7 @@ from fastapi.testclient import TestClient
 from gateway.config import GatewayConfig, UpstreamConfig
 from gateway.placeholder_parser import PLACEHOLDER_RE
 from gateway.redaction_engine import PROTECTED_VALUE, SSEDecoder, parse_sse_event
-from gateway.server import APG_UPSTREAM_SYSTEM_PROMPT, create_app
+from gateway.server import PF_UPSTREAM_SYSTEM_PROMPT, create_app
 from gateway.upstream_protocol import OPENAI_RESPONSES
 
 
@@ -110,11 +110,11 @@ def test_responses_stream_injects_instructions_and_restores_split_placeholder(tm
     client = TestClient(create_app(_cfg(tmp_path), upstream))
     body = _stream(client, {"model": "x", "stream": True, "instructions": "Be concise.", "input": "use " + SECRET})
     sent = upstream.calls[0][2]
-    assert APG_UPSTREAM_SYSTEM_PROMPT in sent["instructions"]
+    assert PF_UPSTREAM_SYSTEM_PROMPT in sent["instructions"]
     assert sent["instructions"].endswith("Be concise.")
     assert SECRET not in json.dumps(sent)
     assert SECRET in body
-    assert "<APG:v1:" not in body
+    assert "<PF:v1:" not in body
     assert PROTECTED_VALUE not in body
     assert 'event: response.output_text.delta' in body
     assert 'event: response.completed' in body
@@ -262,7 +262,7 @@ def test_responses_stream_buffers_and_materializes_interleaved_function_argument
     client = TestClient(create_app(_cfg(tmp_path), ResponsesStreamUpstream(factory)))
     body = _stream(client, {"model": "x", "stream": True, "input": "use " + SECRET})
     assert body.count(SECRET) == 4
-    assert "<APG:v1:" not in body
+    assert "<PF:v1:" not in body
     assert body.index(SECRET) < body.index("response.function_call_arguments.done")
     audit = (tmp_path / "audit.jsonl").read_text()
     assert '"materialized": 2' in audit
@@ -284,7 +284,7 @@ def test_responses_stream_scans_reasoning_refusal_and_unknown_delta_fails_closed
     body = _stream(client, {"model": "x", "stream": True, "input": "hello"})
     assert SECRET not in body
     assert PROTECTED_VALUE in body
-    assert "APG_STREAM_PARSE_ERROR" in body
+    assert "PF_STREAM_PARSE_ERROR" in body
     assert "event: error" in body
 
 
@@ -327,9 +327,9 @@ def test_deepseek_reasoning_text_and_incomplete_are_valid_responses_events(tmp_p
     assert "response.reasoning_text.delta" in body
     assert "response.reasoning_text.done" in body
     assert "response.incomplete" in body
-    assert "APG_STREAM_PARSE_ERROR" not in body
+    assert "PF_STREAM_PARSE_ERROR" not in body
     assert SECRET in body
-    assert "<APG:v1:" not in body
+    assert "<PF:v1:" not in body
 
     rows = [json.loads(line) for line in (tmp_path / "audit.jsonl").read_text().splitlines()]
     complete = next(row for row in rows if row.get("phase") == "response_stream_complete")
@@ -378,9 +378,9 @@ def test_deepseek_custom_tool_input_is_buffered_and_materialized_locally(tmp_pat
     assert "response.custom_tool_call_input.delta" in body
     assert "response.custom_tool_call_input.done" in body
     assert "response.completed" in body
-    assert "APG_STREAM_PARSE_ERROR" not in body
+    assert "PF_STREAM_PARSE_ERROR" not in body
     assert SECRET in body
-    assert "<APG:v1:" not in body
+    assert "<PF:v1:" not in body
 
 
 def test_responses_stream_supports_code_interpreter_and_mcp_text_events(tmp_path) -> None:
@@ -419,9 +419,9 @@ def test_responses_stream_supports_code_interpreter_and_mcp_text_events(tmp_path
     assert "response.code_interpreter_call_code.done" in body
     assert "response.mcp_call_arguments.delta" in body
     assert "response.mcp_call_arguments.done" in body
-    assert "APG_STREAM_PARSE_ERROR" not in body
+    assert "PF_STREAM_PARSE_ERROR" not in body
     assert SECRET in body
-    assert "<APG:v1:" not in body
+    assert "<PF:v1:" not in body
 
 
 def test_responses_stream_passes_audio_and_image_events_through_unchanged(tmp_path) -> None:
@@ -452,7 +452,7 @@ def test_responses_stream_passes_audio_and_image_events_through_unchanged(tmp_pa
     assert audio in body
     assert image in body
     assert SECRET in body
-    assert "APG_STREAM_PARSE_ERROR" not in body
+    assert "PF_STREAM_PARSE_ERROR" not in body
 
 
 def test_responses_sse_parser_preserves_event_name_and_multiline_data() -> None:
@@ -599,7 +599,7 @@ def test_responses_known_values_do_not_mangle_protocol_discriminators(tmp_path) 
     item = sent["input"][0]["content"][0]
     assert item["type"] == "input_text"
     # The assignment value is still protected at the detection site.
-    assert item["text"].startswith("set API_KEY=<APG:")
+    assert item["text"].startswith("set API_KEY=<PF:")
     # The same `x` inside another word is not re-protected by the merge.
     assert "expand next" in item["text"]
 
@@ -619,14 +619,14 @@ def test_responses_stream_flushes_tool_arguments_at_eof_and_rejects_malformed_js
     client = TestClient(create_app(_cfg(tmp_path), ResponsesStreamUpstream(eof_factory)))
     body = _stream(client, {"model": "x", "stream": True, "input": "use " + SECRET})
     assert SECRET in body
-    assert "<APG:v1:" not in body
+    assert "<PF:v1:" not in body
 
     async def malformed():
         yield b"event: response.output_text.delta\ndata: not-json\n\n"
 
     bad_client = TestClient(create_app(_cfg(tmp_path / "bad"), ResponsesStreamUpstream(lambda _: malformed())))
     bad_body = _stream(bad_client, {"model": "x", "stream": True, "input": "hello"})
-    assert "APG_STREAM_PARSE_ERROR" in bad_body
+    assert "PF_STREAM_PARSE_ERROR" in bad_body
     assert "event: error" in bad_body
 
 
@@ -648,4 +648,4 @@ def test_responses_stream_raw_pii_split_across_deltas_has_no_visible_handle(tmp_
     client = TestClient(create_app(_cfg(tmp_path), ResponsesStreamUpstream(lambda _: chunks())))
     body = _stream(client, {"model": "x", "stream": True, "input": "hello"})
     assert email in body
-    assert "<APG" not in body
+    assert "<PF" not in body

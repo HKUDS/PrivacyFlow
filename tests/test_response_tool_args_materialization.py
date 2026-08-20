@@ -136,7 +136,7 @@ def test_forged_placeholder_in_user_visible_text_is_never_materialized(tmp_path)
     content = response.json()["choices"][0]["message"]["content"]
     assert forged not in content
     assert "sk-proj-" not in content
-    assert "APG-managed protected value" in content
+    assert "PrivacyFlow-managed protected value" in content
 
 
 def test_cross_session_placeholder_in_user_visible_text_fails_closed(redactor) -> None:

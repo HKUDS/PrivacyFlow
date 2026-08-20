@@ -30,10 +30,10 @@ SCENARIO_FILES: dict[str, list[str]] = {
     "inline_assignment_log": ["logs/assignment_edge.log"],
 }
 
-APG_PLACEHOLDER_RE = re.compile(
-    r"<APG:v1:[^:>]+:(?P<handle>[^:>]+):[^:>]+:(?P<issued_at>\d+):[^>]+>"
+PF_PLACEHOLDER_RE = re.compile(
+    r"<PF:v1:[^:>]+:(?P<handle>[^:>]+):[^:>]+:(?P<issued_at>\d+):[^>]+>"
 )
-GENERIC_APG_PLACEHOLDER_RE = re.compile(r"<APG:[^>\r\n]+>")
+GENERIC_PF_PLACEHOLDER_RE = re.compile(r"<PF:[^>\r\n]+>")
 LOCAL_ARTIFACT_PATH_RE = re.compile(
     r"/private/(?:tmp|var)/[^\s\"'<>]+"
 )
@@ -63,7 +63,7 @@ def _sanitize_export_value(value: Any) -> Any:
     sanitized = value
     for protected_value in sorted(SYNTHETIC_EVIDENCE_VALUES, key=len, reverse=True):
         sanitized = sanitized.replace(protected_value, "<synthetic-protected-value>")
-    sanitized = GENERIC_APG_PLACEHOLDER_RE.sub("<APG:placeholder>", sanitized)
+    sanitized = GENERIC_PF_PLACEHOLDER_RE.sub("<PF:placeholder>", sanitized)
     sanitized = TOKEN_LIKE_RE.sub("<token-like-value>", sanitized)
     sanitized = LOCAL_ARTIFACT_PATH_RE.sub("<local-artifact-path>", sanitized)
     sanitized = LOCAL_HOME_PATH_RE.sub("<local-home-path>", sanitized)
@@ -238,7 +238,7 @@ def _transcript(artifacts: str, agent: str) -> dict[str, Any]:
 
 def _operation_annotations(artifacts: str) -> list[dict[str, Any]]:
     artifact_path = Path(artifacts)
-    database = artifact_path / "apg_proxy_state.sqlite3"
+    database = artifact_path / "pf_proxy_state.sqlite3"
     if not database.is_file():
         return []
 
@@ -248,7 +248,7 @@ def _operation_annotations(artifacts: str) -> list[dict[str, Any]]:
         upstream_text = upstream_log.read_text(encoding="utf-8", errors="replace")
     placeholders: dict[tuple[str, int], str] = {}
     placeholders_by_handle: dict[str, str] = {}
-    for match in APG_PLACEHOLDER_RE.finditer(upstream_text):
+    for match in PF_PLACEHOLDER_RE.finditer(upstream_text):
         placeholder = match.group(0)
         handle = match.group("handle")
         issued_at = int(match.group("issued_at"))
@@ -287,7 +287,7 @@ def _operation_annotations(artifacts: str) -> list[dict[str, Any]]:
         else:
             representation = placeholders.get(
                 (str(row["handle_id"]), int(row["issued_at"] or 0)),
-                placeholders_by_handle.get(str(row["handle_id"]), "APG signed placeholder"),
+                placeholders_by_handle.get(str(row["handle_id"]), "PF signed placeholder"),
             ) + str(row["suffix"] or "")
         key = (
             str(row["direction"]),
@@ -349,7 +349,7 @@ def _safe_result(result: dict[str, Any]) -> dict[str, Any]:
         "leak_file_count": len(result.get("leak_hit_files", [])),
         "final_materialized_value_count": int(result.get("final_materialized_value_count", 0) or 0),
         "final_values_authorized": bool(result.get("final_values_authorized", True)),
-        "final_has_apg_handle": bool(result.get("final_has_apg_handle")),
+        "final_has_pf_handle": bool(result.get("final_has_pf_handle")),
         "scenario_failures": [str(value) for value in result.get("scenario_failures", [])],
         "artifacts": str(result.get("artifacts", "")),
     }
@@ -401,7 +401,7 @@ def main() -> None:
     output.parent.mkdir(parents=True, exist_ok=True)
     sanitized_payload = _sanitize_export_value(payload)
     output.write_text(
-        "window.APG_LIVE_EVIDENCE = "
+        "window.PF_LIVE_EVIDENCE = "
         + json.dumps(sanitized_payload, ensure_ascii=False, indent=2)
         + ";\n",
         encoding="utf-8",

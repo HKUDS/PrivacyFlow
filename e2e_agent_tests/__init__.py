@@ -1,1 +1,1 @@
-"""Independent realistic E2E test package for Agent Privacy Gateway."""
+"""Independent realistic E2E test package for PrivacyFlow."""

@@ -1,9 +1,10 @@
 # Roadmap
 
-APG currently provides native Chat Completions, Responses, and Anthropic
+PrivacyFlow currently provides native Chat Completions, Responses, and Anthropic
 Messages proxying; stateful streaming; signed placeholders; path aliases;
-response-field-classified tool-argument materialization; retention and tombstones; detector and
-local-model management; safe audit views; and a loopback-only WebUI.
+response-field-classified tool-argument materialization; retention and tombstones;
+a fixed built-in detection pipeline; local-model management; safe audit views; and
+a loopback-only WebUI.
 
 Future work is intentionally limited to the privacy proxy boundary:
 
@@ -18,5 +19,5 @@ Future work is intentionally limited to the privacy proxy boundary:
 
 Protocol translation, tool approval, domain policy, file-write arbitration,
 MCP capability brokering, runtime secret tracing, browser extensions, and
-agent-launch wrappers are not part of the current APG design. Those controls
+agent-launch wrappers are not part of the current PrivacyFlow design. Those controls
 belong to the Agent harness or operating environment.

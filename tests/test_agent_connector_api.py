@@ -139,7 +139,7 @@ def test_existing_agent_config_requires_explicit_migration_confirmation(
         assert conflict.status_code == 409
         assert conflict.json()["detail"] == {
             "code": "CONNECTOR_CONFIG_CONFLICT",
-            "message": "The reserved Claude Code APG environment keys already exist. Confirm migration before APG replaces them.",
+            "message": "The reserved Claude Code PrivacyFlow environment keys already exist. Confirm migration before they are replaced.",
             "paths": [str(path)],
             "requires_confirmation": True,
         }

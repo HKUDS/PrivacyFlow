@@ -59,7 +59,7 @@ TOOL_ARG_PARENTS = {"custom_tool_call", "function", "tool_use"}
 STREAM_TEXT_BASE_TAIL = 256
 STREAM_TEXT_MAX_PENDING = 4096
 STREAM_TEXT_MAX_STRICT_BLOCK = 1_048_576
-PROTECTED_VALUE = "APG-managed protected value"
+PROTECTED_VALUE = "PrivacyFlow-managed protected value"
 
 _TOKEN_CHAR_RE = re.compile(r"[A-Za-z0-9._~+/=:@-]")
 _ENV_ASSIGNMENT_RE = re.compile(
@@ -156,6 +156,7 @@ async def iter_sse_data(chunks: AsyncIterator[bytes]) -> AsyncIterator[str]:
 
 @dataclass
 class StreamAuditSummary:
+    namespace: str = "APG"
     folded: int = 0
     materialized: int = 0
     failures: Counter[str] = field(default_factory=Counter)
@@ -178,7 +179,7 @@ class StreamAuditSummary:
             elif event.get("action") == "materialize":
                 self.materialized += 1
             elif event.get("action") == "preserve":
-                self.failures[str(event.get("result_code") or "APG_MATERIALIZATION_FAILED")] += 1
+                self.failures[str(event.get("result_code") or f"{self.namespace}_MATERIALIZATION_FAILED")] += 1
             operation = event.get("_audit_operation")
             if isinstance(operation, dict):
                 self._record_audit_operation(operation)
@@ -340,7 +341,7 @@ class BalancedStreamScanner:
             if len(self.pending) > STREAM_TEXT_MAX_STRICT_BLOCK:
                 self.pending = ""
                 self.suppressed = True
-                return PROTECTED_VALUE, [self._fold_event("stream_strict_limit")]
+                return self.redactor.protected_value, [self._fold_event("stream_strict_limit")]
             return "", []
 
         cut = max(0, len(self.pending) - self.tail)
@@ -380,7 +381,7 @@ class BalancedStreamScanner:
         if candidate_start is None:
             return self._sanitize(text)
         prefix, prefix_events = self._sanitize(text[:candidate_start])
-        return prefix + PROTECTED_VALUE, [*prefix_events, self._fold_event("incomplete_stream_candidate")]
+        return prefix + self.redactor.protected_value, [*prefix_events, self._fold_event("incomplete_stream_candidate")]
 
     def _sanitize(self, text: str) -> tuple[str, list[dict[str, Any]]]:
         if not text:
@@ -402,9 +403,9 @@ class BalancedStreamScanner:
 
     def _incomplete_candidate_start(self, text: str, *, include_pem: bool = False) -> int | None:
         starts: list[int] = []
-        apg_start = _partial_apg_start(text)
-        if apg_start is not None:
-            starts.append(apg_start)
+        pf_start = _partial_pf_start(text)
+        if pf_start is not None:
+            starts.append(pf_start)
         alias_start = _partial_sequence_start(text, self.path_aliases)
         if alias_start is not None:
             starts.append(alias_start)
@@ -423,7 +424,7 @@ class BalancedStreamScanner:
         candidate = self.pending[start:]
         self.discard_mode = _candidate_discard_mode(candidate)
         self.pending = ""
-        return prefix + PROTECTED_VALUE, [*events, self._fold_event("stream_pending_limit")]
+        return prefix + self.redactor.protected_value, [*events, self._fold_event("stream_pending_limit")]
 
     def _consume_discard(self, text: str) -> tuple[str, list[dict[str, Any]]]:
         if self.discard_mode is None:
@@ -457,14 +458,18 @@ class BalancedStreamScanner:
         }
 
 
-def _partial_apg_start(text: str) -> int | None:
-    marker = "<APG"
-    index = text.rfind(marker)
-    if index >= 0 and ">" not in text[index:]:
-        return index
-    for length in range(min(len(text), len(marker) - 1), 0, -1):
-        if text.endswith(marker[:length]):
-            return len(text) - length
+def _partial_pf_start(text: str) -> int | None:
+    starts: list[int] = []
+    for marker in ("<PF", "<APG"):
+        index = text.rfind(marker)
+        if index >= 0 and ">" not in text[index:]:
+            starts.append(index)
+        for length in range(min(len(text), len(marker) - 1), 0, -1):
+            if text.endswith(marker[:length]):
+                starts.append(len(text) - length)
+                break
+    if starts:
+        return min(starts)
     return None
 
 
@@ -489,7 +494,7 @@ def _unclosed_pem_start(text: str) -> int | None:
 def _candidate_discard_mode(text: str) -> str:
     if _unclosed_pem_start(text) is not None:
         return "pem"
-    if _partial_apg_start(text) is not None:
+    if _partial_pf_start(text) is not None:
         return "apg"
     if _ENV_ASSIGNMENT_RE.search(text.rsplit("\n", 1)[-1]):
         return "line"
@@ -508,6 +513,8 @@ class RedactionEngine:
         self.detector_manager = detector_manager
         self.mapping_store = mapping_store
         self.signer = signer
+        self.namespace = getattr(signer, "namespace", getattr(mapping_store, "namespace", "APG"))
+        self.protected_value = "PrivacyFlow-managed protected value" if self.namespace == "PF" else "APG-managed protected value"
         self.policy = policy
         self.workspace_id = workspace_id
         self.path_aliases = PathAliasManager()
@@ -529,6 +536,20 @@ class RedactionEngine:
         # credentials-only config no longer keeps re-aliasing paths that were
         # mapped by an earlier path-inclusive configuration.
         self._supported_kinds_cache: tuple[DetectorManager, frozenset[str]] | None = None
+
+    def _code(self, suffix: str) -> str:
+        return f"{self.namespace}_{suffix}"
+
+    def _normalize_code(self, code: str | None) -> str | None:
+        if not isinstance(code, str):
+            return code
+        for other in ("PF", "APG"):
+            if other != self.namespace and code.startswith(f"{other}_"):
+                return f"{self.namespace}_{code[len(other) + 1:]}"
+        return code
+
+    def _marker_type(self) -> str:
+        return "PF_MARKER" if self.namespace == "PF" else "APG_MARKER"
 
     def sanitize_json(self, data: Any, session_id: str, scope: str = "request", *, alias_paths: bool = True, skip_tool_args: bool = False) -> tuple[Any, list[dict[str, Any]]]:
         events: list[dict[str, Any]] = []
@@ -624,8 +645,8 @@ class RedactionEngine:
                 out.append(raw)
                 cursor = det.span_end
                 continue
-            if fold_apg_markers and (det.type == "APG_MARKER" or det.subtype in {"signed_placeholder", "redaction_marker"}):
-                replacement = "APG-managed protected value"
+            if fold_apg_markers and (det.type in {"PF_MARKER", "APG_MARKER"} or det.subtype in {"signed_placeholder", "redaction_marker"}):
+                replacement = self.protected_value
                 events.append(
                     {
                         "type": det.type,
@@ -640,7 +661,7 @@ class RedactionEngine:
                 cursor = det.span_end
                 continue
             if fold_apg_markers and det.type == "secret" and scope == "response":
-                replacement = "APG-managed protected value"
+                replacement = self.protected_value
                 events.append(
                     {
                         "type": det.type,
@@ -791,7 +812,7 @@ class RedactionEngine:
                     if not getattr(rule, "enabled", True):
                         continue
                     rule_type = getattr(rule, "type", "")
-                    if rule_type in {"MACHINE_SECRET", "APG_MARKER", "UNKNOWN_SECRET_CANDIDATE"}:
+                    if rule_type in {"MACHINE_SECRET", "PF_MARKER", "APG_MARKER", "UNKNOWN_SECRET_CANDIDATE"}:
                         kinds.add("secret")
                     elif rule_type == "PII":
                         if self.policy.pii_mode == "redact":
@@ -841,7 +862,7 @@ class RedactionEngine:
                 mac=match.group("mac"),
             )
             record: MappingRecord | None = None
-            result_code = "APG_PLACEHOLDER_INVALID_MAC"
+            result_code = self._code("PLACEHOLDER_INVALID_MAC")
             valid = self.signer.is_valid(placeholder)
             if valid:
                 valid, record, result_code = self.mapping_store.validate_active(
@@ -851,10 +872,10 @@ class RedactionEngine:
                 )
                 if valid and placeholder.session_id != session_id:
                     valid = False
-                    result_code = "APG_PLACEHOLDER_SCOPE_MISMATCH"
+                    result_code = self._code("PLACEHOLDER_SCOPE_MISMATCH")
                 if valid and record is not None and placeholder.kind != record.kind:
                     valid = False
-                    result_code = "APG_PLACEHOLDER_POLICY_MISMATCH"
+                    result_code = self._code("PLACEHOLDER_POLICY_MISMATCH")
             if valid and record is not None:
                 replacement = self._issue_placeholder(placeholder.kind, record)
                 start = output_length
@@ -864,19 +885,19 @@ class RedactionEngine:
                 action = "preserve" if replacement == placeholder.raw else "canonicalize"
                 result_code = "OK"
             else:
-                replacement = "APG-managed protected value"
+                replacement = self.protected_value
                 out.append(replacement)
                 output_length += len(replacement)
                 action = "fold"
             events.append(
                 {
-                    "type": "APG_MARKER",
+                    "type": self._marker_type(),
                     "subtype": "signed_placeholder",
                     "detector": "placeholder_parser",
                     "risk": "high",
                     "action": action,
                     "result_code": result_code,
-                    "safe_preview": "<APG:...>",
+                    "safe_preview": f"<{self.namespace}:...>",
                 }
             )
             cursor = match.end()
@@ -1021,7 +1042,7 @@ class RedactionEngine:
                 result_code = "OK"
             else:
                 action = "preserve"
-                result_code = result.error_code or "APG_MATERIALIZATION_FAILED"
+                result_code = self._normalize_code(result.error_code) or self._code("MATERIALIZATION_FAILED")
             rec = self.mapping_store.get(ph.handle_id) if self.signer.is_valid(ph) else None
             if rec is None:
                 events.append(
@@ -1310,7 +1331,7 @@ class RedactionEngine:
             # assignment detection treats it as an intentionally unresolved
             # local value rather than folding it as another secret. Restore
             # only the occurrence created here below.
-            token = f"$APG_LOCAL_RESTORE_{restore_nonce}_{len(restorations):08d}"
+            token = f"$PF_LOCAL_RESTORE_{restore_nonce}_{len(restorations):08d}"
             restorations[token] = raw
             return token
 
@@ -1336,7 +1357,7 @@ class RedactionEngine:
                 result_code = "OK"
             else:
                 action = "preserve"
-                result_code = result.error_code or "APG_MATERIALIZATION_FAILED"
+                result_code = self._normalize_code(result.error_code) or self._code("MATERIALIZATION_FAILED")
             rec = self.mapping_store.get(ph.handle_id) if result.allowed and self.signer.is_valid(ph) else None
             if rec is None:
                 events.append({"type": "materialization", "kind": ph.kind, "sink": "local_user", "action": action, "result_code": result_code})
@@ -1406,7 +1427,7 @@ class RedactionEngine:
         on_complete: Callable[[dict[str, Any]], None] | None = None,
     ) -> AsyncIterator[bytes]:
         """Statefully scan an OpenAI Chat Completions SSE response."""
-        summary = StreamAuditSummary()
+        summary = StreamAuditSummary(namespace=self.namespace)
         path_mapping = self._active_path_mapping(session_id)
         text_scanners: dict[int, BalancedStreamScanner] = {}
         tool_buffers: dict[tuple[int, int], _OpenAIToolBuffer] = {}
@@ -1585,7 +1606,7 @@ class RedactionEngine:
             tool_error = isinstance(exc, ToolArgumentsJSONError)
             error = {
                 "error": {
-                    "code": "APG_TOOL_ARGUMENTS_INVALID" if tool_error else "APG_STREAM_PARSE_ERROR",
+                    "code": self._code("TOOL_ARGUMENTS_INVALID") if tool_error else self._code("STREAM_PARSE_ERROR"),
                     "message": (
                         "The upstream tool-call arguments were not valid JSON."
                         if tool_error
@@ -1610,7 +1631,7 @@ class RedactionEngine:
         on_complete: Callable[[dict[str, Any]], None] | None = None,
     ) -> AsyncIterator[bytes]:
         """Scan a native Anthropic Messages SSE stream without protocol conversion."""
-        summary = StreamAuditSummary()
+        summary = StreamAuditSummary(namespace=self.namespace)
         path_mapping = self._active_path_mapping(session_id)
         text_scanners: dict[int, BalancedStreamScanner] = {}
         tool_buffers: dict[int, dict[str, str | bool]] = {}
@@ -1830,7 +1851,7 @@ class RedactionEngine:
         on_complete: Callable[[dict[str, Any]], None] | None = None,
     ) -> AsyncIterator[bytes]:
         """Statefully scan an OpenAI Responses API SSE stream."""
-        summary = StreamAuditSummary()
+        summary = StreamAuditSummary(namespace=self.namespace)
         path_mapping = self._active_path_mapping(session_id)
         text_scanners: dict[tuple[str, int, int, str], BalancedStreamScanner] = {}
         text_templates: dict[tuple[str, int, int, str], tuple[SSEEvent, dict[str, Any]]] = {}
@@ -2121,7 +2142,7 @@ class RedactionEngine:
             summary.termination = "protocol_error"
             error = {
                 "type": "error",
-                "code": "APG_STREAM_PARSE_ERROR",
+                "code": self._code("STREAM_PARSE_ERROR"),
                 "message": "The upstream Responses stream could not be safely parsed.",
                 "retryable": True,
             }

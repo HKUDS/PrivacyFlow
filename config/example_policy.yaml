@@ -1,10 +1,10 @@
 bind_host: 127.0.0.1
 bind_port: 8765
-database_path: .apg/state.sqlite3
-audit_log_path: .apg/audit.jsonl
+database_path: .privacyflow/state.sqlite3
+audit_log_path: .privacyflow/audit.jsonl
 signing_secret: change-this-local-secret
 local_api_keys:
-  - apg-local
+  - pf-local
 admin_enabled: true
 workspace_id: default
 strict_mode: true
@@ -15,45 +15,6 @@ upstream:
   # One of: openai_chat_completions, openai_responses, anthropic_messages.
   protocol: openai_chat_completions
   base_url: https://api.openai.com
-  api_key: ${APG_UPSTREAM_API_KEY}
+  api_key: ${PF_UPSTREAM_API_KEY}
   timeout_seconds: 60
   strip_local_v1: false
-
-detectors:
-  # YAML presets are exposed in the WebUI as read-only deployment templates.
-  # User-editable configurations live in detector-control.json.
-  preset: default
-  flow_timeout_ms: 1500
-  allow_model_download: true
-  overrides:
-    rules:
-      add:
-        - id: custom.internal_ticket
-          pattern: "\\bTICKET-[0-9]{6}\\b"
-          type: LOCAL_CONTEXT
-          subtype: internal_ticket
-          risk: medium
-          suggested_action: redact
-      disable: []
-    modules: {}
-  presets:
-    custom_minimal:
-      flow_timeout_ms: 1000
-      modules:
-        - id: custom_rules
-          type: regex_rules
-          enabled: true
-          rules:
-            - id: custom.partner_token
-              pattern: "\\bpartner_live_[A-Za-z0-9]{12,}\\b"
-              type: MACHINE_SECRET
-              subtype: partner_token
-              risk: high
-              suggested_action: redact
-        - id: entropy
-          type: entropy_context
-          enabled: true
-          min_length: 20
-          min_entropy: 3.5
-          risk: medium
-          timeout_ms: 100

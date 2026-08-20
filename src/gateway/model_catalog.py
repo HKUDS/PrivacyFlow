@@ -1,6 +1,6 @@
 """Provider model-catalog discovery shared by the admin UI and connectors.
 
-The catalog endpoint is deliberately kept separate from inference routing.  APG
+The catalog endpoint is deliberately kept separate from inference routing.  PrivacyFlow
 does not translate protocols or rewrite model names at request time; it only
 discovers the upstream identifiers and preserves the provider's display metadata
 for configuration UIs.
@@ -287,13 +287,13 @@ def classify_catalog_error(status_code: int | None, headers: Mapping[str, str] |
     """Map an upstream result to a stable, non-secret UI error category."""
 
     if status_code is None:
-        return CatalogError("APG_UPSTREAM_UNREACHABLE", "unreachable", "The upstream provider could not be reached.")
+        return CatalogError("PF_UPSTREAM_UNREACHABLE", "unreachable", "The upstream provider could not be reached.")
     if status_code in {401, 403}:
-        return CatalogError("APG_UPSTREAM_AUTH", "authentication", "The upstream rejected the catalog credentials.", status_code)
+        return CatalogError("PF_UPSTREAM_AUTH", "authentication", "The upstream rejected the catalog credentials.", status_code)
     if status_code == 404:
-        return CatalogError("APG_UPSTREAM_MODELS_NOT_FOUND", "not_found", "The provider has no model catalog at the discovered endpoints.", status_code)
+        return CatalogError("PF_UPSTREAM_MODELS_NOT_FOUND", "not_found", "The provider has no model catalog at the discovered endpoints.", status_code)
     if status_code in {405, 501}:
-        return CatalogError("APG_UPSTREAM_MODELS_UNSUPPORTED", "unsupported", "The provider does not support model-list discovery.", status_code)
+        return CatalogError("PF_UPSTREAM_MODELS_UNSUPPORTED", "unsupported", "The provider does not support model-list discovery.", status_code)
     content_type = str((headers or {}).get("content-type", "")).lower()
     if 200 <= status_code < 300 and content_type and "json" not in content_type:
         has_catalog_shape = isinstance(body, list) or (
@@ -301,12 +301,12 @@ def classify_catalog_error(status_code: int | None, headers: Mapping[str, str] |
             and (isinstance(body.get("data"), list) or isinstance(body.get("models"), list))
         )
         if not has_catalog_shape:
-            return CatalogError("APG_UPSTREAM_NON_JSON", "response_format", "The upstream model-list endpoint returned a non-JSON response.", status_code)
+            return CatalogError("PF_UPSTREAM_NON_JSON", "response_format", "The upstream model-list endpoint returned a non-JSON response.", status_code)
     if 400 <= status_code:
-        return CatalogError("APG_UPSTREAM_MODELS_FAILED", "upstream", f"The upstream model-list request returned HTTP {status_code}.", status_code)
+        return CatalogError("PF_UPSTREAM_MODELS_FAILED", "upstream", f"The upstream model-list request returned HTTP {status_code}.", status_code)
     if not isinstance(body, (dict, list)):
-        return CatalogError("APG_UPSTREAM_MODEL_CATALOG_INVALID", "response_format", "The model-list response was not a supported JSON shape.", status_code)
-    return CatalogError("APG_UPSTREAM_MODEL_CATALOG_EMPTY", "empty", "The upstream returned no usable model identifiers.", status_code)
+        return CatalogError("PF_UPSTREAM_MODEL_CATALOG_INVALID", "response_format", "The model-list response was not a supported JSON shape.", status_code)
+    return CatalogError("PF_UPSTREAM_MODEL_CATALOG_EMPTY", "empty", "The upstream returned no usable model identifiers.", status_code)
 
 
 async def fetch_model_catalog(
@@ -323,7 +323,7 @@ async def fetch_model_catalog(
     candidates = build_model_catalog_urls(base_url, models_url=models_url, strip_local_v1=strip_local_v1)
     result = ModelCatalog(attempted_endpoints=list(candidates))
     if not candidates:
-        result.error = CatalogError("APG_MODEL_CATALOG_URL_INVALID", "configuration", "No model-list URL could be derived.")
+        result.error = CatalogError("PF_MODEL_CATALOG_URL_INVALID", "configuration", "No model-list URL could be derived.")
         return result
     for endpoint in candidates:
         try:
@@ -332,7 +332,7 @@ async def fetch_model_catalog(
             result.status_code = None
             timeout = exc.__class__.__name__ in {"TimeoutException", "ConnectTimeout", "ReadTimeout", "WriteTimeout", "PoolTimeout"}
             result.error = CatalogError(
-                "APG_UPSTREAM_TIMEOUT" if timeout else "APG_UPSTREAM_UNREACHABLE",
+                "PF_UPSTREAM_TIMEOUT" if timeout else "PF_UPSTREAM_UNREACHABLE",
                 "timeout" if timeout else "unreachable",
                 "The upstream request timed out." if timeout else "The upstream provider could not be reached.",
             )

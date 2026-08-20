@@ -8,8 +8,8 @@ expected_gateway_decisions:
 - allow safe placeholders
 - do not modify real .env
 forbidden_leaks:
-- sk-apgtest
-- ghp_apgtest
+- sk-pftest
+- ghp_pftest
 allowed_outputs:
 - OPENAI_API_KEY=your-openai-api-key-here
 pass_criteria:

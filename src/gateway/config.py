@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
 
+from gateway.compat import get_env, legacy_code
 from gateway.upstream_protocol import (
     OPENAI_CHAT_COMPLETIONS,
     SUPPORTED_UPSTREAM_PROTOCOLS,
@@ -33,17 +34,16 @@ class UpstreamConfig:
 class GatewayConfig:
     bind_host: str = "127.0.0.1"
     bind_port: int = 8765
-    database_path: str = ".apg/state.sqlite3"
-    audit_log_path: str = ".apg/audit.jsonl"
+    database_path: str = ".privacyflow/state.sqlite3"
+    audit_log_path: str = ".privacyflow/audit.jsonl"
     signing_secret: str = "dev-only-change-me"
-    local_api_keys: set[str] = field(default_factory=lambda: {"apg-local"})
+    local_api_keys: set[str] = field(default_factory=lambda: {"pf-local"})
     primary_local_api_key: str = ""
     admin_enabled: bool = True
     workspace_id: str = "default"
     strict_mode: bool = True
     pii_mode: str = "pseudonymize"
     gc_interval_seconds: float = 60.0
-    detectors_config: dict[str, Any] = field(default_factory=dict)
     upstream: UpstreamConfig = field(default_factory=UpstreamConfig)
 
 
@@ -57,7 +57,10 @@ def _load_yaml(path: Path) -> dict[str, Any]:
     with path.open("r", encoding="utf-8") as f:
         value = yaml.safe_load(f) or {}
     if not isinstance(value, dict):
-        raise RuntimeError("APG configuration root must be a YAML object. (APG_CONFIG_ROOT_INVALID)")
+        raise RuntimeError(
+            "PrivacyFlow configuration root must be a YAML object. "
+            "(PF_CONFIG_ROOT_INVALID; legacy APG_CONFIG_ROOT_INVALID)"
+        )
     return value
 
 
@@ -97,24 +100,31 @@ def _safe_provider_type(value: Any) -> str:
 
 
 def load_config(path: str | None = None) -> GatewayConfig:
-    config_path = Path(path or os.getenv("APG_CONFIG_PATH", "")) if path or os.getenv("APG_CONFIG_PATH") else None
+    configured_path = path or get_env("CONFIG_PATH", default="")
+    config_path = Path(configured_path) if configured_path else None
     raw = _load_yaml(config_path) if config_path else {}
-    strict_mode = _env_bool("APG_STRICT", raw.get("strict_mode", True))
+    strict_mode = _env_bool("STRICT", raw.get("strict_mode", True))
     raw = _expand_env_refs(raw, strict_mode)
+    if "detectors" in raw:
+        warnings.warn(
+            "The detectors configuration section is no longer supported and is ignored; "
+            "PrivacyFlow always uses its fixed built-in protection pipeline.",
+            FutureWarning,
+            stacklevel=2,
+        )
     upstream_raw = raw.get("upstream", {})
-    detectors_raw = dict(raw.get("detectors", {}))
     upstream_protocol = canonical_upstream_protocol(
-        os.getenv("APG_UPSTREAM_PROTOCOL", upstream_raw.get("protocol", OPENAI_CHAT_COMPLETIONS))
+        get_env("UPSTREAM_PROTOCOL", default=upstream_raw.get("protocol", OPENAI_CHAT_COMPLETIONS))
     )
     upstream = UpstreamConfig(
-        base_url=os.getenv("APG_UPSTREAM_BASE_URL", upstream_raw.get("base_url", "https://api.openai.com")).rstrip("/"),
-        api_key=os.getenv("APG_UPSTREAM_API_KEY", upstream_raw.get("api_key", "")),
+        base_url=str(get_env("UPSTREAM_BASE_URL", default=upstream_raw.get("base_url", "https://api.openai.com"))).rstrip("/"),
+        api_key=str(get_env("UPSTREAM_API_KEY", default=upstream_raw.get("api_key", ""))),
         protocol=upstream_protocol,
-        provider_type=_safe_provider_type(os.getenv("APG_UPSTREAM_PROVIDER_TYPE", upstream_raw.get("provider_type", "custom"))),
-        models_url=_safe_optional_upstream_url(os.getenv("APG_UPSTREAM_MODELS_URL", upstream_raw.get("models_url", ""))),
-        user_agent=_safe_optional_user_agent(os.getenv("APG_UPSTREAM_USER_AGENT", upstream_raw.get("user_agent", ""))),
-        timeout_seconds=float(os.getenv("APG_UPSTREAM_TIMEOUT", upstream_raw.get("timeout_seconds", 60.0))),
-        strip_local_v1=_env_bool("APG_UPSTREAM_STRIP_LOCAL_V1", upstream_raw.get("strip_local_v1", False)),
+        provider_type=_safe_provider_type(get_env("UPSTREAM_PROVIDER_TYPE", default=upstream_raw.get("provider_type", "custom"))),
+        models_url=_safe_optional_upstream_url(get_env("UPSTREAM_MODELS_URL", default=upstream_raw.get("models_url", ""))),
+        user_agent=_safe_optional_user_agent(get_env("UPSTREAM_USER_AGENT", default=upstream_raw.get("user_agent", ""))),
+        timeout_seconds=float(get_env("UPSTREAM_TIMEOUT", default=upstream_raw.get("timeout_seconds", 60.0))),
+        strip_local_v1=_env_bool("UPSTREAM_STRIP_LOCAL_V1", upstream_raw.get("strip_local_v1", False)),
         endpoint_overrides={
             canonical_upstream_protocol(str(key)): str(value).strip().rstrip("/")
             for key, value in dict(upstream_raw.get("endpoint_overrides", {})).items()
@@ -122,58 +132,60 @@ def load_config(path: str | None = None) -> GatewayConfig:
         }
         if isinstance(upstream_raw.get("endpoint_overrides", {}), dict)
         else {},
-        proxy=str(os.getenv("APG_UPSTREAM_PROXY") or upstream_raw.get("proxy") or "").strip() or None,
+        proxy=str(get_env("UPSTREAM_PROXY", default=upstream_raw.get("proxy") or "") or "").strip() or None,
     )
     if upstream.protocol not in {"", *SUPPORTED_UPSTREAM_PROTOCOLS}:
         raise RuntimeError(
             "upstream.protocol must be 'openai_chat_completions', 'openai_responses', "
-            "or 'anthropic_messages'. (APG_UPSTREAM_PROTOCOL_INVALID)"
+            "or 'anthropic_messages'. (PF_UPSTREAM_PROTOCOL_INVALID)"
         )
-    keys = os.getenv("APG_LOCAL_API_KEYS")
-    raw_keys = keys.split(",") if keys is not None else raw.get("local_api_keys", ["apg-local"])
+    keys = get_env("LOCAL_API_KEYS")
+    raw_keys = keys.split(",") if keys is not None else raw.get("local_api_keys", ["pf-local"])
     if not isinstance(raw_keys, (list, tuple, set)):
         raw_keys = [raw_keys]
     local_api_keys = {str(key).strip() for key in raw_keys if str(key).strip()}
-    primary_local_api_key = os.getenv("APG_PRIMARY_LOCAL_API_KEY", str(raw.get("primary_local_api_key", ""))).strip()
-    signing_secret = os.getenv("APG_SIGNING_SECRET", raw.get("signing_secret", "dev-only-change-me"))
+    primary_local_api_key = str(get_env("PRIMARY_LOCAL_API_KEY", default=raw.get("primary_local_api_key", ""))).strip()
+    signing_secret = str(get_env("SIGNING_SECRET", default=raw.get("signing_secret", "dev-only-change-me")))
 
     if not local_api_keys:
         _warn_or_raise(
             strict_mode,
-            "No local Agent API key is configured. Set APG_LOCAL_API_KEYS to at least one non-empty key.",
-            "APG_STRICT_LOCAL_KEY_EMPTY",
+            "No local Agent API key is configured. Set PF_LOCAL_API_KEYS to at least one non-empty key.",
+            "PF_STRICT_LOCAL_KEY_EMPTY",
         )
-    elif "apg-local" in local_api_keys and keys is None:
+    elif "pf-local" in local_api_keys and keys is None:
         _warn_or_raise(
             strict_mode,
-            "Using default API key 'apg-local' under strict_mode=True. "
-            "Set APG_LOCAL_API_KEYS (comma-separated) or pass strict_mode: false.",
-            "APG_STRICT_LOCAL_KEY",
+            "Using default API key 'pf-local' under strict_mode=True. "
+            "Set PF_LOCAL_API_KEYS (comma-separated) or pass strict_mode: false.",
+            "PF_STRICT_LOCAL_KEY",
         )
     if signing_secret == "dev-only-change-me":
         _warn_or_raise(
             strict_mode,
             "Using default signing secret under strict_mode=True. "
-            "Set APG_SIGNING_SECRET to a random value, or pass strict_mode: false for dev.",
-            "APG_STRICT_SIGNING_SECRET",
+            "Set PF_SIGNING_SECRET to a random value, or pass strict_mode: false for dev.",
+            "PF_STRICT_SIGNING_SECRET",
         )
-    pii_mode = os.getenv("APG_PII_MODE", raw.get("pii_mode", "pseudonymize"))
+    pii_mode = get_env("PII_MODE", default=raw.get("pii_mode", "pseudonymize"))
     if strict_mode and pii_mode == "allow":
-        raise RuntimeError("pii_mode=allow is not permitted under strict_mode=True. (APG_STRICT_PII_ALLOW)")
+        raise RuntimeError(
+            "pii_mode=allow is not permitted under strict_mode=True. "
+            "(PF_STRICT_PII_ALLOW; legacy APG_STRICT_PII_ALLOW)"
+        )
     return GatewayConfig(
-        bind_host=os.getenv("APG_HOST", raw.get("bind_host", "127.0.0.1")),
-        bind_port=int(os.getenv("APG_PORT", raw.get("bind_port", 8765))),
-        database_path=os.getenv("APG_DATABASE_PATH", raw.get("database_path", ".apg/state.sqlite3")),
-        audit_log_path=os.getenv("APG_AUDIT_LOG_PATH", raw.get("audit_log_path", ".apg/audit.jsonl")),
+        bind_host=str(get_env("HOST", default=raw.get("bind_host", "127.0.0.1"))),
+        bind_port=int(get_env("PORT", default=raw.get("bind_port", 8765))),
+        database_path=str(get_env("DATABASE_PATH", default=raw.get("database_path", ".privacyflow/state.sqlite3"))),
+        audit_log_path=str(get_env("AUDIT_LOG_PATH", default=raw.get("audit_log_path", ".privacyflow/audit.jsonl"))),
         signing_secret=signing_secret,
         local_api_keys=local_api_keys,
         primary_local_api_key=primary_local_api_key,
-        admin_enabled=_env_bool("APG_ADMIN_ENABLED", raw.get("admin_enabled", True)),
-        workspace_id=os.getenv("APG_WORKSPACE_ID", raw.get("workspace_id", "default")),
+        admin_enabled=_env_bool("ADMIN_ENABLED", raw.get("admin_enabled", True)),
+        workspace_id=str(get_env("WORKSPACE_ID", default=raw.get("workspace_id", "default"))),
         strict_mode=strict_mode,
         pii_mode=pii_mode,
-        gc_interval_seconds=float(os.getenv("APG_GC_INTERVAL_SECONDS", raw.get("gc_interval_seconds", 60.0))),
-        detectors_config=detectors_raw,
+        gc_interval_seconds=float(get_env("GC_INTERVAL_SECONDS", default=raw.get("gc_interval_seconds", 60.0))),
         upstream=upstream,
     )
 
@@ -181,12 +193,12 @@ def load_config(path: str | None = None) -> GatewayConfig:
 def _warn_or_raise(strict: bool, msg: str, reason_code: str) -> None:
     """In ``strict_mode`` we fail-closed startup; otherwise issue a warning."""
     if strict:
-        raise RuntimeError(f"{msg} ({reason_code})")
+        raise RuntimeError(f"{msg} ({reason_code}; legacy {legacy_code(reason_code)})")
     warnings.warn(msg, RuntimeWarning, stacklevel=2)
 
 
 def _env_bool(name: str, default: bool) -> bool:
-    value = os.getenv(name)
+    value = get_env(name)
     if value is None:
         return bool(default)
     return value.strip().lower() in {"1", "true", "yes", "on"}
@@ -206,8 +218,11 @@ def _expand_env_refs(value: Any, strict: bool) -> Any:
     if match is None:
         return value
     name = match.group(1)
-    resolved = os.getenv(name)
+    if name.startswith(("PF_", "APG_")):
+        resolved = get_env(name)
+    else:
+        resolved = os.getenv(name)
     if resolved is not None:
         return resolved
-    _warn_or_raise(strict, f"Configuration references unset environment variable {name}.", "APG_CONFIG_ENV_UNRESOLVED")
+    _warn_or_raise(strict, f"Configuration references unset environment variable {name}.", "PF_CONFIG_ENV_UNRESOLVED")
     return ""

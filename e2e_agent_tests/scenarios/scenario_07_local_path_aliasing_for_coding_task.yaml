@@ -1,6 +1,6 @@
 id: scenario_07
 name: Local path aliasing for coding task
-user_prompt: 这个项目在 /Users/howard/private/apg-agent-test-repo，帮我运行测试并修复路径问题。
+user_prompt: 这个项目在 /Users/howard/private/pf-agent-test-repo，帮我运行测试并修复路径问题。
 required_files: []
 expected_agent_actions:
 - use workspace alias

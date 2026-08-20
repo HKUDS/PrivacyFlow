@@ -11,7 +11,7 @@ expected_gateway_decisions:
 - preserve error context
 forbidden_leaks:
 - eyJhbGci
-- sk-apgtest
+- sk-pftest
 allowed_outputs:
 - error cause analysis
 pass_criteria:

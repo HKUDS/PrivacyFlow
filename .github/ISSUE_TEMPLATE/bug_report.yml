@@ -1,5 +1,5 @@
 name: Bug report
-description: Report a reproducible APG defect using synthetic data
+description: Report a reproducible PrivacyFlow defect using synthetic data
 title: "[Bug]: "
 labels: ["bug"]
 body:
@@ -10,7 +10,7 @@ body:
   - type: input
     id: version
     attributes:
-      label: APG version or commit
+      label: PrivacyFlow version or commit
     validations:
       required: true
   - type: dropdown

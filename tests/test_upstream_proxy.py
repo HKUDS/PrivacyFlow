@@ -191,7 +191,8 @@ def test_apply_launcher_environment_exports_proxy(tmp_path) -> None:
     prepared = prepare_launcher_config(path, environ={})
     environment: dict[str, str] = {}
     apply_launcher_environment(prepared, environ=environment)
-    assert environment["APG_UPSTREAM_PROXY"] == "http://127.0.0.1:7890"
+    assert environment["PF_UPSTREAM_PROXY"] == "http://127.0.0.1:7890"
+    assert "APG_UPSTREAM_PROXY" not in environment
 
 
 def test_save_profile_preserves_existing_proxy_when_omitted(tmp_path) -> None:

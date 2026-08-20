@@ -9,6 +9,7 @@ FindingType = Literal[
     "MACHINE_SECRET",
     "PII",
     "LOCAL_CONTEXT",
+    "PF_MARKER",
     "APG_MARKER",
     "CREDENTIAL_FILE",
     "UNKNOWN_SECRET_CANDIDATE",

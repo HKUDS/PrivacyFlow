@@ -1,5 +1,7 @@
 # APG Realistic Agent E2E Test Report
 
+> Historical APG report retained as generated. New E2E runs and the report generator use the PrivacyFlow (PF) namespace.
+
 Scenarios run: 14
 Passed: 14
 Failed: 0

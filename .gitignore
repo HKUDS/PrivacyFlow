@@ -3,6 +3,9 @@
 .apg/
 .apg-*/
 .apg-e2e*/
+.privacyflow/
+.privacyflow-*/
+.privacyflow-e2e*/
 .claude/
 .pytest_cache/
 .ruff_cache/
@@ -19,6 +22,9 @@ __pycache__/
 .DS_Store
 .idea/
 .vscode/
+node_modules/
+playwright-report/
+test-results/
 .env
 .env.*
 !.env.example

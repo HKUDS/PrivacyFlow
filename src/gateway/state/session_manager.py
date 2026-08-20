@@ -9,7 +9,7 @@ from pathlib import Path
 
 
 class SessionScopeError(RuntimeError):
-    code = "APG_SESSION_SCOPE_MISMATCH"
+    code = "PF_SESSION_SCOPE_MISMATCH"
 
 
 class SessionManager:

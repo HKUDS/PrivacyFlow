@@ -32,7 +32,7 @@ class AdminService:
         self.store = store
         self.audit = audit
         self.detector_control = detector_control
-        self.signer = PlaceholderSigner(config.signing_secret, config.workspace_id)
+        self.signer = PlaceholderSigner(config.signing_secret, config.workspace_id, namespace="PF")
 
     def overview(self) -> dict[str, Any]:
         events, truncated = self._read_events(max_events=5000)
@@ -458,7 +458,7 @@ class AdminService:
                         group["materialization_count"] += 1
                     elif detection.get("action") == "preserve":
                         group["materialization_failed_count"] += 1
-                        group["materialization_failures"][str(detection.get("result_code") or "APG_MATERIALIZATION_FAILED")] += 1
+                        group["materialization_failures"][str(detection.get("result_code") or "PF_MATERIALIZATION_FAILED")] += 1
             group["materialization_count"] += int(event.get("materialized", event.get("materialized_count", 0)) or 0)
         return groups
 

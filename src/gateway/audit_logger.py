@@ -54,7 +54,7 @@ class AuditLogger:
 
 
 def scrub_audit_value(value: Any, depth: int = 0) -> Any:
-    """Return an audit-safe copy without raw values or APG capabilities."""
+    """Return an audit-safe copy without raw values or PrivacyFlow capabilities."""
     if depth > 10:
         return "<max_depth>"
     if isinstance(value, dict):
@@ -82,7 +82,8 @@ def scrub_audit_value(value: Any, depth: int = 0) -> Any:
 
 
 _SCRUB_MARKERS = (
-    "<APG",           # Signed APG placeholders and redaction markers
+    "<PF",            # Signed PrivacyFlow placeholders and redaction markers
+    "<APG",           # Legacy signed placeholders and redaction markers
     "sk-",            # OpenAI / general API key prefix
     "-----BEGIN",     # PEM private key header
     "Bearer ",         # Bearer token prefix

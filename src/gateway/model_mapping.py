@@ -1,7 +1,7 @@
 """Explicit, UI-facing model-role mapping helpers.
 
 cc-switch maps Claude roles (haiku/sonnet/opus/fable/subagent) to upstream
-identifiers.  APG intentionally does not apply those mappings inside proxy
+identifiers.  PrivacyFlow intentionally does not apply those mappings inside proxy
 traffic: the selected *actual* identifier is written to an Agent configuration
 and is sent unchanged.  These helpers only build/validate mapping data for a
 future explicit mapping mode and for previews.

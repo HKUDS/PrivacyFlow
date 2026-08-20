@@ -1,8 +1,8 @@
 <p align="center">
-  <img src="assets/branding/apg-icon-robot-shield-v2.png" width="128" alt="Agent Privacy Gateway robot shield logo">
+  <img src="assets/branding/privacyflow-icon.svg" width="128" alt="PrivacyFlow shield logo">
 </p>
 
-<h1 align="center">Agent Privacy Gateway</h1>
+<h1 align="center">PrivacyFlow</h1>
 
 <p align="center">
   <strong>English</strong> · <a href="README_zh.md">简体中文</a>
@@ -16,7 +16,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/HKUDS/Agent-Privacy-Gateway/actions/workflows/ci.yml"><img src="https://github.com/HKUDS/Agent-Privacy-Gateway/actions/workflows/ci.yml/badge.svg" alt="CI status"></a>
+  <a href="https://github.com/HKUDS/PrivacyFlow/actions/workflows/ci.yml"><img src="https://github.com/HKUDS/PrivacyFlow/actions/workflows/ci.yml/badge.svg" alt="CI status"></a>
   <a href="https://www.python.org/"><img src="https://img.shields.io/badge/Python-3.11%2B-3776AB?logo=python&logoColor=white" alt="Python 3.11 or newer"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-Apache--2.0-4C7A64" alt="Apache 2.0 license"></a>
   <img src="https://img.shields.io/badge/Status-Alpha-C47A19" alt="Alpha status">
@@ -31,10 +31,10 @@
 </p>
 
 <p align="center">
-  <img src="docs/agent-privacy-gateway-architecture.png" width="100%" alt="Agent Privacy Gateway architecture: sensitive values are replaced locally before cloud upload and restored in conversations and tool-use arguments so the Agent keeps working normally">
+  <img src="docs/privacyflow-architecture.svg" width="100%" alt="PrivacyFlow architecture: sensitive values are replaced locally before cloud upload and restored in conversations and tool-use arguments so the Agent keeps working normally">
 </p>
 
-## Why APG?
+## Why PrivacyFlow?
 
 When users rely on agents for real work, they often need those agents to read
 `.env` files, logs, configuration, source code, and tool arguments. Sometimes,
@@ -67,7 +67,7 @@ sensitive or confidential information.[^provider-defaults]
 These policies do not mean that every provider trains on every request.
 But the providers' own warnings make the practical boundary clear: users should
 not assume that a cloud LLM is an appropriate place for plaintext personal data
-or secrets. APG enforces that boundary locally instead of relying on every user,
+or secrets. PrivacyFlow enforces that boundary locally instead of relying on every user,
 agent, setting, and intermediary to handle sensitive values correctly.
 
 ### What users have reported
@@ -86,7 +86,7 @@ reappear under unexpected conditions.
 | ChatGPT | Multiple users reported receiving responses unrelated to files they had uploaded. One response allegedly contained a document uploaded by a local lawyer. [View the discussion](https://news.ycombinator.com/item?id=43615756) |
 | Gemini | After uploading audio for transcription, a user received an unrelated business-meeting transcript containing names, corporate email addresses, contracts, and document links. The poster said some of the people and details could be verified. [View the original post](https://www.reddit.com/r/GeminiAI/comments/1v8700z/gemini_gave_me_someone_elses_transcript/) |
 
-APG does not need to assume that every anomaly is a data breach. It replaces
+PrivacyFlow does not need to assume that every anomaly is a data breach. It replaces
 values detected in supported textual fields before a request leaves the device.
 If an upstream service experiences incorrect routing, logging, context
 contamination, or another unexpected failure, those replaced values appear as
@@ -98,39 +98,47 @@ value—even when the intended operation is legitimate. The user is then forced
 to replace, paste, or manage sensitive values manually, adding friction and
 more human-in-the-loop work.
 
-APG keeps a detected literal value local and gives the model a stable
+PrivacyFlow keeps a detected literal value local and gives the model a stable
 placeholder instead. The model only needs to know that a secret exists and
-where it should be used; it rarely needs to know the secret itself. APG verifies
+where it should be used; it rarely needs to know the secret itself. PrivacyFlow verifies
 the handle and restores it in two protocol-defined response classes: ordinary
 client-visible text and recognized structured tool-call arguments. These are
 field classifications, not tool authorization or execution approval.
 
 | Detect locally | Protect before upload | Restore locally |
 | --- | --- | --- |
-| Credentials, PII, local paths, and optional high-entropy findings in scanned text fields | Signed placeholders and stable path aliases replace detected values | Verified values reappear in client-visible answers and recognized structured tool arguments |
+| Credentials, PII, and local paths in scanned text fields | Signed placeholders and stable path aliases replace detected values | Verified values reappear in client-visible answers and recognized structured tool arguments |
 
-### What makes APG different
+PrivacyFlow uses one fixed built-in detection pipeline for traffic. It combines
+deterministic credential and personal-information rules with local-path detection,
+then applies the fixed placeholder and streaming safety layers. The WebUI and
+management API do not expose detector presets, custom configurations, module
+editing or ordering, dry runs, or per-detector failure-mode settings. Local model
+management remains available for preparing local model artifacts, but it does not
+attach a model to this pipeline.
+
+### What makes PrivacyFlow different
 
 - **Transparent protection** — the model works with stable placeholders; the
   local Agent client receives validated values back without manually decoding them.
 - **Local control plane** — provider credentials are configured locally and
   used only for upstream authentication rather than returned to the Agent;
-  mappings, detector configuration, audit records, and optional models stay on
+  mappings, fixed detector state, audit records, and optional models stay on
   the machine.
 - **Defense against placeholder spoofing** — materialization checks signature,
   session, workspace, mapping state, expiry, revocation, and response-field class.
-- **Inspectable behavior** — dry-run detectors, review protected mappings, and
-  audit every replacement and restoration without storing raw values in logs.
+- **Inspectable behavior** — review protected mappings and audit every
+  replacement and restoration without storing raw values in logs.
 
 ## 🛡️ How it works
 
-APG handles both directions locally. Before a request leaves the device, it
+PrivacyFlow handles both directions locally. Before a request leaves the device, it
 walks supported textual JSON fields, detects sensitive values, and replaces
 them with signed placeholders or stable path aliases. When the model response
-returns, APG treats ordinary response text as `local_user` and recognized
+returns, PrivacyFlow treats ordinary response text as `local_user` and recognized
 structured tool-call argument fields as `local_tool`, validates handles, and
 restores their local mappings before returning the response to the Agent. These
-labels describe protocol locations; APG does not approve or execute the tool.
+labels describe protocol locations; PrivacyFlow does not approve or execute the tool.
 
 Given this local input:
 
@@ -142,8 +150,8 @@ and use key sk-example-not-a-real-key.
 the model sees:
 
 ```text
-Email <APG:v1:pii:...>, open /workspace/project-hash,
-and use key <APG:v1:secret:...>.
+Email <PF:v1:pii:...>, open /workspace/project-hash,
+and use key <PF:v1:secret:...>.
 ```
 
 After the model returns the placeholders, the client-visible local result is:
@@ -153,7 +161,7 @@ Email alice@example.test, open /Users/alice/private/project,
 and use key sk-example-not-a-real-key.
 ```
 
-If the model needs a protected value, it keeps the placeholder unchanged. APG
+If the model needs a protected value, it keeps the placeholder unchanged. PrivacyFlow
 verifies the placeholder and restores the original in ordinary local response
 text or a recognized decoded structured tool argument. A later request is
 scanned again before it can reach the model.
@@ -161,14 +169,14 @@ scanned again before it can reach the model.
 This contract covers supported textual JSON and SSE fields. Protocol identifiers
 and opaque multimodal payload fields such as `image_url`, `file_data`, audio, and
 image blocks are deliberately passed through unchanged to avoid corrupting the
-wire format. APG therefore does not claim complete request-wide or multimodal
+wire format. PrivacyFlow therefore does not claim complete request-wide or multimodal
 data-loss prevention.
 
 ## ⚡ Quick Start
 
-> **Fast path: connect your Agent in one click.** Once APG is running and an
+> **Fast path: connect your Agent in one click.** Once PrivacyFlow is running and an
 > upstream is enabled, open **Agent quick connect**, choose a model, and click
-> **Quick connect**. APG detects your installed Codex, Claude Code, DeepSeek
+> **Quick connect**. PrivacyFlow detects your installed Codex, Claude Code, DeepSeek
 > Harness, or nanobot, validates its native protocol, and writes the user-level
 > configuration for you—no manual endpoint or key copying. The change can be
 > undone at any time with **Restore previous configuration**.
@@ -178,8 +186,8 @@ data-loss prevention.
 Requirements: Python 3.11 or newer on macOS, Linux, or Windows.
 
 ```bash
-git clone https://github.com/HKUDS/Agent-Privacy-Gateway.git
-cd Agent-Privacy-Gateway
+git clone https://github.com/HKUDS/PrivacyFlow.git
+cd PrivacyFlow
 
 python3 -m venv .venv
 . .venv/bin/activate
@@ -189,17 +197,17 @@ python -m pip install -e .
 On Windows PowerShell, activate the environment with
 `.venv\Scripts\Activate.ps1`.
 
-### 2. Start APG
+### 2. Start PrivacyFlow
 
 ```bash
-apg
+privacyflow
 ```
 
-The first start creates `.apg/launcher.json`, a random local Agent API key, and
-a signing secret. APG prints its loopback WebUI:
+The first start creates `.privacyflow/launcher.json`, a random local Agent API key, and
+a signing secret. PrivacyFlow prints its loopback WebUI:
 
 ```text
-Agent Privacy Gateway
+PrivacyFlow
 WebUI: http://127.0.0.1:8765/ui/
 ```
 
@@ -210,60 +218,70 @@ Open the WebUI and:
 1. add a named upstream configuration;
 2. enter the provider Base URL and API key;
 3. save and enable the configuration;
-4. turn on the APG master switch.
+4. turn on the PrivacyFlow master switch.
 
 Provider keys are written to the local launcher configuration with mode `0600`
 where supported and are never returned by the management API.
 Every connection exposes the Chat Completions, Responses, and Anthropic Messages
-entrypoints by default. APG selects the matching native upstream route from the
+entrypoints by default. PrivacyFlow selects the matching native upstream route from the
 incoming endpoint and never converts between formats. If the provider does not
-support that format, APG returns the actual upstream error.
+support that format, PrivacyFlow returns the actual upstream error.
 
-### 4. Connect an Agent to APG
+### 4. Connect an Agent to PrivacyFlow
 
 The WebUI's **Agent quick connect** view configures installed Codex, Claude Code,
-DeepSeek Harness, and nanobot user-level instances. APG refreshes the upstream
+DeepSeek Harness, and nanobot user-level instances. PrivacyFlow refreshes the upstream
 model catalog and performs a real probe using the Agent's native protocol before
-writing any file. DeepSeek Harness uses endpoint configuration; APG does not
+writing any file. DeepSeek Harness uses endpoint configuration; PrivacyFlow does not
 install a native dsh plugin.
 
-Each Agent receives a dedicated local key. APG snapshots complete configuration
+Each Agent receives a dedicated local key. PrivacyFlow snapshots complete configuration
 files before connection. **Restore previous configuration** writes back the exact
 original bytes and permissions, or removes a file that did not previously exist.
 If a target already contains a reserved provider, preset, or environment key,
 the first attempt lists the affected paths and asks for explicit migration
-confirmation. APG only replaces the files after confirmation, and saves the
+confirmation. PrivacyFlow only replaces the files after confirmation, and saves the
 complete pre-connect snapshot first; cancel leaves the configuration untouched.
-If a file changed after connection, APG requires confirmation and saves the
+If a file changed after connection, PrivacyFlow requires confirmation and saves the
 current version as a safety backup first.
 
 The Overview connection strip remains available for manually connecting other
-Agents with APG's Base URL and primary local API key.
+Agents with PrivacyFlow's Base URL and primary local API key.
 
 Copy the Base URL and generated local API key from **Agent connection** in the
-WebUI. Select the model in the Agent itself—APG deliberately does not own model
+WebUI. Select the model in the Agent itself—PrivacyFlow deliberately does not own model
 selection.
 
-| Agent request format | APG Base URL |
+| Agent request format | PrivacyFlow Base URL |
 | --- | --- |
 | OpenAI Chat Completions | `http://127.0.0.1:8765/v1` |
 | OpenAI Responses | `http://127.0.0.1:8765/v1` |
 | Anthropic Messages | `http://127.0.0.1:8765` |
 
 > [!NOTE]
-> APG does not convert between Chat Completions, Responses, and Anthropic
+> PrivacyFlow does not convert between Chat Completions, Responses, and Anthropic
 > Messages. The Agent and upstream must support the same request format. To
 > manage and quickly switch connection profiles across different Agents and
 > model providers, consider using [CC Switch](https://github.com/farion1231/cc-switch)
-> alongside APG. CC Switch manages configurations; it is not APG's protocol
+> alongside PrivacyFlow. CC Switch manages configurations; it is not PrivacyFlow's protocol
 > conversion layer.
 
-The repository-level `./apg` wrapper is also available for development
-checkouts. Installed environments should use the `apg` command.
+The repository-level `./privacyflow` wrapper is available for development
+checkouts. The old `apg` command remains a migration-release compatibility alias.
+
+If an existing installation still uses `.apg/`, run `privacyflow migrate` once.
+It copies the launcher, database, audit log, detector state, local-model state,
+and Agent connector transactions into `.privacyflow/`, verifies the copy, and
+normalizes any stale legacy detector editor state to the fixed built-in pipeline.
+The original `.apg/` tree is kept as a read-only `.apg.legacy/<timestamp>/`
+backup, including the untouched legacy detector file. Migration never edits shell
+startup files. During this release, `APG_*` environment variables, legacy
+`X-APG-*` headers, and `<APG:v1:...>` placeholders remain readable; `PF_*`,
+`X-PF-*`, and `<PF:v1:...>` are the canonical forms.
 
 ## 🔌 Supported API formats
 
-APG accepts three API formats:
+PrivacyFlow accepts three API formats:
 
 | Format | Local endpoint |
 | --- | --- |
@@ -271,23 +289,19 @@ APG accepts three API formats:
 | OpenAI Responses | `POST /v1/responses` |
 | Anthropic Messages | `POST /v1/messages` |
 
-APG forwards each request in its original API format and does not translate it
+PrivacyFlow forwards each request in its original API format and does not translate it
 into another protocol.
 
 ## ✨ Features
 
 ### Protection pipeline
 
-- deterministic credential and API-key rules;
-- deterministic personal-information rules;
-- local path detection and stable workspace aliases;
-- optional entropy/context heuristics;
-- optional local small-model detection;
+- one fixed built-in pipeline for credentials, API keys, personal information,
+  local paths, and stable workspace aliases;
 - session-bound signed placeholders and lifecycle-aware mappings;
 - streaming-safe replacement and restoration;
 - structured tool-argument materialization;
-- detector dry runs with per-finding module attribution;
-- configurable fail-open/fail-close behavior for detector failures.
+- fixed handling for detector and placeholder failures.
 
 Risk levels are audit metadata. They do not change how protected data is
 replaced; enforcement remains in the policy, mapping, placeholder, and
@@ -297,12 +311,12 @@ upstream request.
 
 ### Control and observability
 
-- one-click APG master switch;
+- one-click PrivacyFlow master switch;
 - multiple named upstream configurations;
 - all three native API entrypoints on every upstream configuration;
 - random local Agent API-key generation;
 - bilingual English/Chinese WebUI;
-- detector presets, ordering, enablement, duplication, and advanced settings;
+- one fixed built-in protection pipeline with a global PrivacyFlow switch;
 - protected-value review, revocation, and retention controls;
 - replacement and restoration audit views;
 - responsive desktop and mobile management UI.
@@ -316,20 +330,20 @@ existing local directory. **Add and prepare** performs:
 inspect → prepare isolated runtime → download → real inference verification
 ```
 
-APG does not install PyTorch into its own environment. It creates a versioned
-runtime under `.apg/runtimes/`, stores managed model data under `.apg/models/`,
+PrivacyFlow does not install PyTorch into its own environment. It creates a versioned
+runtime under `.privacyflow/runtimes/`, stores managed model data under `.privacyflow/models/`,
 and communicates with a local worker over private JSON Lines. Remote custom code
 is disabled, and local model directories remain read-only.
 
 ## 🔒 Security boundary
 
-APG protects detected values in supported textual fields of traffic that
-actually passes through APG. Its scope is intentionally narrower than a DLP,
+PrivacyFlow protects detected values in supported textual fields of traffic that
+actually passes through PrivacyFlow. Its scope is intentionally narrower than a DLP,
 sandbox, or endpoint security product.
 
-| APG does | APG does not |
+| PrivacyFlow does | PrivacyFlow does not |
 | --- | --- |
-| Detect and replace configured sensitive values before upstream transmission | Stop an Agent process from reading local files directly |
+| Detect and replace sensitive values before upstream transmission | Stop an Agent process from reading local files directly |
 | Let Agent clients use a local key instead of the provider key, and never return provider keys in management responses | Approve tool calls or control the Agent's permissions |
 | Validate signed placeholders before local restoration | Control destinations contacted by locally executed tools |
 | Keep mappings, configuration, models, and audit state local | Replace a secrets manager, network policy, EDR, or OS sandbox |
@@ -337,12 +351,12 @@ sandbox, or endpoint security product.
 
 Scanning is limited to supported textual protocol fields. Opaque multimodal
 payloads and protocol identifiers pass through unchanged. Structured tool-call
-arguments are classified by their response shape; APG does not verify that the
+arguments are classified by their response shape; PrivacyFlow does not verify that the
 named tool is local, permitted, or safe before restoring a valid handle.
 
 The management API and WebUI intentionally have **no application-layer
 authentication**. They must remain loopback-only. Never publish port `8765`,
-reverse-proxy the management routes, or bind APG to an untrusted network.
+reverse-proxy the management routes, or bind PrivacyFlow to an untrusted network.
 
 A prompt-injected model can still request a local tool call that sends a
 materialized secret to an attacker. The Agent harness must gate tool execution
@@ -359,15 +373,15 @@ The WebUI is the recommended configuration path.
 <summary><strong>Advanced environment configuration</strong></summary>
 
 ```bash
-export APG_UPSTREAM_API_KEY='provider-key'
-export APG_UPSTREAM_BASE_URL='https://api.openai.com'
-export APG_UPSTREAM_PROTOCOL='openai_chat_completions'
-export APG_SIGNING_SECRET='long-random-local-secret'
-export APG_LOCAL_API_KEYS='long-random-agent-key'
-export APG_PORT=8765
+export PF_UPSTREAM_API_KEY='provider-key'
+export PF_UPSTREAM_BASE_URL='https://api.openai.com'
+export PF_UPSTREAM_PROTOCOL='openai_chat_completions'
+export PF_SIGNING_SECRET='long-random-local-secret'
+export PF_LOCAL_API_KEYS='long-random-agent-key'
+export PF_PORT=8765
 ```
 
-`APG_UPSTREAM_PROTOCOL` accepts:
+`PF_UPSTREAM_PROTOCOL` accepts:
 
 - `openai_chat_completions`
 - `openai_responses`
@@ -376,9 +390,9 @@ export APG_PORT=8765
 Useful optional settings:
 
 ```bash
-export APG_ADMIN_ENABLED=true
-export APG_PII_MODE='pseudonymize'  # pseudonymize, redact, or allow
-export APG_GC_INTERVAL_SECONDS=60
+export PF_ADMIN_ENABLED=true
+export PF_PII_MODE='pseudonymize'  # pseudonymize, redact, or allow
+export PF_GC_INTERVAL_SECONDS=60
 ```
 
 See [`config/example_policy.yaml`](config/example_policy.yaml) for policy
@@ -386,22 +400,22 @@ settings.
 
 </details>
 
-Local state defaults to `.apg/`:
+Local state defaults to `.privacyflow/`:
 
 | Path | Contents |
 | --- | --- |
 | `launcher.json` | Named upstream profiles, provider keys, local Agent key |
 | `state.sqlite3` | Protected-value mappings and operation records |
 | `audit.jsonl` | Sanitized append-only audit events |
-| `detector-control.json` | Detector configurations |
+| `detector-control.json` | Internal fixed-pipeline state and global protection toggle; stale legacy editor data is normalized or ignored |
 | `local-models.json` | Local-model catalog and validation state |
-| `models/` | APG-managed Hugging Face cache |
+| `models/` | PrivacyFlow-managed Hugging Face cache |
 | `runtimes/` | Isolated model runtime |
 
 Secret-bearing files are created with restrictive permissions where supported.
 Provider keys and active mapping values are stored locally in plaintext rather
-than encrypted by APG. Place the state directory on encrypted storage and
-restrict access to the APG process user.
+than encrypted by PrivacyFlow. Place the state directory on encrypted storage and
+restrict access to the PrivacyFlow process user.
 
 ## ✅ Validation
 
@@ -410,7 +424,7 @@ The main branch keeps the standard regression suite:
 | Layer | Purpose | Command or evidence |
 | --- | --- | --- |
 | Unit and API regression | Proxy, detector, mapping, stream, UI, and security behavior | `pytest -m 'not integration'` |
-| Networked local-model integration | Isolated runtime download and real Worker inference | `APG_RUN_LOCAL_MODEL_INTEGRATION=1 pytest -m integration tests/test_local_models_integration.py` |
+| Networked local-model integration | Isolated runtime download and real Worker inference | `PF_RUN_LOCAL_MODEL_INTEGRATION=1 pytest -m integration tests/test_local_models_integration.py` |
 
 ## 📚 Documentation
 
@@ -438,7 +452,7 @@ ruff check .
 Networked local-model integration is intentionally excluded from normal tests:
 
 ```bash
-APG_RUN_LOCAL_MODEL_INTEGRATION=1 pytest -m integration \
+PF_RUN_LOCAL_MODEL_INTEGRATION=1 pytest -m integration \
   tests/test_local_models_integration.py
 ```
 
@@ -462,7 +476,7 @@ unsanitized Agent transcripts in issues or pull requests.
 
 ## License
 
-Agent Privacy Gateway is licensed under the
+PrivacyFlow is licensed under the
 [Apache License 2.0](LICENSE). Bundled third-party notices are kept under
 [`docs/vendor/`](docs/vendor/).
 

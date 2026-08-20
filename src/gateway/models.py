@@ -20,7 +20,7 @@ class Detection:
             return self.type
         # Unknown types: map MACHINE_SECRET-like types to "secret", others to "other"
         # This avoids silently treating non-sensitive detector output as secrets
-        if self.type in {"CREDENTIAL_FILE", "APG_MARKER", "UNKNOWN_SECRET_CANDIDATE"}:
+        if self.type in {"CREDENTIAL_FILE", "PF_MARKER", "APG_MARKER", "UNKNOWN_SECRET_CANDIDATE"}:
             return "secret"
         return "other"
 

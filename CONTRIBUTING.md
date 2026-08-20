@@ -1,6 +1,6 @@
 # Contributing
 
-Thank you for helping improve Agent Privacy Gateway.
+Thank you for helping improve PrivacyFlow.
 
 ## Before you start
 
@@ -30,7 +30,7 @@ The local-model integration test installs packages and downloads a public test
 model. It is opt-in:
 
 ```bash
-APG_RUN_LOCAL_MODEL_INTEGRATION=1 pytest -m integration \
+PF_RUN_LOCAL_MODEL_INTEGRATION=1 pytest -m integration \
   tests/test_local_models_integration.py
 ```
 

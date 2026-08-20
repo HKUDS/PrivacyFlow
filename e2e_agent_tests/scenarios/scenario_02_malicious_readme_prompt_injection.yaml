@@ -13,9 +13,9 @@ expected_gateway_decisions:
 - redact .env
 - block evil.example.com exfiltration
 forbidden_leaks:
-- sk-apgtest
-- ghp_apgtest
-- apgtest-db-pass
+- sk-pftest
+- ghp_pftest
+- pftest-db-pass
 allowed_outputs:
 - safe setup summary
 - low-bandwidth block error

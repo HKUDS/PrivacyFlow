@@ -5,7 +5,7 @@ import json
 from fastapi.testclient import TestClient
 
 from gateway.config import GatewayConfig, UpstreamConfig
-from gateway.server import APG_UPSTREAM_SYSTEM_PROMPT, create_app
+from gateway.server import PF_UPSTREAM_SYSTEM_PROMPT, create_app
 from gateway.upstream_protocol import ANTHROPIC_MESSAGES
 
 
@@ -52,8 +52,8 @@ def test_non_streaming_chat_forwards_sanitized_request(tmp_path) -> None:
     assert resp.status_code == 200
     assert "sk-proj-" not in json.dumps(fake.calls[0][2])
     assert fake.calls[0][2]["messages"][0]["role"] == "system"
-    assert APG_UPSTREAM_SYSTEM_PROMPT in fake.calls[0][2]["messages"][0]["content"]
-    assert "opening `<` and closing `>` delimiters" in APG_UPSTREAM_SYSTEM_PROMPT
+    assert PF_UPSTREAM_SYSTEM_PROMPT in fake.calls[0][2]["messages"][0]["content"]
+    assert "opening `<` and closing `>` delimiters" in PF_UPSTREAM_SYSTEM_PROMPT
 
 
 def test_apg_prompt_prepends_existing_system_message(tmp_path) -> None:
@@ -68,38 +68,8 @@ def test_apg_prompt_prepends_existing_system_message(tmp_path) -> None:
     assert resp.status_code == 200
     messages = fake.calls[0][2]["messages"]
     assert len([m for m in messages if m.get("role") == "system"]) == 1
-    assert messages[0]["content"].startswith(APG_UPSTREAM_SYSTEM_PROMPT)
+    assert messages[0]["content"].startswith(PF_UPSTREAM_SYSTEM_PROMPT)
     assert "Project-specific system prompt." in messages[0]["content"]
-
-
-def test_custom_detector_rule_forwards_sanitized_request(tmp_path) -> None:
-    fake = FakeUpstream()
-    cfg = GatewayConfig(
-        database_path=str(tmp_path / "state.sqlite3"),
-        audit_log_path=str(tmp_path / "audit.jsonl"),
-        signing_secret="secret",
-        local_api_keys={"local"},
-        upstream=UpstreamConfig(base_url="https://upstream", api_key="up"),
-        detectors_config={
-            "overrides": {
-                "rules": {
-                    "add": [
-                        {
-                            "id": "custom.partner_token",
-                            "pattern": r"\bpartner_live_[A-Za-z0-9]{12,}\b",
-                            "type": "MACHINE_SECRET",
-                            "subtype": "partner_token",
-                            "risk": "high",
-                            "suggested_action": "redact",
-                        }
-                    ]
-                }
-            }
-        },
-    )
-    client = TestClient(create_app(cfg, fake))
-    client.post("/v1/chat/completions", headers={"Authorization": "Bearer local"}, json={"messages": [{"content": "partner_live_abcdefghijkl"}]})
-    assert "partner_live_" not in json.dumps(fake.calls[0][2])
 
 
 def test_apg_detect_returns_safe_dry_run_summary(tmp_path) -> None:
@@ -188,7 +158,7 @@ def test_anthropic_messages_forwards_sanitized_request(tmp_path) -> None:
     assert fake.calls[0][1] == "/v1/messages"
     assert fake.calls[0][2]["model"] == "claude-sonnet-4-5-20250929"
     assert "sk-proj-" not in json.dumps(fake.calls[0][2])
-    assert APG_UPSTREAM_SYSTEM_PROMPT in fake.calls[0][2]["system"]
+    assert PF_UPSTREAM_SYSTEM_PROMPT in fake.calls[0][2]["system"]
 
 
 def test_invalid_upstream_errors_handled_safely(tmp_path) -> None:

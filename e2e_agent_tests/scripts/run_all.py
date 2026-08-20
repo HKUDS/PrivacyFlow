@@ -10,7 +10,7 @@ from e2e_agent_tests.scripts.run_scenario import SCENARIO_IMPLS, run_scenario
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Run APG realistic E2E scenarios.")
+    parser = argparse.ArgumentParser(description="Run PF realistic E2E scenarios.")
     parser.add_argument("--workdir", default=str(HarnessPaths().workdir))
     parser.add_argument("--mode", choices=["audit-only", "balanced", "strict"], default="strict")
     parser.add_argument("--scenarios", nargs="*", default=list(SCENARIO_IMPLS.keys()))

@@ -7,19 +7,28 @@ import time
 from dataclasses import dataclass
 from hashlib import sha256
 
-PLACEHOLDER_RE = re.compile(r"<APG:v1:(?P<kind>[a-z_]+):(?P<handle>[^:<>]+):(?P<session>[^:<>]+):(?P<issued>\d{1,15}):(?P<mac>[A-Za-z0-9_-]+)>")
+PLACEHOLDER_RE = re.compile(
+    r"<(?P<namespace>PF|APG):v1:(?P<kind>[a-z_]+):(?P<handle>[^:<>]+):"
+    r"(?P<session>[^:<>]+):(?P<issued>\d{1,15}):(?P<mac>[A-Za-z0-9_-]+)>"
+)
+PF_PLACEHOLDER_FORMAT_EXAMPLES = (
+    "<PF:v1:pii:...>",
+    "<PF:v1:secret:...>",
+)
+PF_PLACEHOLDER_FORMAT_EXAMPLE = PF_PLACEHOLDER_FORMAT_EXAMPLES[0]
 APG_PLACEHOLDER_FORMAT_EXAMPLES = (
     "<APG:v1:pii:...>",
     "<APG:v1:secret:...>",
 )
 APG_PLACEHOLDER_FORMAT_EXAMPLE = APG_PLACEHOLDER_FORMAT_EXAMPLES[0]
+PLACEHOLDER_FORMAT_EXAMPLES = PF_PLACEHOLDER_FORMAT_EXAMPLES + APG_PLACEHOLDER_FORMAT_EXAMPLES
 
 
 def span_is_within_placeholder_format_example(text: str, start: int, end: int) -> bool:
     """Return whether a non-empty span is wholly inside the reserved format example."""
     if start < 0 or end <= start or end > len(text):
         return False
-    for example in APG_PLACEHOLDER_FORMAT_EXAMPLES:
+    for example in PLACEHOLDER_FORMAT_EXAMPLES:
         example_start = text.find(example)
         while example_start >= 0:
             example_end = example_start + len(example)
@@ -38,13 +47,15 @@ class ParsedPlaceholder:
     issued_at: int
     mac: str
     suffix: str = ""
+    namespace: str = "PF"
 
 
 class PlaceholderSigner:
-    def __init__(self, secret: str, workspace_id: str = "default", policy_hash: str = "default") -> None:
+    def __init__(self, secret: str, workspace_id: str = "default", policy_hash: str = "default", namespace: str = "APG") -> None:
         self.secret = secret.encode("utf-8")
         self.workspace_id = workspace_id
         self.policy_hash = policy_hash
+        self.namespace = namespace if namespace in {"PF", "APG"} else "APG"
 
     def issue(self, kind: str, handle_id: str, session_id: str, issued_at: int | None = None) -> str:
         # Prevent colon injection: fields must not contain ':' which is the MAC body delimiter
@@ -53,7 +64,7 @@ class PlaceholderSigner:
         _require_no_delimiter(session_id, "session_id")
         issued = int(time.time()) if issued_at is None else int(issued_at)
         mac = self._mac(kind, handle_id, session_id, issued)
-        return f"<APG:v1:{kind}:{handle_id}:{session_id}:{issued}:{mac}>"
+        return f"<{self.namespace}:v1:{kind}:{handle_id}:{session_id}:{issued}:{mac}>"
 
     def parse(self, text: str) -> list[ParsedPlaceholder]:
         parsed: list[ParsedPlaceholder] = []
@@ -76,6 +87,7 @@ class PlaceholderSigner:
                     int(match.group("issued")),
                     match.group("mac"),
                     suffix,
+                    match.group("namespace"),
                 )
             )
         return parsed

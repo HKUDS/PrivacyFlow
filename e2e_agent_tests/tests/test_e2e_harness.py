@@ -25,7 +25,7 @@ from e2e_agent_tests.scripts.run_live_agents import (
     _apply_live_launcher_config,
     _agent_command,
     _audit_operation_evidence,
-    _contains_non_example_apg_marker,
+    _contains_non_example_pf_marker,
     _extract_final_output,
     _extract_tool_summary,
     _extract_tool_trace,
@@ -60,7 +60,7 @@ def test_setup_test_repo_creates_expected_files(tmp_path: Path) -> None:
     assert (repo / "scripts/validate_pii.py").exists()
     assert (repo / "private/path_probe.txt").read_text().startswith("PATH_ALIAS_OK")
     assert "CASE-731" in (repo / "docs/customer_notes.md").read_text()
-    assert "sk-apgtest" in (repo / ".env").read_text()
+    assert "sk-pftest" in (repo / ".env").read_text()
     assert "OPENAI_API_KEY_SET=false" in (repo / "config/edge.env").read_text()
     assert "status=401" in (repo / "logs/assignment_edge.log").read_text()
 
@@ -118,15 +118,15 @@ def test_live_runner_can_load_active_launcher_profile_without_printing_key(
     )
     launcher.chmod(0o600)
     monkeypatch.delenv("DEEPSEEK_API_KEY", raising=False)
-    monkeypatch.delenv("APG_UPSTREAM_BASE_URL", raising=False)
-    monkeypatch.delenv("APG_UPSTREAM_PROTOCOL", raising=False)
+    monkeypatch.delenv("PF_UPSTREAM_BASE_URL", raising=False)
+    monkeypatch.delenv("PF_UPSTREAM_PROTOCOL", raising=False)
 
     _apply_live_launcher_config(launcher)
 
     assert detect_live_prerequisites([]) == []
     assert os.environ["DEEPSEEK_API_KEY"] == "provider-key-from-launcher"
-    assert os.environ["APG_UPSTREAM_BASE_URL"] == "https://provider.example/v1"
-    assert os.environ["APG_UPSTREAM_PROTOCOL"] == "openai_chat_completions"
+    assert os.environ["PF_UPSTREAM_BASE_URL"] == "https://provider.example/v1"
+    assert os.environ["PF_UPSTREAM_PROTOCOL"] == "openai_chat_completions"
 
 
 def test_live_matrix_runs_concurrently_preserves_order_and_isolates_failures(
@@ -245,23 +245,23 @@ def test_live_agent_final_output_excludes_tool_trajectory() -> None:
 
 
 def test_live_marker_check_ignores_all_reserved_format_examples() -> None:
-    assert not _contains_non_example_apg_marker("format: <APG:v1:pii:...>")
-    assert not _contains_non_example_apg_marker("format: <APG:v1:secret:...>")
-    assert _contains_non_example_apg_marker("format: <APG:v1:pii:....>")
-    assert _contains_non_example_apg_marker("shorthand: <APG:...>")
-    assert _contains_non_example_apg_marker(
-        "real: <APG:v1:secret:handle:session:123:AAAAAAAAAAAAAAAA>"
+    assert not _contains_non_example_pf_marker("format: <PF:v1:pii:...>")
+    assert not _contains_non_example_pf_marker("format: <PF:v1:secret:...>")
+    assert _contains_non_example_pf_marker("format: <PF:v1:pii:....>")
+    assert _contains_non_example_pf_marker("shorthand: <PF:...>")
+    assert _contains_non_example_pf_marker(
+        "real: <PF:v1:secret:handle:session:123:AAAAAAAAAAAAAAAA>"
     )
 
 
 def test_live_agent_commands_pin_the_isolated_workspace(monkeypatch, tmp_path: Path) -> None:
     monkeypatch.setenv("DEEPSEEK_API_KEY", "provider-key-must-not-reach-agent")
     monkeypatch.setenv("UNRELATED_SECRET", "also-must-not-reach-agent")
-    monkeypatch.setenv("APG_LIVE_MODEL", "gpt-5.6-terra")
+    monkeypatch.setenv("PF_LIVE_MODEL", "gpt-5.6-terra")
     run_root = tmp_path / "run"
-    (run_root / "apg-agent-test-repo").mkdir(parents=True)
+    (run_root / "pf-agent-test-repo").mkdir(parents=True)
     claude_command, claude_env = _agent_command("claude", "task", 8765, run_root)
-    assert claude_env["PWD"] == str(run_root / "apg-agent-test-repo")
+    assert claude_env["PWD"] == str(run_root / "pf-agent-test-repo")
     assert "DEEPSEEK_API_KEY" not in claude_env
     assert "UNRELATED_SECRET" not in claude_env
     assert claude_env["HTTPS_PROXY"] == "http://127.0.0.1:9"
@@ -273,27 +273,27 @@ def test_live_agent_commands_pin_the_isolated_workspace(monkeypatch, tmp_path: P
     assert claude_command[claude_command.index("--model") + 1] == "gpt-5.6-terra"
     settings = json.loads((run_root / "claude-settings.json").read_text())
     assert settings["env"]["ANTHROPIC_BASE_URL"] == "http://127.0.0.1:8765"
-    assert settings["env"]["ANTHROPIC_AUTH_TOKEN"] == "apg-local"
+    assert settings["env"]["ANTHROPIC_AUTH_TOKEN"] == "pf-local"
     assert "ANTHROPIC_API_KEY" not in settings["env"]
     assert "ANTHROPIC_API_KEY" not in claude_env
 
     opencode_command, opencode_env = _agent_command("opencode", "task", 8765, run_root)
-    assert opencode_env["PWD"] == str(run_root / "apg-agent-test-repo")
+    assert opencode_env["PWD"] == str(run_root / "pf-agent-test-repo")
     assert "DEEPSEEK_API_KEY" not in opencode_env
     assert "UNRELATED_SECRET" not in opencode_env
     assert opencode_env["HTTPS_PROXY"] == "http://127.0.0.1:9"
     assert "--pure" in opencode_command
-    assert opencode_command[opencode_command.index("--dir") + 1] == str(run_root / "apg-agent-test-repo")
-    assert opencode_command[opencode_command.index("--model") + 1] == "apg/gpt-5.6-terra"
+    assert opencode_command[opencode_command.index("--dir") + 1] == str(run_root / "pf-agent-test-repo")
+    assert opencode_command[opencode_command.index("--model") + 1] == "pf/gpt-5.6-terra"
     opencode_config = json.loads((run_root / "xdg-config/opencode/opencode.json").read_text())
-    assert opencode_config["model"] == "apg/gpt-5.6-terra"
-    assert list(opencode_config["provider"]["apg"]["models"]) == ["gpt-5.6-terra"]
+    assert opencode_config["model"] == "pf/gpt-5.6-terra"
+    assert list(opencode_config["provider"]["pf"]["models"]) == ["gpt-5.6-terra"]
 
 
 def test_live_server_bypasses_system_proxy_only_for_its_upstream(monkeypatch) -> None:
     monkeypatch.setenv("DEEPSEEK_API_KEY", "provider-key")
     monkeypatch.setenv("HTTPS_PROXY", "http://proxy.invalid")
-    monkeypatch.setenv("APG_UPSTREAM_BASE_URL", "https://provider.example/v1")
+    monkeypatch.setenv("PF_UPSTREAM_BASE_URL", "https://provider.example/v1")
 
     server_env = _server_environment()
     assert server_env["DEEPSEEK_API_KEY"] == "provider-key"
@@ -302,7 +302,7 @@ def test_live_server_bypasses_system_proxy_only_for_its_upstream(monkeypatch) ->
     assert "HTTPS_PROXY" not in server_env
 
     no_entropy_env = _server_environment(disable_entropy=True)
-    assert no_entropy_env["APG_LIVE_DISABLE_ENTROPY"] == "1"
+    assert no_entropy_env["PF_LIVE_DISABLE_ENTROPY"] == "1"
 
 
 def test_live_agent_matrix_uses_natural_tasks_and_covers_write_workflows(tmp_path: Path) -> None:
@@ -446,7 +446,7 @@ def test_claude_validator_success_must_come_from_bash_result() -> None:
 
 def test_live_agents_receive_uniform_local_tool_permissions(tmp_path: Path) -> None:
     run_root = tmp_path / "run"
-    (run_root / "apg-agent-test-repo").mkdir(parents=True)
+    (run_root / "pf-agent-test-repo").mkdir(parents=True)
     claude_command, _ = _agent_command("claude", "task", 8765, run_root)
     tools = set(claude_command[claude_command.index("--tools") + 1].split(","))
     allowed = set(claude_command[claude_command.index("--allowedTools") + 1].split(","))
@@ -519,18 +519,18 @@ def test_live_evidence_keeps_opencode_tool_input_output_and_reasoning_count(tmp_
 def test_live_evidence_exports_exact_audited_replacement_and_materialization(tmp_path: Path) -> None:
     artifacts = tmp_path / "artifacts"
     artifacts.mkdir()
-    store = MappingStore(str(artifacts / "apg_proxy_state.sqlite3"))
+    store = MappingStore(str(artifacts / "pf_proxy_state.sqlite3"), namespace="PF")
     mapping = store.upsert_mapping(
         session_id="sess_local",
         workspace_id="ws",
         scope="request",
         kind="secret",
         subtype="api_key",
-        value="sk-apgtest-evidence-value",
+        value="sk-pftest-evidence-value",
         store_value=True,
         materialization_class="tool_arg",
     )
-    placeholder = f"<APG:v1:secret:{mapping.handle_id}:sess_local:123:signature>"
+    placeholder = f"<PF:v1:secret:{mapping.handle_id}:sess_local:123:signature>"
     (artifacts / "upstream_requests.jsonl").write_text(
         json.dumps({"body": {"messages": [{"content": placeholder}]}})
     )
@@ -572,7 +572,7 @@ def test_live_evidence_exports_exact_audited_replacement_and_materialization(tmp
         ("materialization", "Bash"),
         ("replacement", ""),
     ]
-    assert all(item["original"] == "sk-apgtest-evidence-value" for item in operations)
+    assert all(item["original"] == "sk-pftest-evidence-value" for item in operations)
     assert all(item["representation"] == placeholder for item in operations)
     assert all(item["request_ids"] == ["req_evidence"] for item in operations)
     assert all(item["timestamps"] == [1] for item in operations)
@@ -580,17 +580,17 @@ def test_live_evidence_exports_exact_audited_replacement_and_materialization(tmp
 
 def test_checked_in_live_evidence_recursively_removes_protected_values_and_local_paths() -> None:
     sanitized = _sanitize_export_value({
-        "fixture": "Howard Zhang has sk-apgtest-111111111111111111111111111111111111",
-        "operation": ["<APG:v1:secret:sec_123:session:123:signature>"],
-        "source": "/private/tmp/apg-live-agents/run/agent_trajectory.txt",
+        "fixture": "Howard Zhang has sk-pftest-111111111111111111111111111111111111",
+        "operation": ["<PF:v1:secret:sec_123:session:123:signature>"],
+        "source": "/private/tmp/pf-live-agents/run/agent_trajectory.txt",
         "home": "/Users/howard/Documents/code/private.txt",
         "listing": "-rw-r--r--  1 howard  wheel  42 Aug  5 10:00 evidence.txt",
     })
 
     serialized = json.dumps(sanitized)
     assert "Howard Zhang" not in serialized
-    assert "sk-apgtest" not in serialized
-    assert "<APG:v1" not in serialized
+    assert "sk-pftest" not in serialized
+    assert "<PF:v1" not in serialized
     assert "/private/tmp" not in serialized
     assert "/Users/howard" not in serialized
     assert " howard  wheel " not in serialized
@@ -605,7 +605,7 @@ def test_checked_in_live_evidence_recursively_removes_protected_values_and_local
     assert "howard" not in checked_in.lower()
 
 
-def test_live_evidence_page_renders_markdown_and_inline_apg_operations() -> None:
+def test_live_evidence_page_renders_markdown_and_inline_legacy_apg_operations() -> None:
     page = (Path(__file__).resolve().parents[2] / "docs" / "live_agent_scenarios.html").read_text()
 
     assert '<script src="./vendor/marked.min.js"></script>' in page
@@ -614,6 +614,8 @@ def test_live_evidence_page_renders_markdown_and_inline_apg_operations() -> None
     assert "↑ 上行已替换" in page
     assert "↓ 本地已还原" in page
     assert "云端保护表示" in page
+    # The checked-in HTML is a historical APG capture.  The active exporter
+    # emits PF, but historical generated evidence is intentionally immutable.
     assert "data-apg-toggle" in page
     assert "toggleAPGMark" in page
     assert 'data-apg-value="protected"' in page
@@ -681,7 +683,7 @@ def test_live_stream_status_allows_audited_client_cancellation() -> None:
 
 def test_live_audit_evidence_counts_pairs_without_exposing_identifiers(tmp_path: Path) -> None:
     database = tmp_path / "state.sqlite3"
-    store = MappingStore(str(database))
+    store = MappingStore(str(database), namespace="PF")
     shared = {
         "handle_id": "secr_internal_only",
         "kind": "secret",

@@ -8,7 +8,6 @@ from pathlib import Path
 import uvicorn
 
 from gateway.config import GatewayConfig, UpstreamConfig
-from gateway.detectors.rules import builtin_rules
 from gateway.server import create_app
 from gateway.upstream_protocol import (
     ANTHROPIC_MESSAGES,
@@ -32,12 +31,11 @@ def build_app(
     paths.ensure()
     upstream_protocol = canonical_upstream_protocol(upstream_protocol)
     config = GatewayConfig(
-        database_path=str(paths.artifacts / "apg_proxy_state.sqlite3"),
+        database_path=str(paths.artifacts / "pf_proxy_state.sqlite3"),
         audit_log_path=str(paths.audit_log),
         signing_secret=f"opencode-real-agent-{uuid.uuid4().hex}",
-        local_api_keys={"apg-local"},
+        local_api_keys={"pf-local"},
         workspace_id="opencode-real-agent",
-        detectors_config=_detectors_config(),
         upstream=UpstreamConfig(
             protocol=upstream_protocol,
             base_url=upstream_base_url,
@@ -48,35 +46,8 @@ def build_app(
     )
     upstream = RecordingUpstreamClient(config.upstream, paths.upstream_log)
     return create_app(config, upstream)
-
-
-def _detectors_config() -> dict:
-    if os.getenv("APG_LIVE_DISABLE_ENTROPY") != "1":
-        return {}
-    return {
-        "flow": {
-            "id": "live_no_entropy",
-            "modules": [
-                {
-                    "id": "builtin_rules",
-                    "type": "regex_rules",
-                    "rules": [rule.__dict__ for rule in builtin_rules()],
-                    "fail_open": False,
-                    "stream_safe": True,
-                },
-                {
-                    "id": "paths",
-                    "type": "path_detector",
-                    "fail_open": False,
-                    "stream_safe": True,
-                },
-            ],
-        }
-    }
-
-
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Run an APG proxy for real OpenCode E2E tests.")
+    parser = argparse.ArgumentParser(description="Run a PF proxy for real OpenCode E2E tests.")
     parser.add_argument("--workdir", required=True)
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8787)
@@ -84,9 +55,9 @@ def main() -> None:
     parser.add_argument(
         "--upstream-protocol",
         choices=sorted(SUPPORTED_UPSTREAM_PROTOCOLS),
-        default=os.getenv("APG_UPSTREAM_PROTOCOL", OPENAI_CHAT_COMPLETIONS),
+        default=os.getenv("PF_UPSTREAM_PROTOCOL", OPENAI_CHAT_COMPLETIONS),
     )
-    parser.add_argument("--upstream-base-url", default=os.getenv("APG_UPSTREAM_BASE_URL", "https://api.deepseek.com"))
+    parser.add_argument("--upstream-base-url", default=os.getenv("PF_UPSTREAM_BASE_URL", "https://api.deepseek.com"))
     parser.add_argument("--upstream-api-key-env", default="DEEPSEEK_API_KEY")
     args = parser.parse_args()
 

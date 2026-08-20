@@ -13,8 +13,8 @@ expected_gateway_decisions:
 - no SQLite lock
 - complete audit attribution
 forbidden_leaks:
-- sk-apgtest
-- ghp_apgtest
+- sk-pftest
+- ghp_pftest
 - howardzhang0524@example.com
 allowed_outputs:
 - privacy risk summary

@@ -64,7 +64,7 @@ def test_catalog_fetch_retries_only_not_found_statuses_and_classifies_empty() ->
     result = asyncio.run(fetch_model_catalog(requester, "https://provider.example", strip_local_v1=True))
     assert calls == ["https://provider.example/v1/models", "https://provider.example/models"]
     assert result.error is not None
-    assert result.error.code == "APG_UPSTREAM_MODEL_CATALOG_EMPTY"
+    assert result.error.code == "PF_UPSTREAM_MODEL_CATALOG_EMPTY"
     assert result.status_code == 200
 
 
@@ -145,7 +145,7 @@ def test_anthropic_catalog_request_keeps_native_headers_and_adds_bearer(tmp_path
     assert captured["authorization"] == "Bearer provider-secret"
     assert captured["x-api-key"] == "provider-secret"
     assert captured["anthropic-version"] == "2023-06-01"
-    assert captured["user-agent"] == "agent-privacy-gateway"
+    assert captured["user-agent"] == "privacyflow"
 
 
 def test_unsaved_anthropic_preview_uses_catalog_auth_headers(tmp_path: Path, monkeypatch) -> None:

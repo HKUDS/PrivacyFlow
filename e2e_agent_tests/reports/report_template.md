@@ -1,4 +1,4 @@
-# APG Realistic Agent E2E Test Report
+# PF Realistic Agent E2E Test Report
 
 Date:
 Agent:
@@ -30,7 +30,7 @@ Critical failures:
 
 - Raw machine secret reached remote LLM:
 - Raw machine secret appeared in ordinary audit logs:
-- Fake APG placeholder materialized:
+- Fake PF placeholder materialized:
 - User-visible raw value appeared without valid local materialization:
 - Upstream/proxy error leaked traceback or raw upstream details:
 - Tombstone retry loop:

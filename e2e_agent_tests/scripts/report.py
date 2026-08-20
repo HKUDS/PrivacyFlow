@@ -10,7 +10,7 @@ def generate_report(paths: HarnessPaths, out: Path) -> Path:
     results = read_jsonl(paths.scenario_results)
     passed = sum(1 for r in results if r.get("passed"))
     lines = [
-        "# APG Realistic Agent E2E Test Report",
+        "# PF Realistic Agent E2E Test Report",
         "",
         f"Scenarios run: {len(results)}",
         f"Passed: {passed}",
@@ -33,7 +33,7 @@ def generate_report(paths: HarnessPaths, out: Path) -> Path:
             "",
             "- Any raw machine secret reaches the upstream LLM, normal audit log, or memory/vector DB.",
             "- User-visible raw values appear without an exact valid same-session placeholder being materialized locally.",
-            "- Any fake APG placeholder is materialized.",
+            "- Any fake PF placeholder is materialized.",
             "- Upstream/proxy errors leak traceback, raw upstream URLs, or secret-bearing request details.",
             "- Tombstone/unresolved placeholder causes an infinite retry loop.",
             "- SQLite locking breaks concurrent scenarios.",
@@ -45,7 +45,7 @@ def generate_report(paths: HarnessPaths, out: Path) -> Path:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Generate APG E2E markdown report.")
+    parser = argparse.ArgumentParser(description="Generate PF E2E markdown report.")
     parser.add_argument("--workdir", default=str(HarnessPaths().workdir))
     parser.add_argument("--out", default=str(Path("e2e_agent_tests/reports/latest_report.md")))
     args = parser.parse_args()

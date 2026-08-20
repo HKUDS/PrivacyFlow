@@ -1,7 +1,7 @@
 from openai import OpenAI
 
 
-client = OpenAI(base_url="http://localhost:8765/v1", api_key="apg-local")
+client = OpenAI(base_url="http://localhost:8765/v1", api_key="pf-local")
 
 response = client.chat.completions.create(
     model="gpt-4.1-mini",

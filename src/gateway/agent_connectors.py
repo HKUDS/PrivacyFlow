@@ -17,7 +17,12 @@ from typing import Any, Callable, Mapping
 import tomlkit
 from ruamel.yaml import YAML
 
-from gateway.cli.launcher import generate_local_api_key, save_launcher_connector_api_key
+from gateway.cli.launcher import (
+    generate_local_api_key,
+    save_launcher_connector_api_key,
+    save_launcher_connector_api_keys,
+)
+from gateway.compat import ensure_private_state_directory
 
 
 CONNECTOR_PROTOCOLS = {
@@ -35,10 +40,11 @@ CONNECTOR_NAMES = {
 COMMANDS = {
     "codex": ("codex",),
     "claude-code": ("claude",),
-    # The official npm package is @deepseek-ai/dsh and installs ``dsh``.
-    # Keep the older distribution name as a harmless fallback for users who
-    # installed a pre-release wrapper with that entry point.
-    "deepseek-harness": ("dsh", "deepseek-harness"),
+    # The official npm package is @deepseek-ai/dsh and normally installs
+    # ``dsh``. Keep distribution-era aliases too; GUI-launched processes can
+    # miss the package manager's bin directory, so _package_executable also
+    # inspects the installed manifest without executing it.
+    "deepseek-harness": ("dsh", "deepseek-harness", "deepseek"),
     "nanobot": ("nanobot",),
 }
 
@@ -100,7 +106,7 @@ class AgentConnectorService:
         base_url: str = "http://127.0.0.1:8765",
     ) -> None:
         # Credential commands may run from an Agent's project directory rather
-        # than APG's current working directory. Persist absolute state paths so
+        # than PrivacyFlow's current working directory. Persist absolute state paths so
         # the generated Codex command and every restore transaction resolve the
         # same files after a process restart.
         self.state_dir = state_dir.expanduser().resolve()
@@ -109,8 +115,8 @@ class AgentConnectorService:
         self.home = home or Path.home()
         self.which = which
         self.base_url = base_url.rstrip("/")
-        self.index_path = state_dir / "agent-connections.json"
-        self.transactions_dir = state_dir / "agent-connection-transactions"
+        self.index_path = self.state_dir / "agent-connections.json"
+        self.transactions_dir = self.state_dir / "agent-connection-transactions"
         self._ensure_state_dirs()
 
     def list(self) -> dict[str, Any]:
@@ -141,7 +147,7 @@ class AgentConnectorService:
             changed = self._changed_paths(active)
             if changed:
                 raise ConnectorError(
-                    "The Agent configuration changed after APG connected it. Restore the original configuration first.",
+                    "The Agent configuration changed after PrivacyFlow connected it. Restore the original configuration first.",
                     code="CONNECTOR_EXTERNAL_CHANGES",
                     status_code=409,
                     paths=changed,
@@ -153,7 +159,7 @@ class AgentConnectorService:
                 code="CONNECTOR_ALREADY_ACTIVE",
                 status_code=409,
             )
-        prepared = self._prepare(connector_id, model, models, key="__APG_CONNECTOR_KEY__")
+        prepared = self._prepare(connector_id, model, models, key="__PF_CONNECTOR_KEY__")
         for item in prepared:
             self._validate_target(item.path)
         # Reserved names may have been written by Claude/cc-switch or by a
@@ -166,7 +172,7 @@ class AgentConnectorService:
         )
 
         transaction_id = f"txn_{int(time.time())}_{secrets.token_hex(6)}"
-        key = generate_local_api_key()
+        key = generate_local_api_key(legacy=self.state_dir.name == ".apg")
         prepared = self._prepare(connector_id, model, models, key=key)
         connector_transactions_dir = self.transactions_dir / connector_id
         connector_transactions_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
@@ -223,7 +229,7 @@ class AgentConnectorService:
         changed = self._changed_paths(active)
         if changed and not confirm_external_changes:
             raise ConnectorError(
-                "The Agent configuration changed after APG connected it. Confirm to save a safety backup and restore the original files.",
+                "The Agent configuration changed after PrivacyFlow connected it. Confirm to save a safety backup and restore the original files.",
                 code="CONNECTOR_EXTERNAL_CHANGES",
                 status_code=409,
                 paths=changed,
@@ -258,6 +264,304 @@ class AgentConnectorService:
         from gateway.cli.launcher import load_connector_api_key
         return load_connector_api_key(self.launcher_path, connector_id)
 
+    def migrate_legacy_namespace(self) -> dict[str, Any]:
+        """Migrate APG-owned Agent files to the PrivacyFlow namespace.
+
+        Only active transactions are eligible.  A reserved APG/PF provider found
+        without a transaction is deliberately reported as a conflict rather than
+        guessed to be ours; this keeps a cc-switch or hand-written configuration
+        out of the migration path.
+        """
+        state = self._read_state()
+        for connector_id in CONNECTOR_NAMES:
+            active = state["active"].get(connector_id)
+            if active:
+                changed = self._changed_paths(active)
+                if changed:
+                    raise ConnectorError(
+                        "An Agent configuration changed outside PrivacyFlow; resolve it before migration.",
+                        code="PF_MIGRATION_CONFIG_CONFLICT",
+                        status_code=409,
+                        paths=changed,
+                    )
+            elif self._reserved_config_exists(connector_id):
+                raise ConnectorError(
+                    "A reserved Agent configuration exists without a PrivacyFlow transaction; it was not migrated.",
+                    code="PF_MIGRATION_UNKNOWN_CONFIG",
+                    status_code=409,
+                    paths=[str(path) for path in self._paths(connector_id)],
+                )
+
+        migrations: list[dict[str, Any]] = []
+        for connector_id, active in list(state["active"].items()):
+            if connector_id not in CONNECTOR_NAMES or not active:
+                continue
+            old_key = self.credential(connector_id)
+            new_key = generate_local_api_key()
+            paths = [Path(item["path"]) for item in active.get("files", [])]
+            if len(paths) != len(self._paths(connector_id)):
+                raise ConnectorError(
+                    "The saved Agent transaction does not match the current connector layout.",
+                    code="PF_MIGRATION_CONFIG_CONFLICT",
+                    status_code=409,
+                )
+            current = self._capture_current_files(active["files"])
+            prepared = self._prepare_namespace_migration(
+                connector_id,
+                paths,
+                active.get("model", ""),
+                old_key,
+                new_key,
+            )
+            if len(current) != len(prepared):
+                raise ConnectorError(
+                    "The saved Agent transaction does not match the prepared migration.",
+                    code="PF_MIGRATION_CONFIG_CONFLICT",
+                    status_code=409,
+                )
+            for item in prepared:
+                self._validate_target(item.path)
+            migrations.append({
+                "connector_id": connector_id,
+                "active": active,
+                "paths": paths,
+                "current": current,
+                "prepared": prepared,
+                "new_key": new_key,
+            })
+
+        if not migrations:
+            return {"migrated_connectors": [], "count": 0}
+
+        # Treat every active Connector, its external files, the Launcher key
+        # ring, and the transaction index as one transaction. A later failure
+        # must never strand an earlier Agent on the PF namespace while the PF
+        # state directory is rolled back by the CLI.
+        launcher_before = self._capture_paths([self.launcher_path])
+        index_before = self._capture_paths([self.index_path])
+        all_current = [item for migration in migrations for item in migration["current"]]
+        all_prepared = [item for migration in migrations for item in migration["prepared"]]
+        try:
+            for migration in migrations:
+                self._save_safety_backup(
+                    migration["connector_id"],
+                    migration["active"],
+                    [str(path) for path in migration["paths"]],
+                )
+            self._replace_captured(all_current, all_prepared)
+            save_launcher_connector_api_keys(
+                self.launcher_path,
+                {migration["connector_id"]: migration["new_key"] for migration in migrations},
+            )
+            for migration in migrations:
+                migration["active"]["files"] = [
+                    {**item, "connected_sha256": _sha256(migration["prepared"][index].content)}
+                    for index, item in enumerate(migration["active"]["files"])
+                ]
+            self._write_state(state)
+        except Exception:
+            self._apply_captured_files(all_current)
+            self._apply_captured_files(index_before)
+            self._apply_captured_files(launcher_before)
+            raise
+
+        migrated = [migration["connector_id"] for migration in migrations]
+        return {"migrated_connectors": migrated, "count": len(migrated)}
+
+    def _prepare_namespace_migration(
+        self,
+        connector_id: str,
+        paths: list[Path],
+        model: str,
+        old_key: str,
+        new_key: str,
+    ) -> list[PreparedFile]:
+        if connector_id == "codex":
+            try:
+                value = tomlkit.parse(paths[0].read_text("utf-8"))
+                providers = value.get("model_providers", {})
+                self._require_mapping(providers, paths[0], "model_providers")
+                if "pf" in providers and "apg" in providers:
+                    raise ConnectorError("Both Codex APG and PF providers exist; migration is ambiguous.", code="PF_MIGRATION_CONFIG_CONFLICT", status_code=409)
+                if "apg" in providers:
+                    providers["pf"] = providers.pop("apg")
+                provider = providers.get("pf")
+                if isinstance(provider, MutableMapping):
+                    provider["name"] = "PrivacyFlow"
+                    auth = provider.get("auth")
+                    if isinstance(auth, MutableMapping):
+                        auth["command"] = "privacyflow"
+                        auth["args"] = ["credential", "--connector", "codex", "--launcher-config", str(self.launcher_path)]
+                if value.get("model_provider") == "apg":
+                    value["model_provider"] = "pf"
+                return [PreparedFile(paths[0], tomlkit.dumps(value).encode())]
+            except ConnectorError:
+                raise
+            except Exception as exc:
+                raise ConnectorError(f"Cannot migrate {paths[0]}: {exc}", code="CONNECTOR_CONFIG_INVALID") from exc
+
+        if connector_id == "claude-code":
+            value = self._load_json_object(paths[0])
+            env = value.get("env", {})
+            if not isinstance(env, MutableMapping) or env.get("ANTHROPIC_AUTH_TOKEN") != old_key:
+                raise ConnectorError(
+                    "The Claude Code credential does not match the managed Connector transaction.",
+                    code="PF_MIGRATION_CONFIG_CONFLICT",
+                    status_code=409,
+                    paths=[str(paths[0])],
+                )
+            env["ANTHROPIC_AUTH_TOKEN"] = new_key
+            for key in list(env):
+                if key.startswith("APG_"):
+                    env["PF_" + key[4:]] = env.pop(key)
+            return [PreparedFile(paths[0], _json_bytes(value))]
+
+        if connector_id == "deepseek-harness":
+            settings = _yaml_load(paths[0].read_bytes()) or {}
+            credentials = _yaml_load(paths[1].read_bytes()) or {}
+            if not isinstance(settings, MutableMapping) or not isinstance(credentials, MutableMapping):
+                raise ConnectorError("DeepSeek Harness configuration roots must be mappings.", code="CONNECTOR_CONFIG_INVALID")
+            llm = settings.get("llm-pi-ai", {})
+            providers = llm.get("providers", {}) if isinstance(llm, MutableMapping) else {}
+            if isinstance(providers, MutableMapping):
+                if "pf" in providers and "apg" in providers:
+                    raise ConnectorError("Both dsh APG and PF providers exist; migration is ambiguous.", code="PF_MIGRATION_CONFIG_CONFLICT", status_code=409)
+                if "apg" in providers:
+                    providers["pf"] = providers.pop("apg")
+                provider = providers.get("pf")
+                if isinstance(provider, MutableMapping):
+                    provider["displayName"] = "PrivacyFlow"
+                    if provider.get("apiKeyEnv") == "APG_DSH_API_KEY":
+                        provider["apiKeyEnv"] = "PF_DSH_API_KEY"
+            if not isinstance(providers, MutableMapping) or not isinstance(providers.get("pf"), MutableMapping):
+                raise ConnectorError(
+                    "The dsh provider does not match the managed Connector transaction.",
+                    code="PF_MIGRATION_CONFIG_CONFLICT",
+                    status_code=409,
+                    paths=[str(paths[0])],
+                )
+            default_model = settings.get("agent-default-model")
+            if isinstance(default_model, MutableMapping) and default_model.get("provider") == "apg":
+                default_model["provider"] = "pf"
+            if "APG_DSH_API_KEY" in credentials:
+                if "PF_DSH_API_KEY" in credentials and credentials["PF_DSH_API_KEY"] != credentials["APG_DSH_API_KEY"]:
+                    raise ConnectorError("Both dsh APG and PF credentials exist; migration is ambiguous.", code="PF_MIGRATION_CONFIG_CONFLICT", status_code=409)
+                if credentials["APG_DSH_API_KEY"] != old_key:
+                    raise ConnectorError(
+                        "The dsh credential does not match the managed Connector transaction.",
+                        code="PF_MIGRATION_CONFIG_CONFLICT",
+                        status_code=409,
+                        paths=[str(paths[1])],
+                    )
+                credentials["PF_DSH_API_KEY"] = new_key
+                credentials.pop("APG_DSH_API_KEY", None)
+            elif credentials.get("PF_DSH_API_KEY") == old_key:
+                # A Connector created during the transition may already use
+                # the PF environment name while still holding an APG-prefixed
+                # credential. It must be rotated with the Launcher key too.
+                credentials["PF_DSH_API_KEY"] = new_key
+            else:
+                raise ConnectorError(
+                    "The dsh credential does not match the managed Connector transaction.",
+                    code="PF_MIGRATION_CONFIG_CONFLICT",
+                    status_code=409,
+                    paths=[str(paths[1])],
+                )
+            return [PreparedFile(paths[0], _yaml_bytes(settings)), PreparedFile(paths[1], _yaml_bytes(credentials))]
+
+        value = self._load_json_object(paths[0])
+        providers = value.get("providers", {})
+        presets = value.get("modelPresets", {})
+        if isinstance(providers, MutableMapping):
+            if "pf" in providers and "apg" in providers:
+                raise ConnectorError("Both nanobot APG and PF providers exist; migration is ambiguous.", code="PF_MIGRATION_CONFIG_CONFLICT", status_code=409)
+            if "apg" in providers:
+                providers["pf"] = providers.pop("apg")
+            provider = providers.get("pf")
+            if not isinstance(provider, MutableMapping) or provider.get("apiKey") != old_key:
+                raise ConnectorError(
+                    "The nanobot credential does not match the managed Connector transaction.",
+                    code="PF_MIGRATION_CONFIG_CONFLICT",
+                    status_code=409,
+                    paths=[str(paths[0])],
+                )
+            provider["apiKey"] = new_key
+        else:
+            raise ConnectorError(
+                "The nanobot provider does not match the managed Connector transaction.",
+                code="PF_MIGRATION_CONFIG_CONFLICT",
+                status_code=409,
+                paths=[str(paths[0])],
+            )
+        if isinstance(presets, MutableMapping):
+            if "APG" in presets and "PF" in presets:
+                raise ConnectorError("Both nanobot APG and PF presets exist; migration is ambiguous.", code="PF_MIGRATION_CONFIG_CONFLICT", status_code=409)
+            if "APG" in presets:
+                presets["PF"] = presets.pop("APG")
+            preset = presets.get("PF")
+            if isinstance(preset, MutableMapping) and preset.get("provider") == "apg":
+                preset["provider"] = "pf"
+        agents = value.get("agents", {})
+        defaults = agents.get("defaults", {}) if isinstance(agents, MutableMapping) else {}
+        if isinstance(defaults, MutableMapping) and defaults.get("modelPreset") == "APG":
+            defaults["modelPreset"] = "PF"
+        return [PreparedFile(paths[0], _json_bytes(value))]
+
+    def _replace_captured(self, current: list[dict[str, Any]], prepared: list[PreparedFile]) -> None:
+        if len(current) != len(prepared):
+            raise ConnectorError(
+                "The saved Agent transaction does not match the prepared migration.",
+                code="PF_MIGRATION_CONFIG_CONFLICT",
+                status_code=409,
+            )
+        for before in current:
+            path = Path(before["path"])
+            try:
+                if before["existed"]:
+                    unchanged = (
+                        path.exists()
+                        and not path.is_symlink()
+                        and path.is_file()
+                        and path.read_bytes() == before["content"]
+                        and stat.S_IMODE(path.stat().st_mode) == before["mode"]
+                    )
+                else:
+                    unchanged = not path.exists()
+            except OSError:
+                unchanged = False
+            if not unchanged:
+                raise ConnectorError(
+                    "The Agent configuration changed while PrivacyFlow was migrating it.",
+                    code="PF_MIGRATION_CONCURRENT_CHANGE",
+                    status_code=409,
+                    paths=[str(path)],
+                )
+        replaced = 0
+        try:
+            for item, before in zip(prepared, current, strict=True):
+                self._atomic_write(item.path, item.content, int(before["mode"] or 0o600))
+                replaced += 1
+        except Exception:
+            self._apply_captured_files(current[:replaced])
+            raise
+
+    def _reserved_config_exists(self, connector_id: str) -> bool:
+        paths = self._paths(connector_id)
+        if connector_id == "codex" and paths[0].exists():
+            value = tomlkit.parse(paths[0].read_text("utf-8"))
+            return any(item in value.get("model_providers", {}) for item in ("pf", "apg"))
+        if connector_id == "claude-code" and paths[0].exists():
+            env = self._load_json_object(paths[0]).get("env", {})
+            return isinstance(env, MutableMapping) and any(key.startswith("APG_") or key.startswith("PF_") for key in env)
+        if connector_id == "deepseek-harness" and paths[0].exists():
+            value = _yaml_load(paths[0].read_bytes()) or {}
+            providers = value.get("llm-pi-ai", {}).get("providers", {}) if isinstance(value, MutableMapping) else {}
+            return isinstance(providers, MutableMapping) and any(item in providers for item in ("pf", "apg"))
+        if connector_id == "nanobot" and paths[0].exists():
+            value = self._load_json_object(paths[0])
+            return any(item in value.get("providers", {}) for item in ("pf", "apg")) or any(item in value.get("modelPresets", {}) for item in ("PF", "APG"))
+        return False
+
     def _paths(self, connector_id: str) -> list[Path]:
         if connector_id == "codex":
             return [Path(self.environ.get("CODEX_HOME", self.home / ".codex")) / "config.toml"]
@@ -279,15 +583,15 @@ class AgentConnectorService:
             providers = value.setdefault("model_providers", tomlkit.table())
             self._require_mapping(providers, paths[0], "model_providers")
             provider = tomlkit.table()
-            provider["name"] = "Agent Privacy Gateway"
+            provider["name"] = "PrivacyFlow"
             provider["base_url"] = f"{self.base_url}/v1"
             provider["wire_api"] = "responses"
             auth = tomlkit.table()
-            auth["command"] = "apg"
+            auth["command"] = "privacyflow"
             auth["args"] = ["credential", "--connector", "codex", "--launcher-config", str(self.launcher_path)]
             provider["auth"] = auth
-            providers["apg"] = provider
-            value["model_provider"] = "apg"
+            providers["pf"] = provider
+            value["model_provider"] = "pf"
             value["model"] = model
             return [PreparedFile(paths[0], tomlkit.dumps(value).encode())]
         if connector_id == "claude-code":
@@ -316,13 +620,13 @@ class AgentConnectorService:
             self._require_mapping(llm_pi_ai, paths[0], "llm-pi-ai")
             providers = llm_pi_ai.setdefault("providers", {})
             self._require_mapping(providers, paths[0], "llm-pi-ai.providers")
-            providers["apg"] = {
-                "displayName": "Agent Privacy Gateway", "api": "openai-completions",
-                "baseURL": f"{self.base_url}/v1", "apiKeyEnv": "APG_DSH_API_KEY",
+            providers["pf"] = {
+                "displayName": "PrivacyFlow", "api": "openai-completions",
+                "baseURL": f"{self.base_url}/v1", "apiKeyEnv": "PF_DSH_API_KEY",
                 "models": [{"id": item, "name": item, "input": ["text"]} for item in models],
             }
-            settings["agent-default-model"] = {"provider": "apg", "model": model}
-            credentials["APG_DSH_API_KEY"] = key
+            settings["agent-default-model"] = {"provider": "pf", "model": model}
+            credentials["PF_DSH_API_KEY"] = key
             return [PreparedFile(paths[0], _yaml_bytes(settings)), PreparedFile(paths[1], _yaml_bytes(credentials))]
         value = self._load_json_object(paths[0])
         providers = value.setdefault("providers", {})
@@ -333,9 +637,9 @@ class AgentConnectorService:
         self._require_mapping(agents_root, paths[0], "agents")
         agents = agents_root.setdefault("defaults", {})
         self._require_mapping(agents, paths[0], "agents.defaults")
-        providers["apg"] = {"apiKey": key, "apiBase": f"{self.base_url}/v1", "apiType": "chat_completions"}
-        presets["APG"] = {"provider": "apg", "model": model}
-        agents["modelPreset"] = "APG"
+        providers["pf"] = {"apiKey": key, "apiBase": f"{self.base_url}/v1", "apiType": "chat_completions"}
+        presets["PF"] = {"provider": "pf", "model": model}
+        agents["modelPreset"] = "PF"
         return [PreparedFile(paths[0], _json_bytes(value))]
 
     def _load_json_object(self, path: Path) -> dict[str, Any]:
@@ -362,9 +666,9 @@ class AgentConnectorService:
         try:
             if connector_id == "codex" and paths[0].exists():
                 value = tomlkit.parse(paths[0].read_text("utf-8"))
-                if "apg" in value.get("model_providers", {}):
+                if any(item in value.get("model_providers", {}) for item in ("pf", "apg")):
                     self._raise_collision(
-                        "The reserved Codex provider 'apg' already exists. Confirm migration before APG replaces it.",
+                        "The reserved Codex PrivacyFlow provider already exists. Confirm migration before it is replaced.",
                         prepared,
                         confirm_existing_config=confirm_existing_config,
                     )
@@ -384,23 +688,23 @@ class AgentConnectorService:
                     )
                 ):
                     self._raise_collision(
-                        "The reserved Claude Code APG environment keys already exist. Confirm migration before APG replaces them.",
+                        "The reserved Claude Code PrivacyFlow environment keys already exist. Confirm migration before they are replaced.",
                         prepared,
                         confirm_existing_config=confirm_existing_config,
                     )
             elif connector_id == "deepseek-harness" and paths[0].exists():
                 value = _yaml_load(paths[0].read_bytes()) or {}
-                if "apg" in value.get("llm-pi-ai", {}).get("providers", {}):
+                if any(item in value.get("llm-pi-ai", {}).get("providers", {}) for item in ("pf", "apg")):
                     self._raise_collision(
-                        "The reserved dsh provider 'apg' already exists. Confirm migration before APG replaces it.",
+                        "The reserved dsh PrivacyFlow provider already exists. Confirm migration before it is replaced.",
                         prepared,
                         confirm_existing_config=confirm_existing_config,
                     )
             elif connector_id == "nanobot" and paths[0].exists():
                 value = self._load_json_object(paths[0])
-                if "apg" in value.get("providers", {}) or "APG" in value.get("modelPresets", {}):
+                if any(item in value.get("providers", {}) for item in ("pf", "apg")) or any(item in value.get("modelPresets", {}) for item in ("PF", "APG")):
                     self._raise_collision(
-                        "The reserved nanobot provider or preset already exists. Confirm migration before APG replaces it.",
+                        "The reserved nanobot PrivacyFlow provider or preset already exists. Confirm migration before it is replaced.",
                         prepared,
                         confirm_existing_config=confirm_existing_config,
                     )
@@ -450,14 +754,14 @@ class AgentConnectorService:
                 expected = (self.state_dir / snapshot["snapshot"]).read_bytes()
                 if not path.exists() or path.is_symlink() or not path.is_file() or path.read_bytes() != expected:
                     raise ConnectorError(
-                        "The Agent configuration changed while APG was preparing the connection.",
+                        "The Agent configuration changed while PrivacyFlow was preparing the connection.",
                         code="CONNECTOR_CONCURRENT_CHANGE",
                         status_code=409,
                         paths=[str(path)],
                     )
             elif path.exists():
                 raise ConnectorError(
-                    "The Agent configuration was created while APG was preparing the connection.",
+                    "The Agent configuration was created while PrivacyFlow was preparing the connection.",
                     code="CONNECTOR_CONCURRENT_CHANGE",
                     status_code=409,
                     paths=[str(path)],
@@ -512,6 +816,9 @@ class AgentConnectorService:
                 "mode": stat.S_IMODE(path.stat().st_mode) if path.exists() else None,
             })
         return current
+
+    def _capture_paths(self, paths: list[Path]) -> list[dict[str, Any]]:
+        return self._capture_current_files([{"path": str(path)} for path in paths])
 
     def _apply_captured_files(self, files: list[dict[str, Any]]) -> None:
         for item in reversed(files):
@@ -588,15 +895,15 @@ class AgentConnectorService:
             "id": connector_id, "name": CONNECTOR_NAMES[connector_id], "protocol": CONNECTOR_PROTOCOLS[connector_id],
             "installed": installed, "paths": [str(path) for path in self._paths(connector_id)],
             "command": COMMANDS[connector_id][0], "executable": executable,
-            "detection": detection if executable else "not_found_on_apg_path",
+            "detection": detection if executable else "not_found_on_pf_path",
             "status": status, "connected": bool(active), "external_changes": changed,
             "can_restore": bool(active), "model": active.get("model") if active else None,
         }
 
     def _executable(self, connector_id: str) -> str | None:
-        """Resolve Agent CLIs using the APG process environment, not the shell UI.
+        """Resolve Agent CLIs using the PrivacyFlow process environment, not the shell UI.
 
-        Desktop-launched APG processes often inherit a minimal PATH.  Include
+        Desktop-launched PrivacyFlow processes often inherit a minimal PATH.  Include
         common user-level Node/Python install locations while never executing a
         discovered binary or treating a config directory as proof of install.
         """
@@ -631,7 +938,7 @@ class AgentConnectorService:
     def _package_executable(self, connector_id: str) -> str | None:
         """Find an installed Node package when its bin shim is outside PATH.
 
-        GUI-launched APG processes frequently miss the npm prefix inherited by
+        GUI-launched PrivacyFlow processes frequently miss the npm prefix inherited by
         an interactive shell.  The official DSH package can still be present in
         ``lib/node_modules`` even when its ``dsh`` shim was not linked; reading
         its package manifest lets the status page report the real installation
@@ -696,7 +1003,14 @@ class AgentConnectorService:
                     manifest = json.loads(manifest_path.read_text("utf-8"))
                     bin_spec = manifest.get("bin") if isinstance(manifest, dict) else None
                     if isinstance(bin_spec, dict):
-                        bin_spec = bin_spec.get("dsh") or bin_spec.get("deepseek-harness")
+                        bin_spec = next(
+                            (
+                                bin_spec.get(name)
+                                for name in ("dsh", "deepseek-harness", "deepseek")
+                                if isinstance(bin_spec.get(name), str)
+                            ),
+                            next((item for item in bin_spec.values() if isinstance(item, str)), None),
+                        )
                     if not isinstance(bin_spec, str) or not bin_spec.strip():
                         continue
                     candidate = (package_dir / bin_spec.strip()).resolve()
@@ -735,9 +1049,8 @@ class AgentConnectorService:
         self._atomic_write(self.index_path, _json_bytes(state), 0o600)
 
     def _ensure_state_dirs(self) -> None:
-        for path in (self.state_dir, self.transactions_dir):
-            path.mkdir(parents=True, exist_ok=True, mode=0o700)
-            os.chmod(path, 0o700)
+        ensure_private_state_directory(self.state_dir)
+        ensure_private_state_directory(self.transactions_dir, always_owned=True)
 
     def _prune_transaction_dirs(self, connector_id: str, keep: set[str]) -> None:
         root = self.transactions_dir / connector_id

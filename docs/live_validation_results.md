@@ -1,5 +1,7 @@
 # Live Validation Results
 
+> Historical validation artifact: the runs below predate the PrivacyFlow migration and intentionally retain APG names. New validation runs use the PF namespace; no generated evidence was rewritten.
+
 ## Full live-agent matrix: Claude Code + OpenCode
 
 Date: 2026-08-05

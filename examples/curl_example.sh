@@ -2,7 +2,7 @@
 set -eu
 
 curl http://localhost:8765/v1/chat/completions \
-  -H 'Authorization: Bearer apg-local' \
+  -H 'Authorization: Bearer pf-local' \
   -H 'Content-Type: application/json' \
   -d '{
     "model": "gpt-4.1-mini",

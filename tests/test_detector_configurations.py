@@ -3,9 +3,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-import pytest
-
-from gateway.detector_control import DetectorConfigurationConflict, DetectorControlError, DetectorControlPlane
+from gateway.detector_control import DetectorControlPlane
 from gateway.detectors.base import Detector
 from gateway.detectors.findings import SourceBlock
 from gateway.detectors.flow import DetectorFlow, FlowModule
@@ -15,9 +13,9 @@ from gateway.policy_engine import PolicyEngine
 from gateway.redaction_engine import RedactionEngine
 
 
-def control(tmp_path, base_config=None):
+def control(tmp_path):
     applied = []
-    instance = DetectorControlPlane(base_config or {}, str(tmp_path / "detector-control.json"), applied.append)
+    instance = DetectorControlPlane(str(tmp_path / "detector-control.json"), applied.append)
     return instance, applied
 
 
@@ -25,196 +23,52 @@ def subtypes(manager, text: str) -> set[str]:
     return {finding.subtype for finding in manager.scan_findings(text)}
 
 
-def test_content_templates_detect_declared_categories(tmp_path) -> None:
-    detector_control, _ = control(tmp_path)
-    credentials = detector_control.manager_for_configuration("builtin.credentials")
-    personal = detector_control.manager_for_configuration("builtin.personal")
-    local_context = detector_control.manager_for_configuration("builtin.local_context")
-    comprehensive = detector_control.manager_for_configuration("builtin.comprehensive")
-    text = "sk-proj-abcdefghijklmnopqrstuvwxyz123456 alice@example.com /Users/alice/private/project/.env"
+def test_fixed_builtin_comprehensive_pipeline_is_active_and_available(tmp_path) -> None:
+    detector_control, applied = control(tmp_path)
 
-    assert "api_key" in subtypes(credentials, text)
-    assert "email" not in subtypes(credentials, text)
-    assert "email" in subtypes(personal, text)
-    assert "api_key" not in subtypes(personal, text)
-    assert "local_path" in subtypes(local_context, text)
-    assert "email" not in subtypes(local_context, text)
-    assert {"api_key", "email", "local_path"} <= subtypes(comprehensive, text)
-    path_config = detector_control.get_configuration("builtin.local_context")["modules"][0]["config"]
-    assert detector_control.get_configuration("builtin.local_context")["modules"][0]["name"] == "本地路径"
-    assert path_config["path_risk"] == "medium"
-    assert "credential_names" not in path_config
-    assert "credential_risk" not in path_config
-    assert "path_action" not in path_config
-    assert "credential_action" not in path_config
+    configuration = detector_control.active_configuration()
+    assert configuration["id"] == "builtin.comprehensive"
+    assert detector_control.active_configuration_available() is True
+    assert len(applied) == 1
 
-    diagnostics = comprehensive.diagnostics()
-    assert [item["id"] for item in diagnostics] == ["apg_core", "credentials", "personal_data", "local_paths", "entropy", "personal_model"]
-    assert diagnostics[-1]["status"] == "disabled"
+    module_ids = {module["id"] for module in configuration["modules"]}
+    assert {"credentials", "personal_data", "local_paths"} <= module_ids
 
 
-def test_builtin_presets_are_precise_on_realistic_shell_fixtures(tmp_path) -> None:
-    detector_control, _ = control(tmp_path)
+def test_builtin_comprehensive_detects_rules_paths_pii_and_secrets(tmp_path) -> None:
+    detector_control, applied = control(tmp_path)
+    manager = applied[0]
     fixture_dir = Path(__file__).parent / "fixtures"
     benign = (fixture_dir / "detector_shell_benign.txt").read_text(encoding="utf-8")
     sensitive = (fixture_dir / "detector_shell_sensitive.txt").read_text(encoding="utf-8")
 
-    assert detector_control.manager_for_configuration("builtin.comprehensive").scan_findings(benign) == []
+    assert manager.scan_findings(benign) == []
+    assert {"api_key", "access_url_token", "credential_username", "credential_password", "local_path"} == subtypes(manager, sensitive)
 
-    credentials = subtypes(detector_control.manager_for_configuration("builtin.credentials"), sensitive)
-    personal = subtypes(detector_control.manager_for_configuration("builtin.personal"), sensitive)
-    local_context = subtypes(detector_control.manager_for_configuration("builtin.local_context"), sensitive)
-    comprehensive = subtypes(detector_control.manager_for_configuration("builtin.comprehensive"), sensitive)
-
-    assert credentials == {"api_key", "access_url_token", "credential_password"}
-    assert personal == {"credential_username"}
-    assert local_context == {"local_path"}
-    assert comprehensive == {
-        "api_key",
-        "access_url_token",
-        "credential_username",
-        "credential_password",
-        "local_path",
-    }
-    credential_rules = next(
-        module["config"]["rules"]
-        for module in detector_control.get_configuration("builtin.credentials")["modules"]
-        if module["type"] == "regex"
-    )
-    assert len(credential_rules) == 13
-    assert not any("apg_test" in rule["id"] or rule["id"].endswith("_prefix") for rule in credential_rules)
+    text = "sk-proj-abcdefghijklmnopqrstuvwxyz123456 alice@example.com /Users/alice/private/project/.env"
+    detected = subtypes(manager, text)
+    assert {"api_key", "email", "local_path"} <= detected
 
 
-def test_local_model_availability_requires_cached_model_when_downloads_are_disabled(tmp_path, monkeypatch) -> None:
-    applied = []
-    detector_control = DetectorControlPlane(
-        {},
-        str(tmp_path / "detector-control.json"),
-        applied.append,
-        model_path_resolver=lambda *_args: None,
-    )
-    monkeypatch.setattr(detector_control, "_module_available", lambda _package: True)
-    module = next(
-        item
-        for item in detector_control.get_configuration("builtin.personal")["modules"]
-        if item["type"] == "local_model"
-    )
-    assert module["runtime_available"] is False
-    assert module["local_model_id"].startswith("lmodel_")
+def test_fixed_pipeline_has_no_local_model_references(tmp_path) -> None:
+    detector_control, _ = control(tmp_path)
 
-    detector_control.model_path_resolver = lambda *_args: str(tmp_path / "cached-model")
-    module = next(
-        item
-        for item in detector_control.get_configuration("builtin.personal")["modules"]
-        if item["type"] == "local_model"
-    )
-    assert module["runtime_available"] is True
+    assert detector_control.local_model_references() == []
 
 
-def test_copy_edit_activate_and_atomic_revision(tmp_path) -> None:
-    detector_control, applied = control(tmp_path)
-    created = detector_control.create_configuration({"name": "Custom", "source_id": "builtin.credentials"})
-    assert created["source_template_id"] == "builtin.credentials"
-    created["modules"].reverse()
-    created["modules"][0]["config"]["min_entropy"] = 4.2
-    saved = detector_control.save_configuration(created["id"], created)
-    assert [module["id"] for module in saved["modules"]] == ["entropy", "credentials"]
-    assert saved["revision"] == 2
+def test_pf_enabled_persists_across_control_plane_reload(tmp_path) -> None:
+    detector_control, _ = control(tmp_path)
 
-    with pytest.raises(DetectorConfigurationConflict):
-        detector_control.save_configuration(created["id"], created)
-
-    detector_control.activate_configuration(created["id"])
-    assert detector_control.catalog()["active_configuration_id"] == created["id"]
-    assert applied[-1].hierarchical.flow.preset == created["id"]
-    with pytest.raises(DetectorConfigurationConflict):
-        detector_control.delete_configuration(created["id"])
-
-
-def test_template_module_switch_persists_and_hot_applies(tmp_path) -> None:
-    detector_control, applied = control(tmp_path)
-    configuration_id = "builtin.comprehensive"
-    module_id = "entropy"
-    assert detector_control.active_configuration()["id"] == configuration_id
-    assert next(
-        module for module in detector_control.active_configuration()["modules"] if module["id"] == module_id
-    )["enabled"] is False
-
-    applied_before = len(applied)
-    updated = detector_control.set_template_module_enabled(configuration_id, module_id, True)
-    assert updated["readonly"] is True
-    assert next(module for module in updated["modules"] if module["id"] == module_id)["enabled"] is True
-    assert len(applied) == applied_before + 1
-    assert applied[-1].hierarchical.flow.preset == configuration_id
-
-    state_path = tmp_path / "detector-control.json"
-    state = json.loads(state_path.read_text(encoding="utf-8"))
-    assert state["template_module_overrides"] == {configuration_id: {module_id: True}}
+    assert detector_control.pf_enabled() is True
+    assert detector_control.set_pf_enabled(False) is False
+    assert detector_control.pf_enabled() is False
+    state = json.loads((tmp_path / "detector-control.json").read_text(encoding="utf-8"))
+    assert state["pf_enabled"] is False
 
     reloaded, _ = control(tmp_path)
-    restored = reloaded.get_configuration(configuration_id)
-    assert next(module for module in restored["modules"] if module["id"] == module_id)["enabled"] is True
-
-    reset = reloaded.set_template_module_enabled(configuration_id, module_id, False)
-    assert next(module for module in reset["modules"] if module["id"] == module_id)["enabled"] is False
-    state = json.loads(state_path.read_text(encoding="utf-8"))
-    assert state["template_module_overrides"] == {}
-
-    custom = reloaded.create_configuration({"name": "Custom", "source_id": configuration_id})
-    with pytest.raises(DetectorControlError, match="Only preset"):
-        reloaded.set_template_module_enabled(custom["id"], module_id, True)
-    with pytest.raises(DetectorControlError, match="boolean"):
-        reloaded.set_template_module_enabled(configuration_id, module_id, "yes")  # type: ignore[arg-type]
-
-
-def test_regex_validation_and_model_url_normalization(tmp_path) -> None:
-    detector_control, _ = control(tmp_path)
-    created = detector_control.create_configuration({"name": "Blank"})
-    created["modules"] = [
-        {
-            "id": "model_pii",
-            "name": "PII model",
-            "type": "local_model",
-            "enabled": False,
-            "timeout_ms": 800,
-            "failure_mode": "open",
-            "config": {
-                "adapter": "gliner",
-                "model_name": "https://huggingface.co/nvidia/gliner-PII/tree/main",
-                "threshold": 0.5,
-                "device": "cpu",
-                "aggregation_strategy": "simple",
-                "labels": ["email"],
-            },
-        }
-    ]
-    saved = detector_control.save_configuration(created["id"], created)
-    assert saved["modules"][0]["config"]["model_name"] == "nvidia/gliner-PII"
-
-    saved["modules"] = [
-        {
-            "id": "unsafe_rules",
-            "name": "Unsafe",
-            "type": "regex",
-            "enabled": True,
-            "timeout_ms": 100,
-            "failure_mode": "closed",
-            "config": {
-                "rules": [
-                    {
-                        "id": "custom.unsafe",
-                        "pattern": "(a+)+$",
-                        "type": "MACHINE_SECRET",
-                        "subtype": "unsafe",
-                        "risk": "high",
-                        "suggested_action": "redact",
-                    }
-                ]
-            },
-        }
-    ]
-    with pytest.raises(DetectorControlError, match="repeating groups"):
-        detector_control.save_configuration(saved["id"], saved)
+    assert reloaded.pf_enabled() is False
+    assert reloaded.active_configuration()["id"] == "builtin.comprehensive"
+    assert reloaded.active_configuration_available() is True
 
 
 def test_missing_local_model_is_reported_as_unavailable() -> None:
@@ -231,12 +85,10 @@ def test_missing_local_model_is_reported_as_unavailable() -> None:
 
 
 def test_core_guard_is_always_enabled_and_materialization_boundary_remains_strict(tmp_path) -> None:
-    detector_control, _ = control(tmp_path)
-    created = detector_control.create_configuration({"name": "Always guarded", "source_id": "builtin.local_context"})
-    created["core_guard_enabled"] = False
-    saved = detector_control.save_configuration(created["id"], created)
-    manager = detector_control.manager_for_configuration(saved["id"])
-    assert saved["core_guard_enabled"] is True
+    detector_control, applied = control(tmp_path)
+    manager = applied[0]
+
+    assert detector_control.active_configuration()["core_guard_enabled"] is True
     assert manager.core_guard_enabled is True
     assert "signed_placeholder" in subtypes(manager, "<APG:v1:secret:fake:fake:123:fake>")
 
@@ -254,10 +106,11 @@ def test_core_guard_is_always_enabled_and_materialization_boundary_remains_stric
     assert events[0]["result_code"] != "OK"
 
 
-def test_unsupported_detector_state_is_rejected(tmp_path) -> None:
-    (tmp_path / "detector-control.json").write_text(
-        json.dumps({"version": 1, "preset": "default"}),
-        encoding="utf-8",
-    )
-    with pytest.raises(DetectorControlError, match="Unsupported detector configuration state version"):
-        control(tmp_path)
+def test_corrupt_detector_state_does_not_block_fixed_pipeline_startup(tmp_path) -> None:
+    (tmp_path / "detector-control.json").write_text("{not valid json", encoding="utf-8")
+
+    detector_control, applied = control(tmp_path)
+
+    assert detector_control.active_configuration()["id"] == "builtin.comprehensive"
+    assert detector_control.active_configuration_available() is True
+    assert len(applied) == 1

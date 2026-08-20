@@ -233,7 +233,7 @@ class LocalModelService:
                 status_code=409,
             )
         if entry["source_type"] == "local":
-            raise LocalModelError("LOCAL_PATH_NOT_MANAGED", "APG does not delete local model directories")
+            raise LocalModelError("LOCAL_PATH_NOT_MANAGED", "PrivacyFlow does not delete local model directories")
         record = self._record(entry)
         cache_path = str(record.get("cache_path", ""))
         if cache_path:
@@ -307,7 +307,7 @@ class LocalModelService:
         thread = threading.Thread(
             target=self._run_job,
             args=(job_id, selected, requested_stages, bool(force)),
-            name=f"apg-{job_id}",
+            name=f"pf-{job_id}",
             daemon=True,
         )
         thread.start()
@@ -397,7 +397,7 @@ class LocalModelService:
         runtime_prepared = False
         for entry in entries:
             if self._closed:
-                failure = (entry["id"], LocalModelError("SERVICE_STOPPED", "APG stopped the model job"))
+                failure = (entry["id"], LocalModelError("SERVICE_STOPPED", "PrivacyFlow stopped the model job"))
                 break
             for stage in stages:
                 entry = self._entry(entry["id"])
@@ -472,7 +472,7 @@ class LocalModelService:
                 self._set_record(entry, metadata=metadata)
                 raise LocalModelError(
                     "MODEL_TYPE_REQUIRED",
-                    "APG could not reliably identify this model. Select Transformers Token Classification or GLiNER.",
+                    "PrivacyFlow could not reliably identify this model. Select Transformers Token Classification or GLiNER.",
                     status_code=409,
                 )
             adapter = detected
@@ -483,7 +483,7 @@ class LocalModelService:
         if metadata.get("requires_remote_code"):
             raise LocalModelError(
                 "REMOTE_CODE_UNSUPPORTED",
-                "This model requires remote custom code, which APG does not execute",
+                "This model requires remote custom code, which PrivacyFlow does not execute",
             )
         device = self._resolve_device(str(entry.get("device_preference", "auto")))
         self._set_record(
@@ -652,7 +652,7 @@ class LocalModelService:
                 + "print(json.dumps({'ok':True}))"
             )
             self._run_command([str(runtime_python), "-c", probe], timeout=120)
-            (temporary / "apg-runtime.json").write_text(
+            (temporary / "pf-runtime.json").write_text(
                 json.dumps({
                     "version": RUNTIME_VERSION,
                     "requirements": requirements,
@@ -728,7 +728,7 @@ class LocalModelService:
         except (IndexError, KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
             raise LocalModelError("DOWNLOAD_RESULT_INVALID", "The model download did not return a valid snapshot") from exc
         if not cache_path.is_dir() or not cache_path.is_relative_to(self.cache_root.resolve()):
-            raise LocalModelError("DOWNLOAD_PATH_INVALID", "The downloaded snapshot is outside the APG model cache")
+            raise LocalModelError("DOWNLOAD_PATH_INVALID", "The downloaded snapshot is outside the PrivacyFlow model cache")
         cache_size = self._directory_size(cache_path)
         elapsed = max(0.001, time.monotonic() - started)
         downloaded = max(0, self._directory_size(self.cache_root) - before)
@@ -1118,9 +1118,13 @@ class LocalModelService:
         return sorted(requirements)
 
     def _runtime_manifest(self) -> dict[str, Any]:
-        path = self.runtime_dir / "apg-runtime.json"
+        path = self.runtime_dir / "pf-runtime.json"
         if not path.is_file():
-            return {}
+            # Read the legacy manifest during the migration release. New
+            # runtimes are always written with the PrivacyFlow name.
+            path = self.runtime_dir / "apg-runtime.json"
+            if not path.is_file():
+                return {}
         try:
             value = json.loads(path.read_text(encoding="utf-8"))
         except (OSError, ValueError):
@@ -1140,7 +1144,7 @@ class LocalModelService:
     def _torch_index(self, device: str) -> str | None:
         if platform.system() == "Darwin":
             if device.startswith("cuda"):
-                raise LocalModelError("CUDA_UNSUPPORTED_PLATFORM", "CUDA is not supported by APG on macOS")
+                raise LocalModelError("CUDA_UNSUPPORTED_PLATFORM", "CUDA is not supported by PrivacyFlow on macOS")
             return None
         if device.startswith("cuda"):
             tag = self._cuda_wheel_tag()
@@ -1159,18 +1163,18 @@ class LocalModelService:
         for minimum, tag in CUDA_WHEEL_INDEXES:
             if supported >= minimum:
                 return tag
-        raise LocalModelError("CUDA_VERSION_UNSUPPORTED", "The detected CUDA driver is not supported by APG")
+        raise LocalModelError("CUDA_VERSION_UNSUPPORTED", "The detected CUDA driver is not supported by PrivacyFlow")
 
     def _managed_cache_target(self, cache_path: Path) -> Path:
         root = self.cache_root.resolve()
         candidate = cache_path.resolve()
         if not candidate.is_relative_to(root):
-            raise LocalModelError("CACHE_PATH_INVALID", "Refusing to remove a path outside the APG model cache")
+            raise LocalModelError("CACHE_PATH_INVALID", "Refusing to remove a path outside the PrivacyFlow model cache")
         current = candidate
         while current.parent != root and current != root:
             current = current.parent
         if current == root or current.parent != root:
-            raise LocalModelError("CACHE_PATH_INVALID", "The APG model cache path is invalid")
+            raise LocalModelError("CACHE_PATH_INVALID", "The PrivacyFlow model cache path is invalid")
         return current
 
     def _resolve_source(

@@ -65,9 +65,9 @@ def test_codex_preserves_comments_and_uses_credential_command(tmp_path: Path) ->
     value = tomlkit.parse(rendered)
     assert "# keep this comment" in rendered
     assert value["approval_policy"] == "on-request"
-    assert value["model_provider"] == "apg"
-    assert value["model_providers"]["apg"]["wire_api"] == "responses"
-    assert value["model_providers"]["apg"]["auth"]["command"] == "apg"
+    assert value["model_provider"] == "pf"
+    assert value["model_providers"]["pf"]["wire_api"] == "responses"
+    assert value["model_providers"]["pf"]["auth"]["command"] == "privacyflow"
     assert "apg_local_" not in rendered
 
     manager.restore("codex")
@@ -101,16 +101,16 @@ def test_dsh_preserves_yaml_comments_and_writes_complete_catalog(tmp_path: Path)
     creds = yaml.load(credentials.read_text())
     assert "# keep" in settings.read_text()
     assert parsed["theme"] == "dark"
-    assert [item["id"] for item in parsed["llm-pi-ai"]["providers"]["apg"]["models"]] == ["m1", "m2"]
-    assert parsed["llm-pi-ai"]["providers"]["apg"]["api"] == "openai-completions"
-    assert parsed["llm-pi-ai"]["providers"]["apg"]["apiKeyEnv"] == "APG_DSH_API_KEY"
-    assert parsed["llm-pi-ai"]["providers"]["apg"]["models"][0]["input"] == ["text"]
-    assert parsed["agent-default-model"] == {"provider": "apg", "model": "m2"}
+    assert [item["id"] for item in parsed["llm-pi-ai"]["providers"]["pf"]["models"]] == ["m1", "m2"]
+    assert parsed["llm-pi-ai"]["providers"]["pf"]["api"] == "openai-completions"
+    assert parsed["llm-pi-ai"]["providers"]["pf"]["apiKeyEnv"] == "PF_DSH_API_KEY"
+    assert parsed["llm-pi-ai"]["providers"]["pf"]["models"][0]["input"] == ["text"]
+    assert parsed["agent-default-model"] == {"provider": "pf", "model": "m2"}
     assert creds["OTHER_KEY"] == "existing"
-    assert creds["APG_DSH_API_KEY"].startswith("apg_local_")
+    assert creds["PF_DSH_API_KEY"].startswith("apg_local_")
 
 
-def test_nanobot_preserves_fields_and_sets_apg_preset(tmp_path: Path) -> None:
+def test_nanobot_preserves_fields_and_sets_pf_preset(tmp_path: Path) -> None:
     path = tmp_path / ".nanobot" / "config.json"
     path.parent.mkdir()
     path.write_text(json.dumps({"channels": {"telegram": {"enabled": False}}}))
@@ -118,9 +118,9 @@ def test_nanobot_preserves_fields_and_sets_apg_preset(tmp_path: Path) -> None:
     manager.connect("nanobot", "model-z", ["model-z"])
     value = json.loads(path.read_text())
     assert value["channels"]["telegram"]["enabled"] is False
-    assert value["providers"]["apg"]["apiType"] == "chat_completions"
-    assert value["modelPresets"]["APG"] == {"provider": "apg", "model": "model-z"}
-    assert value["agents"]["defaults"]["modelPreset"] == "APG"
+    assert value["providers"]["pf"]["apiType"] == "chat_completions"
+    assert value["modelPresets"]["PF"] == {"provider": "pf", "model": "model-z"}
+    assert value["agents"]["defaults"]["modelPreset"] == "PF"
 
 
 def test_external_change_requires_confirmation_and_creates_safety_backup(tmp_path: Path) -> None:
@@ -318,7 +318,17 @@ def test_launcher_merges_connector_keys_with_explicit_runtime_keys(tmp_path: Pat
     environment = {"APG_LOCAL_API_KEYS": "runtime-main,runtime-secondary"}
     apply_launcher_environment(config, environ=environment)
     assert environment["APG_LOCAL_API_KEYS"].split(",") == ["runtime-main", "runtime-secondary", connector_key]
-    assert environment["APG_PRIMARY_LOCAL_API_KEY"] == "runtime-main"
+    assert environment["PF_PRIMARY_LOCAL_API_KEY"] == "runtime-main"
+    assert "APG_PRIMARY_LOCAL_API_KEY" not in environment
+
+
+def test_connector_service_does_not_chmod_an_arbitrary_state_parent(tmp_path: Path) -> None:
+    os.chmod(tmp_path, 0o755)
+
+    AgentConnectorService(tmp_path, tmp_path / "launcher.json", home=tmp_path, environ={}, which=lambda *_args, **_kwargs: None)
+
+    assert os.stat(tmp_path).st_mode & 0o777 == 0o755
+    assert os.stat(tmp_path / "agent-connection-transactions").st_mode & 0o777 == 0o700
 
 
 def test_rejects_wrong_owner(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

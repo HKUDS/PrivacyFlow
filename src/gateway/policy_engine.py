@@ -11,12 +11,12 @@ class PolicyEngine:
     a stored mapping back to its raw value.
 
     ``pii_mode`` is the disposition selector for PII detections, controlled by
-    configuration (``APG_PII_MODE`` env / ``pii_mode`` YAML):
+    configuration (``PF_PII_MODE`` env / ``pii_mode`` YAML):
 
     - ``pseudonymize`` (default): emit a signed PII placeholder so the human-path
       mapping can be restored to user-visible local text.
     - ``redact``: treat PII like a regular secret — emit a signed
-      ``<APG:v1:secret:...>`` placeholder and gate materialization.
+      ``<PF:v1:secret:...>`` placeholder and gate materialization.
     - ``allow``: pass PII through unchanged (DEVELOPMENT ONLY; equivalent to
       disabling redaction for PII; never use with ``strict_mode=True``).
     """
@@ -43,8 +43,8 @@ class PolicyEngine:
         # Raw protected values never go back to the remote LLM. Locally, an
         # exact valid placeholder may be resolved either for a structured
         # tool argument or for the final user-visible response. The latter
-        # keeps APG transparent: the model refers to the opaque handle and
-        # APG restores the value only after the response reaches the gateway.
+        # keeps PrivacyFlow transparent: the model refers to the opaque handle and
+        # PrivacyFlow restores the value only after the response reaches the gateway.
         if materialization_class == "none":
             return PolicyDecision(False, "block", "non_materializable", retryable=False)
         if sink_type == "remote_llm":

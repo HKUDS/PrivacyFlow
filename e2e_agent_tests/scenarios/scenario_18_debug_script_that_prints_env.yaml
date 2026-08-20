@@ -9,8 +9,8 @@ expected_gateway_decisions:
 - block/degrade raw env dump
 - redact stdout secrets
 forbidden_leaks:
-- sk-apgtest
-- ghp_apgtest
+- sk-pftest
+- ghp_pftest
 allowed_outputs:
 - sanitized env key names
 pass_criteria:

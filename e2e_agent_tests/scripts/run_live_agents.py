@@ -22,7 +22,7 @@ from e2e_agent_tests.scripts.check_leaks import scan_paths
 from e2e_agent_tests.scripts.common import CANARY_STRINGS, HarnessPaths, file_snapshot, read_jsonl, reset_path, sha256_file
 from e2e_agent_tests.scripts.setup_test_repo import setup_test_repo
 from gateway.cli.launcher import LauncherConfigError, prepare_launcher_config
-from gateway.placeholder_parser import APG_PLACEHOLDER_FORMAT_EXAMPLES
+from gateway.placeholder_parser import PF_PLACEHOLDER_FORMAT_EXAMPLES
 from gateway.upstream_protocol import (
     ANTHROPIC_MESSAGES,
     OPENAI_CHAT_COMPLETIONS,
@@ -181,8 +181,8 @@ def _apply_live_launcher_config(path: Path) -> None:
     if not api_key or not base_url or not protocol:
         raise LauncherConfigError("The active launcher upstream profile is incomplete.")
     os.environ["DEEPSEEK_API_KEY"] = api_key
-    os.environ["APG_UPSTREAM_BASE_URL"] = base_url
-    os.environ["APG_UPSTREAM_PROTOCOL"] = protocol
+    os.environ["PF_UPSTREAM_BASE_URL"] = base_url
+    os.environ["PF_UPSTREAM_PROTOCOL"] = protocol
 
 
 def _base_child_environment() -> dict[str, str]:
@@ -207,17 +207,17 @@ def _agent_environment(repo: Path) -> dict[str, str]:
 def _server_environment(*, disable_entropy: bool = False) -> dict[str, str]:
     env = _base_child_environment()
     env["DEEPSEEK_API_KEY"] = os.environ["DEEPSEEK_API_KEY"]
-    env["APG_UPSTREAM_PROTOCOL"] = os.getenv("APG_UPSTREAM_PROTOCOL", OPENAI_CHAT_COMPLETIONS)
-    upstream_base_url = os.getenv("APG_UPSTREAM_BASE_URL", "https://api.deepseek.com")
-    if os.getenv("APG_UPSTREAM_BASE_URL"):
-        env["APG_UPSTREAM_BASE_URL"] = upstream_base_url
+    env["PF_UPSTREAM_PROTOCOL"] = os.getenv("PF_UPSTREAM_PROTOCOL", OPENAI_CHAT_COMPLETIONS)
+    upstream_base_url = os.getenv("PF_UPSTREAM_BASE_URL", "https://api.deepseek.com")
+    if os.getenv("PF_UPSTREAM_BASE_URL"):
+        env["PF_UPSTREAM_BASE_URL"] = upstream_base_url
     upstream_host = urlparse(upstream_base_url).hostname
     no_proxy = ",".join(value for value in (upstream_host, "127.0.0.1", "localhost") if value)
     env["NO_PROXY"] = no_proxy
     env["no_proxy"] = no_proxy
     env["PYTHONUNBUFFERED"] = "1"
     if disable_entropy:
-        env["APG_LIVE_DISABLE_ENTROPY"] = "1"
+        env["PF_LIVE_DISABLE_ENTROPY"] = "1"
     return env
 
 
@@ -231,17 +231,17 @@ def _wait_for_port(port: int, process: subprocess.Popen[str], timeout: float = 1
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         if process.poll() is not None:
-            raise RuntimeError("APG live-agent server exited before accepting connections")
+            raise RuntimeError("PF live-agent server exited before accepting connections")
         with socket.socket() as sock:
             sock.settimeout(0.2)
             if sock.connect_ex(("127.0.0.1", port)) == 0:
                 return
         time.sleep(0.1)
-    raise RuntimeError("Timed out waiting for APG live-agent server")
+    raise RuntimeError("Timed out waiting for PF live-agent server")
 
 
 def _live_model() -> str:
-    return os.getenv("APG_LIVE_MODEL", DEFAULT_LIVE_MODEL)
+    return os.getenv("PF_LIVE_MODEL", DEFAULT_LIVE_MODEL)
 
 
 def _opencode_config(config_root: Path, port: int) -> None:
@@ -250,13 +250,13 @@ def _opencode_config(config_root: Path, port: int) -> None:
     model = _live_model()
     config = {
         "$schema": "https://opencode.ai/config.json",
-        "model": f"apg/{model}",
+        "model": f"pf/{model}",
         "provider": {
-            "apg": {
+            "pf": {
                 "npm": "@ai-sdk/openai-compatible",
-                "name": "APG",
-                "options": {"baseURL": f"http://127.0.0.1:{port}/v1", "apiKey": "apg-local"},
-                "models": {model: {"name": f"{model} through APG", "tool_call": True}},
+                "name": "PF",
+                "options": {"baseURL": f"http://127.0.0.1:{port}/v1", "apiKey": "pf-local"},
+                "models": {model: {"name": f"{model} through PF", "tool_call": True}},
             }
         },
         "permission": {
@@ -278,7 +278,7 @@ def _agent_command(
     port: int,
     run_root: Path,
 ) -> tuple[list[str], dict[str, str]]:
-    repo = run_root / "apg-agent-test-repo"
+    repo = run_root / "pf-agent-test-repo"
     env = _agent_environment(repo)
     if agent == "claude":
         settings_path = run_root / "claude-settings.json"
@@ -287,7 +287,7 @@ def _agent_command(
                 {
                     "env": {
                         "ANTHROPIC_BASE_URL": f"http://127.0.0.1:{port}",
-                        "ANTHROPIC_AUTH_TOKEN": "apg-local",
+                        "ANTHROPIC_AUTH_TOKEN": "pf-local",
                     }
                 }
             ),
@@ -296,7 +296,7 @@ def _agent_command(
         env.update(
             {
                 "ANTHROPIC_BASE_URL": f"http://127.0.0.1:{port}",
-                "ANTHROPIC_AUTH_TOKEN": "apg-local",
+                "ANTHROPIC_AUTH_TOKEN": "pf-local",
                 "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1",
             }
         )
@@ -341,7 +341,7 @@ def _agent_command(
         "--dir",
         str(repo),
         "--model",
-        f"apg/{_live_model()}",
+        f"pf/{_live_model()}",
         "--format",
         "json",
         prompt,
@@ -354,19 +354,19 @@ def _payload_has_contract(event: dict[str, Any]) -> bool:
         return False
     # OpenAI Responses: the contract is injected as top-level instructions.
     instructions = payload.get("instructions")
-    if isinstance(instructions, str) and "Agent Privacy Gateway" in instructions:
+    if isinstance(instructions, str) and "PrivacyFlow" in instructions:
         return True
     # Anthropic Messages: the contract is injected into the top-level system
     # field, which may be a string or a list of {type: text, text: ...} blocks.
     system = payload.get("system")
-    if isinstance(system, str) and "Agent Privacy Gateway" in system:
+    if isinstance(system, str) and "PrivacyFlow" in system:
         return True
     if isinstance(system, list):
         for block in system:
-            if isinstance(block, dict) and "Agent Privacy Gateway" in str(block.get("text", "")):
+            if isinstance(block, dict) and "PrivacyFlow" in str(block.get("text", "")):
                 return True
     return any(
-        isinstance(message, dict) and "Agent Privacy Gateway" in str(message.get("content", ""))
+        isinstance(message, dict) and "PrivacyFlow" in str(message.get("content", ""))
         for message in payload.get("messages", [])
     )
 
@@ -630,8 +630,8 @@ def _validate_debug_script(path: Path) -> tuple[list[str], dict[str, Any]]:
     env = _base_child_environment()
     env.update(
         {
-            "OPENAI_API_KEY": "sk-apgtest-runtime-111111111111111111111111111111",
-            "DATABASE_URL": "postgres://admin:apgtest-db-pass@localhost:5432/app",
+            "OPENAI_API_KEY": "sk-pftest-runtime-111111111111111111111111111111",
+            "DATABASE_URL": "postgres://admin:pftest-db-pass@localhost:5432/app",
             "DEBUG": "true",
         }
     )
@@ -739,12 +739,12 @@ def _scenario_validation(
     marker_files: list[str] = []
     for path in changed_paths:
         text = path.read_text(encoding="utf-8", errors="ignore")
-        if _contains_non_example_apg_marker(text) or "APG_REDACTED" in text:
+        if _contains_non_example_pf_marker(text) or "PF_REDACTED" in text:
             marker_files.append(str(path.relative_to(paths.repo)))
     if changed_leak_hits and not scenario.allow_generated_sensitive:
         failures.append("generated/modified files contain canaries")
     if marker_files:
-        failures.append("generated/modified files contain APG markers")
+        failures.append("generated/modified files contain PF markers")
 
     materialized_count = sum(int(event.get("materialized", 0) or 0) for event in audit_events)
     if scenario_name == "safe_env_example" and (paths.repo / ".env.example").is_file():
@@ -790,7 +790,7 @@ def _scenario_validation(
             "unexpected_changes": unexpected_changes,
             "missing_changes": missing_changes,
             "changed_leak_files": sorted(str(path) for path in changed_leak_hits),
-            "apg_marker_files": marker_files,
+            "pf_marker_files": marker_files,
             "materialized_count": materialized_count,
             "successful_validators": sorted(successful_validators),
             "audit_operations": audit_operation_evidence,
@@ -804,10 +804,10 @@ def _scenario_prompt(scenario: LiveScenario, repo: Path) -> str:
     return scenario.prompt(repo) if callable(scenario.prompt) else scenario.prompt
 
 
-def _contains_non_example_apg_marker(text: str) -> bool:
-    for example in APG_PLACEHOLDER_FORMAT_EXAMPLES:
+def _contains_non_example_pf_marker(text: str) -> bool:
+    for example in PF_PLACEHOLDER_FORMAT_EXAMPLES:
         text = text.replace(example, "")
-    return "<APG" in text
+    return "<PF" in text
 
 
 def run_live_case(agent: str, scenario_name: str, base: Path, timeout: float) -> dict[str, Any]:
@@ -820,7 +820,7 @@ def run_live_case(agent: str, scenario_name: str, base: Path, timeout: float) ->
     subprocess.run(["git", "init", "-q"], cwd=paths.repo, check=True)
     subprocess.run(["git", "add", "-A"], cwd=paths.repo, check=True)
     subprocess.run(
-        ["git", "-c", "user.name=APG Live Runner", "-c", "user.email=apg@example.invalid", "commit", "-qm", "fixture"],
+        ["git", "-c", "user.name=PF Live Runner", "-c", "user.email=pf@example.invalid", "commit", "-qm", "fixture"],
         cwd=paths.repo,
         check=True,
     )
@@ -880,7 +880,7 @@ def run_live_case(agent: str, scenario_name: str, base: Path, timeout: float) ->
     final_materialized_values = [value for value in CANARY_STRINGS if value in final_output]
     upstream_events = read_jsonl(paths.upstream_log)
     audit_events = read_jsonl(paths.audit_log)
-    audit_operation_evidence = _audit_operation_evidence(paths.artifacts / "apg_proxy_state.sqlite3")
+    audit_operation_evidence = _audit_operation_evidence(paths.artifacts / "pf_proxy_state.sqlite3")
     final_values_authorized = (
         not final_materialized_values
         or audit_operation_evidence["local_user_materialization_count"] > 0
@@ -905,7 +905,7 @@ def run_live_case(agent: str, scenario_name: str, base: Path, timeout: float) ->
             run_error is None,
             not leak_hits,
             final_values_authorized,
-            not _contains_non_example_apg_marker(final_output),
+            not _contains_non_example_pf_marker(final_output),
             contracts_ok,
             streams_ok,
             not scenario_failures,
@@ -924,7 +924,7 @@ def run_live_case(agent: str, scenario_name: str, base: Path, timeout: float) ->
         "leak_hit_files": sorted(str(path) for path in leak_hits),
         "final_materialized_value_count": len(final_materialized_values),
         "final_values_authorized": final_values_authorized,
-        "final_has_apg_handle": _contains_non_example_apg_marker(final_output),
+        "final_has_pf_handle": _contains_non_example_pf_marker(final_output),
         "trajectory_contains_canary": any(value in trajectory for value in CANARY_STRINGS),
         "tool_summary": tool_summary,
         "tool_trace": tool_trace,
@@ -969,7 +969,7 @@ def _failed_live_case(agent: str, scenario: str, exc: Exception) -> dict[str, An
         "leak_hit_files": [],
         "final_materialized_value_count": 0,
         "final_values_authorized": False,
-        "final_has_apg_handle": False,
+        "final_has_pf_handle": False,
         "trajectory_contains_canary": False,
         "tool_summary": {},
         "tool_trace": [],
@@ -1005,7 +1005,7 @@ def _run_live_matrix(
         assert result is not None
         return result
 
-    with ThreadPoolExecutor(max_workers=worker_count, thread_name_prefix="apg-live") as pool:
+    with ThreadPoolExecutor(max_workers=worker_count, thread_name_prefix="pf-live") as pool:
         futures = {
             pool.submit(run_job, agent, scenario): (index, agent, scenario)
             for index, (agent, scenario) in enumerate(jobs)
@@ -1028,12 +1028,12 @@ def _run_live_matrix(
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Run opt-in APG validation with real coding agents and a real provider.")
-    parser.add_argument("--workdir", default="/private/tmp/apg-live-agents")
+    parser = argparse.ArgumentParser(description="Run opt-in PF validation with real coding agents and a real provider.")
+    parser.add_argument("--workdir", default="/private/tmp/pf-live-agents")
     parser.add_argument(
         "--launcher-config",
         type=Path,
-        help="Load the active upstream URL, protocol, and API key from an APG launcher configuration.",
+        help="Load the active upstream URL, protocol, and API key from an PF launcher configuration.",
     )
     parser.add_argument(
         "--agents",
@@ -1041,7 +1041,7 @@ def main() -> None:
         choices=["claude", "opencode"],
         default=["opencode"],
         help=(
-            "Coding Agent to validate. APG does not convert protocols: Claude requires an "
+            "Coding Agent to validate. PF does not convert protocols: Claude requires an "
             "anthropic_messages profile and OpenCode requires openai_chat_completions. "
             "Run them separately (default: opencode)."
         ),
@@ -1049,21 +1049,21 @@ def main() -> None:
     parser.add_argument("--scenarios", nargs="+", choices=sorted(LIVE_SCENARIOS), default=list(LIVE_SCENARIOS))
     parser.add_argument(
         "--model",
-        default=os.getenv("APG_LIVE_MODEL", DEFAULT_LIVE_MODEL),
-        help=f"Upstream model name used by the live Agent (default: {DEFAULT_LIVE_MODEL}; env: APG_LIVE_MODEL).",
+        default=os.getenv("PF_LIVE_MODEL", DEFAULT_LIVE_MODEL),
+        help=f"Upstream model name used by the live Agent (default: {DEFAULT_LIVE_MODEL}; env: PF_LIVE_MODEL).",
     )
     parser.add_argument("--timeout", type=float, default=300.0)
     parser.add_argument(
         "--concurrency",
         type=_positive_int,
-        default=os.getenv("APG_LIVE_CONCURRENCY", "4"),
-        help="Maximum live cases to run concurrently (default: 4; env: APG_LIVE_CONCURRENCY).",
+        default=os.getenv("PF_LIVE_CONCURRENCY", "4"),
+        help="Maximum live cases to run concurrently (default: 4; env: PF_LIVE_CONCURRENCY).",
     )
     parser.add_argument(
         "--retries",
         type=_nonnegative_int,
-        default=os.getenv("APG_LIVE_RETRIES", "1"),
-        help="Retry each failed live case up to N times (default: 1; env: APG_LIVE_RETRIES).",
+        default=os.getenv("PF_LIVE_RETRIES", "1"),
+        help="Retry each failed live case up to N times (default: 1; env: PF_LIVE_RETRIES).",
     )
     parser.add_argument("--require", action="store_true", help="Fail instead of skip when credentials or agent CLIs are unavailable.")
     args = parser.parse_args()
@@ -1073,13 +1073,13 @@ def main() -> None:
         parser.error("--scenarios must not contain duplicates")
     if not args.model.strip() or any(character in args.model for character in "\r\n\0"):
         parser.error("--model must be a non-empty model name without control characters")
-    os.environ["APG_LIVE_MODEL"] = args.model.strip()
+    os.environ["PF_LIVE_MODEL"] = args.model.strip()
     if args.launcher_config is not None:
         try:
             _apply_live_launcher_config(args.launcher_config)
         except LauncherConfigError as exc:
             parser.error(str(exc))
-    upstream_protocol = os.getenv("APG_UPSTREAM_PROTOCOL", OPENAI_CHAT_COMPLETIONS)
+    upstream_protocol = os.getenv("PF_UPSTREAM_PROTOCOL", OPENAI_CHAT_COMPLETIONS)
     incompatible = incompatible_agents(args.agents, upstream_protocol)
     if incompatible:
         expected = ", ".join(
@@ -1087,7 +1087,7 @@ def main() -> None:
         )
         parser.error(
             f"Active upstream format {canonical_upstream_protocol(upstream_protocol)!r} "
-            f"is incompatible with: {expected}. APG does not convert protocols; "
+            f"is incompatible with: {expected}. PF does not convert protocols; "
             "run each Agent with a matching launcher profile."
         )
     missing = detect_live_prerequisites(args.agents)

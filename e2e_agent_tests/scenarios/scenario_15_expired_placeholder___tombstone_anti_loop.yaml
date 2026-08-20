@@ -12,7 +12,7 @@ expected_gateway_decisions:
 forbidden_leaks:
 - raw secret guessed
 allowed_outputs:
-- APG_PLACEHOLDER_TOMBSTONED
+- PF_PLACEHOLDER_TOMBSTONED
 pass_criteria:
 - no materialization
 - no infinite retry

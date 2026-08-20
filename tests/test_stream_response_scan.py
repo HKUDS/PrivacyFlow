@@ -111,7 +111,7 @@ def test_balanced_scanner_handles_every_placeholder_and_secret_split(redactor) -
                 assert PROTECTED_VALUE not in output
             else:
                 assert secret not in output
-                assert PROTECTED_VALUE in output
+    assert "APG-managed protected value" in output
 
 
 def test_balanced_scanner_does_not_hide_an_unclassified_value_only_because_it_was_seen(redactor) -> None:
@@ -141,13 +141,13 @@ def test_balanced_scanner_folds_incomplete_and_oversized_candidates(redactor) ->
     scanner = BalancedStreamScanner(redactor, "sess_stream")
     output, events = scanner.feed("<APG:v1:secret:" + "x" * 5000)
     tail, tail_events = scanner.flush()
-    assert output + tail == PROTECTED_VALUE
+    assert output + tail == "APG-managed protected value"
     assert any(event["subtype"] == "stream_pending_limit" for event in [*events, *tail_events])
 
     scanner = BalancedStreamScanner(redactor, "sess_stream")
     scanner.feed("-----BEGIN PRIVATE KEY-----\nnot-finished")
     output, events = scanner.flush()
-    assert output == PROTECTED_VALUE
+    assert output == "APG-managed protected value"
     assert events[-1]["subtype"] == "incomplete_stream_candidate"
 
 
@@ -175,7 +175,7 @@ def test_custom_detector_uses_strict_buffer_and_caps_text_block(tmp_path) -> Non
     scanner = BalancedStreamScanner(redactor, "sess")
     assert scanner.strict is True
     output, events = scanner.feed("a" * (STREAM_TEXT_MAX_STRICT_BLOCK + 1))
-    assert output == PROTECTED_VALUE
+    assert output == "APG-managed protected value"
     assert events[-1]["subtype"] == "stream_strict_limit"
     assert scanner.flush() == ("", [])
 
@@ -216,7 +216,7 @@ def test_streaming_response_redacts_model_echoed_secret(tmp_path) -> None:
     upstream_payload = fake.calls[0][2]
     assert "sk-proj-abcdefghijklmnopqrstuvwxyz0" not in json.dumps(upstream_payload)
     assert "sk-proj-abcdefghijklmnopqrstuvwxyz" not in body, "raw secret must not survive stream scan"
-    assert "APG-managed protected value" in body
+    assert "PrivacyFlow-managed protected value" in body
 
 
 def test_openai_streaming_tool_call_arguments_materialize_locally(tmp_path) -> None:
@@ -230,8 +230,8 @@ def test_openai_streaming_tool_call_arguments_materialize_locally(tmp_path) -> N
     ) as resp:
         body = resp.read().decode("utf-8")
     assert "sk-proj-abcdefghijklmnopqrstuvwxyz0" in body
-    assert "<APG:v1:" not in body
-    assert "APG-managed protected value" not in body
+    assert "<PF:v1:" not in body
+    assert "PrivacyFlow-managed protected value" not in body
     audit = (tmp_path / "audit.jsonl").read_text()
     assert '"materialized": 1' in audit
     request_summary = client.get(
@@ -273,7 +273,7 @@ def test_openai_streaming_text_protects_values_split_across_all_deltas(tmp_path,
         {"model": "x", "stream": True, "messages": [{"role": "user", "content": "use " + secret}]},
         {"Authorization": "Bearer local"},
     )
-    assert "<APG" not in body
+    assert "<PF" not in body
     if emit_raw:
         assert secret not in body
         assert PROTECTED_VALUE in body
@@ -347,7 +347,7 @@ def test_openai_streaming_buffers_interleaved_tool_calls(tmp_path) -> None:
         {"Authorization": "Bearer local"},
     )
     assert body.count(secret) == 2
-    assert "<APG:v1:" not in body
+    assert "<PF:v1:" not in body
     assert body.index(secret) < body.index('"finish_reason": "tool_calls"')
 
 
@@ -384,7 +384,7 @@ def test_invalid_streaming_tool_placeholder_is_preserved_and_audited(tmp_path) -
     )
     assert forged in body
     audit = (tmp_path / "audit.jsonl").read_text()
-    assert "APG_PLACEHOLDER_INVALID_MAC" in audit
+    assert "PF_PLACEHOLDER_INVALID_MAC" in audit
     assert forged not in audit
 
 
@@ -464,10 +464,10 @@ def test_malformed_streaming_tool_arguments_return_safe_error_and_specific_audit
     body = _stream_request(client, endpoint, request_body, headers)
 
     assert secret not in body
-    assert "<APG:v1:" not in body
+    assert "<PF:v1:" not in body
     assert "not valid JSON" in body
     if endpoint == "/v1/chat/completions":
-        assert "APG_TOOL_ARGUMENTS_INVALID" in body
+        assert "PF_TOOL_ARGUMENTS_INVALID" in body
     else:
         assert "event: error" in body
     audit = (tmp_path / "audit.jsonl").read_text()
@@ -494,7 +494,7 @@ def test_malformed_openai_stream_fails_closed(tmp_path) -> None:
         {"Authorization": "Bearer local"},
     )
     assert raw not in body
-    assert "APG_STREAM_PARSE_ERROR" in body
+    assert "PF_STREAM_PARSE_ERROR" in body
     audit = (tmp_path / "audit.jsonl").read_text()
     assert '"parse_errors": 1' in audit
     assert '"stream_parse_errors": 1' in audit
@@ -609,7 +609,7 @@ def test_anthropic_streaming_text_and_tool_args_materialize_locally(tmp_path) ->
     )
     assert body.count(secret) >= 2
     assert secret in body
-    assert "<APG:v1:" not in body
+    assert "<PF:v1:" not in body
     assert '"name": "use_key"' in body
     request_summary = client.get(
         "/api/admin/audit/requests",

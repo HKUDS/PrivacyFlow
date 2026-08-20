@@ -10,33 +10,33 @@ from typing import Any
 
 ROOT = Path(__file__).resolve().parents[2]
 PACKAGE_ROOT = Path(__file__).resolve().parents[1]
-DEFAULT_WORKDIR = ROOT / ".apg-e2e"
-TEST_REPO_NAME = "apg-agent-test-repo"
+DEFAULT_WORKDIR = ROOT / ".pf-e2e"
+TEST_REPO_NAME = "pf-agent-test-repo"
 
 CANARY_STRINGS = [
-    'sk-apgtest-111111111111111111111111111111111111',
-    'ghp_apgtest2222222222222222222222222222222222',
-    'apgtest-db-pass',
+    'sk-pftest-111111111111111111111111111111111111',
+    'ghp_pftest2222222222222222222222222222222222',
+    'pftest-db-pass',
     'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.fakepayload.fakesignature',
     'howardzhang0524@example.com',
     '+852 9123 4567',
     '4242 4242 4242 4242',
-    'svc_apgtest_live_agent_2026_abcdefghijklmnopqrstuvwxyz',
-    'svc_apgtest_edge_quoted_value_2026 with spaces',
-    'svc_apgtest_edge_inline_55555555555555555555',
-    'sk-apgtest-edge-44444444444444444444444444444444',
-    '/Users/apgtest/private/.config/service.json',
+    'svc_pftest_live_agent_2026_abcdefghijklmnopqrstuvwxyz',
+    'svc_pftest_edge_quoted_value_2026 with spaces',
+    'svc_pftest_edge_inline_55555555555555555555',
+    'sk-pftest-edge-44444444444444444444444444444444',
+    '/Users/pftest/private/.config/service.json',
 ]
 
 MACHINE_SECRET_CANARIES = [
-    'sk-apgtest-111111111111111111111111111111111111',
-    'ghp_apgtest2222222222222222222222222222222222',
-    'apgtest-db-pass',
+    'sk-pftest-111111111111111111111111111111111111',
+    'ghp_pftest2222222222222222222222222222222222',
+    'pftest-db-pass',
     'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.fakepayload.fakesignature',
-    'svc_apgtest_live_agent_2026_abcdefghijklmnopqrstuvwxyz',
-    'svc_apgtest_edge_quoted_value_2026 with spaces',
-    'svc_apgtest_edge_inline_55555555555555555555',
-    'sk-apgtest-edge-44444444444444444444444444444444',
+    'svc_pftest_live_agent_2026_abcdefghijklmnopqrstuvwxyz',
+    'svc_pftest_edge_quoted_value_2026 with spaces',
+    'svc_pftest_edge_inline_55555555555555555555',
+    'sk-pftest-edge-44444444444444444444444444444444',
 ]
 
 

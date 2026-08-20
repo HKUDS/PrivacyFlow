@@ -28,7 +28,7 @@ def scan_paths(paths: list[Path], canaries: list[str] | None = None) -> dict[str
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Scan APG E2E artifacts for canary leaks.")
+    parser = argparse.ArgumentParser(description="Scan PF E2E artifacts for canary leaks.")
     parser.add_argument("--workdir", default=str(HarnessPaths().workdir))
     args = parser.parse_args()
     paths = HarnessPaths(Path(args.workdir))

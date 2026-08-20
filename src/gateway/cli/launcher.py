@@ -11,6 +11,8 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse, urlsplit, urlunparse
 
+from gateway.compat import ensure_private_state_directory, get_env, legacy_cli_warning, set_pf_env
+from gateway.migration import MigrationError, migrate_state, rollback_migration
 from gateway.upstream_protocol import (
     OPENAI_CHAT_COMPLETIONS,
     SUPPORTED_UPSTREAM_PROTOCOLS,
@@ -19,7 +21,8 @@ from gateway.upstream_protocol import (
 )
 
 
-DEFAULT_LAUNCHER_PATH = Path(".apg/launcher.json")
+DEFAULT_LAUNCHER_PATH = Path(".privacyflow/launcher.json")
+LEGACY_LAUNCHER_PATH = Path(".apg/launcher.json")
 DEFAULT_UPSTREAM_PROFILE_NAME = "默认配置"
 PERSISTED_LAUNCHER_KEYS = {
     "signing_secret",
@@ -36,11 +39,40 @@ class LauncherConfigError(RuntimeError):
 
 
 def main(argv: Sequence[str] | None = None) -> None:
-    parser = argparse.ArgumentParser(prog="apg", description="Start Agent Privacy Gateway.")
-    parser.add_argument("command", nargs="?", choices=["start", "credential"], default="start")
+    legacy_cli = os.environ.get("PF_LEGACY_CLI") == "1"
+    if legacy_cli:
+        legacy_cli_warning()
+    parser = argparse.ArgumentParser(prog="privacyflow", description="Start PrivacyFlow.")
+    parser.add_argument("command", nargs="?", choices=["start", "credential", "migrate"], default="start")
     parser.add_argument("--connector", choices=["codex", "claude-code", "deepseek-harness", "nanobot"])
-    parser.add_argument("--launcher-config", type=Path, default=DEFAULT_LAUNCHER_PATH, help=argparse.SUPPRESS)
+    parser.add_argument("--launcher-config", type=Path, default=_default_launcher_path(legacy_cli), help=argparse.SUPPRESS)
     args = parser.parse_args(argv)
+
+    if args.command == "migrate":
+        result = None
+        try:
+            result = migrate_state()
+            from gateway.agent_connectors import AgentConnectorService
+
+            connector_service = AgentConnectorService(
+                result.destination,
+                result.destination / "launcher.json",
+            )
+            connector_result = connector_service.migrate_legacy_namespace()
+        except MigrationError as exc:
+            parser.error(f"{exc} ({exc.code})")
+        except Exception as exc:
+            # The Connector transaction restores Agent files and its key ring.
+            # Complete the outer state-directory rollback for both known
+            # Connector conflicts and unexpected parser/I/O failures.
+            if result is not None:
+                rollback_migration(result)
+            code = str(getattr(exc, "code", "PF_MIGRATION_FAILED"))
+            parser.error(f"PrivacyFlow migration failed: {exc} ({code})")
+        print(f"PrivacyFlow migration complete: {result.destination}")
+        print(f"Legacy backup: {result.backup}")
+        print(f"Agent configurations migrated: {connector_result['count']}")
+        return
 
     if args.command == "credential":
         if not args.connector:
@@ -57,10 +89,10 @@ def main(argv: Sequence[str] | None = None) -> None:
         parser.error(str(exc))
 
     apply_launcher_environment(config)
-    host = os.environ.get("APG_HOST", "127.0.0.1")
-    port = os.environ.get("APG_PORT", "8765")
+    host = str(get_env("HOST", default="127.0.0.1"))
+    port = str(get_env("PORT", default="8765"))
     webui_url = f"http://{host}:{port}/ui/"
-    print("Agent Privacy Gateway")
+    print("PrivacyFlow")
     print(f"WebUI: {terminal_hyperlink(webui_url)}")
     if (
         config["_resolved_upstream_protocol"] not in SUPPORTED_UPSTREAM_PROTOCOLS
@@ -73,6 +105,26 @@ def main(argv: Sequence[str] | None = None) -> None:
     from gateway.server import main as server_main
 
     server_main()
+
+
+def legacy_main(argv: Sequence[str] | None = None) -> None:
+    """Compatibility entry point for the old ``apg`` executable."""
+
+    previous = os.environ.get("PF_LEGACY_CLI")
+    os.environ["PF_LEGACY_CLI"] = "1"
+    try:
+        main(argv)
+    finally:
+        if previous is None:
+            os.environ.pop("PF_LEGACY_CLI", None)
+        else:
+            os.environ["PF_LEGACY_CLI"] = previous
+
+
+def _default_launcher_path(legacy_cli: bool = False) -> Path:
+    if legacy_cli and LEGACY_LAUNCHER_PATH.exists() and not DEFAULT_LAUNCHER_PATH.exists():
+        return LEGACY_LAUNCHER_PATH
+    return DEFAULT_LAUNCHER_PATH
 
 
 def terminal_hyperlink(
@@ -110,7 +162,7 @@ def prepare_launcher_config(
         config["signing_secret"] = secrets.token_urlsafe(32)
         changed = True
     if not config.get("local_api_key"):
-        config["local_api_key"] = generate_local_api_key()
+        config["local_api_key"] = generate_local_api_key(legacy=_is_legacy_path(path))
         changed = True
     if "strip_local_v1" not in config:
         config["strip_local_v1"] = True
@@ -126,16 +178,16 @@ def prepare_launcher_config(
     )
 
     active_profile = next((profile for profile in profiles if profile["id"] == active_profile_id), None)
-    provider_key = environment.get("APG_UPSTREAM_API_KEY", "").strip() or str(
+    provider_key = str(get_env("UPSTREAM_API_KEY", environ=environment, default="")).strip() or str(
         (active_profile or {}).get("api_key", "")
     ).strip()
-    provider_base_url = environment.get("APG_UPSTREAM_BASE_URL", "").strip() or str(
+    provider_base_url = str(get_env("UPSTREAM_BASE_URL", environ=environment, default="")).strip() or str(
         (active_profile or {}).get("base_url", "")
     ).strip()
     provider_protocol = canonical_upstream_protocol(
-        environment.get("APG_UPSTREAM_PROTOCOL", "") or str((active_profile or {}).get("protocol", ""))
+        str(get_env("UPSTREAM_PROTOCOL", environ=environment, default="")) or str((active_profile or {}).get("protocol", ""))
     )
-    provider_proxy = environment.get("APG_UPSTREAM_PROXY", "").strip() or str(
+    provider_proxy = str(get_env("UPSTREAM_PROXY", environ=environment, default="")).strip() or str(
         (active_profile or {}).get("proxy", "")
     ).strip()
 
@@ -158,31 +210,48 @@ def apply_launcher_environment(
 ) -> None:
     environment = os.environ if environ is None else environ
     connector_keys = [str(value) for value in config.get("connector_api_keys", {}).values() if value]
-    existing_local_keys = [value.strip() for value in environment.get("APG_LOCAL_API_KEYS", "").split(",") if value.strip()]
-    primary_local_key = environment.get("APG_PRIMARY_LOCAL_API_KEY", "").strip()
+    existing_local_keys = [value.strip() for value in str(get_env("LOCAL_API_KEYS", environ=environment, default="")).split(",") if value.strip()]
+    primary_local_key = str(get_env("PRIMARY_LOCAL_API_KEY", environ=environment, default="")).strip()
     if existing_local_keys:
         primary_local_key = primary_local_key or existing_local_keys[0]
         merged_local_keys = list(dict.fromkeys([*existing_local_keys, *connector_keys]))
     else:
         primary_local_key = primary_local_key or str(config["local_api_key"])
         merged_local_keys = list(dict.fromkeys([str(config["local_api_key"]), *connector_keys]))
-    environment["APG_LOCAL_API_KEYS"] = ",".join(merged_local_keys)
-    environment.setdefault("APG_PRIMARY_LOCAL_API_KEY", primary_local_key)
+    merged_local_key_value = ",".join(merged_local_keys)
+    legacy_local_keys_present = "APG_LOCAL_API_KEYS" in environment
+    set_pf_env(environment, "LOCAL_API_KEYS", merged_local_key_value)
+    if legacy_local_keys_present:
+        # Keep an explicitly supplied legacy variable equal to PF so the
+        # compatibility reader does not observe a conflict after Connector
+        # keys are merged. New processes do not emit APG variables.
+        environment["APG_LOCAL_API_KEYS"] = merged_local_key_value
+    environment.setdefault("PF_PRIMARY_LOCAL_API_KEY", primary_local_key)
+    if "APG_PRIMARY_LOCAL_API_KEY" in environment:
+        environment["APG_PRIMARY_LOCAL_API_KEY"] = environment["PF_PRIMARY_LOCAL_API_KEY"]
     defaults = {
-        "APG_UPSTREAM_BASE_URL": str(config["_resolved_upstream_base_url"]),
-        "APG_UPSTREAM_API_KEY": str(config["_resolved_upstream_api_key"]),
-        "APG_UPSTREAM_PROTOCOL": str(config["_resolved_upstream_protocol"]),
-        "APG_UPSTREAM_PROXY": str(config.get("_resolved_upstream_proxy", "")),
-        "APG_UPSTREAM_STRIP_LOCAL_V1": "true" if config.get("strip_local_v1", True) else "false",
-        "APG_SIGNING_SECRET": str(config["signing_secret"]),
-        "APG_LAUNCHER_CONFIG_PATH": str(config["_launcher_config_path"]),
+        "UPSTREAM_BASE_URL": str(config["_resolved_upstream_base_url"]),
+        "UPSTREAM_API_KEY": str(config["_resolved_upstream_api_key"]),
+        "UPSTREAM_PROTOCOL": str(config["_resolved_upstream_protocol"]),
+        "UPSTREAM_PROXY": str(config.get("_resolved_upstream_proxy", "")),
+        "UPSTREAM_STRIP_LOCAL_V1": "true" if config.get("strip_local_v1", True) else "false",
+        "SIGNING_SECRET": str(config["signing_secret"]),
+        "LAUNCHER_CONFIG_PATH": str(config["_launcher_config_path"]),
     }
     for key, value in defaults.items():
-        environment.setdefault(key, value)
+        canonical, legacy = (f"PF_{key}", f"APG_{key}")
+        resolved = str(get_env(key, environ=environment, default=value))
+        environment.setdefault(canonical, resolved)
+        if legacy in environment:
+            environment[legacy] = environment[canonical]
 
 
-def generate_local_api_key() -> str:
-    return f"apg_local_{secrets.token_urlsafe(24)}"
+def generate_local_api_key(*, legacy: bool = False) -> str:
+    return f"{'apg' if legacy else 'pf'}_local_{secrets.token_urlsafe(24)}"
+
+
+def _is_legacy_path(path: Path) -> bool:
+    return ".apg" in path.parts and ".privacyflow" not in path.parts
 
 
 def load_connector_api_key(path: Path, connector_id: str) -> str:
@@ -190,17 +259,24 @@ def load_connector_api_key(path: Path, connector_id: str) -> str:
     keys = config.get("connector_api_keys", {})
     key = str(keys.get(connector_id, "")) if isinstance(keys, dict) else ""
     if not key:
-        raise LauncherConfigError(f"No active APG credential exists for connector '{connector_id}'.")
+        raise LauncherConfigError(f"No active PrivacyFlow credential exists for connector '{connector_id}'.")
     return key
 
 
 def save_launcher_connector_api_key(path: Path, connector_id: str, api_key: str | None) -> None:
+    save_launcher_connector_api_keys(path, {connector_id: api_key})
+
+
+def save_launcher_connector_api_keys(path: Path, updates: Mapping[str, str | None]) -> None:
+    """Apply Connector credential changes in one atomic launcher write."""
+
     config = prepare_launcher_config(path, environ={})
     keys = dict(config.get("connector_api_keys", {}))
-    if api_key:
-        keys[connector_id] = api_key
-    else:
-        keys.pop(connector_id, None)
+    for connector_id, api_key in updates.items():
+        if api_key:
+            keys[connector_id] = api_key
+        else:
+            keys.pop(connector_id, None)
     config["connector_api_keys"] = keys
     _write_launcher_config(path, _persistent_launcher_config(config))
 
@@ -492,11 +568,7 @@ def _persistent_launcher_config(config: Mapping[str, Any]) -> dict[str, Any]:
 
 
 def _write_launcher_config(path: Path, config: Mapping[str, Any]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    try:
-        os.chmod(path.parent, 0o700)
-    except OSError:
-        pass
+    ensure_private_state_directory(path.parent)
     fd, temporary_name = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
     temporary = Path(temporary_name)
     try:

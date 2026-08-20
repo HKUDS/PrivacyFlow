@@ -399,7 +399,7 @@ def test_local_model_admin_api_enforces_loopback_and_persists(tmp_path) -> None:
         assert client.get("/api/admin/local-models").json()["models"][0]["id"] == model_id
         overview = client.get("/api/admin/overview").json()
         assert "local_models_v2" in overview["capabilities"]
-        assert overview["build_id"].startswith("apg-")
+        assert overview["build_id"].startswith("pf-")
         assert client.delete(f"/api/admin/local-models/{model_id}").status_code == 204
 
     saved = json.loads((tmp_path / "local-models.json").read_text(encoding="utf-8"))

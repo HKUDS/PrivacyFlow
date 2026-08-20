@@ -33,7 +33,7 @@ _TERMINAL_API_PATHS = (
 
 # A stable, non-secret User-Agent keeps model-list requests distinguishable from
 # browser traffic and avoids providers/CDNs rejecting a request with no UA.
-DEFAULT_USER_AGENT = "agent-privacy-gateway"
+DEFAULT_USER_AGENT = "privacyflow"
 
 
 def _is_json_content_type(value: str) -> bool:

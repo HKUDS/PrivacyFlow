@@ -1,0 +1,74 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1600 820" role="img" aria-labelledby="title desc">
+  <title id="title">PrivacyFlow architecture</title>
+  <desc id="desc">Sensitive values are replaced locally before upload and restored in local conversations and tool-use arguments.</desc>
+  <defs>
+    <linearGradient id="panel" x1="0" y1="0" x2="0" y2="1">
+      <stop stop-color="#fbfdfc"/><stop offset="1" stop-color="#eef7f1"/>
+    </linearGradient>
+    <linearGradient id="shield" x1="0" y1="0" x2="1" y2="1">
+      <stop stop-color="#0f6b45"/><stop offset="1" stop-color="#38a269"/>
+    </linearGradient>
+    <marker id="arrow" markerWidth="12" markerHeight="12" refX="9" refY="6" orient="auto">
+      <path d="M0 0 12 6 0 12Z" fill="#18794e"/>
+    </marker>
+    <style>
+      .title{font:700 34px -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;fill:#14221b}
+      .heading{font:700 27px -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;fill:#173326}
+      .body{font:500 22px -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;fill:#40564a}
+      .small{font:600 19px -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;fill:#527061}
+      .mono{font:600 20px ui-monospace,SFMono-Regular,Menlo,monospace;fill:#176d48}
+      .panel{fill:url(#panel);stroke:#b9d5c3;stroke-width:2}
+      .card{fill:#fff;stroke:#cfe1d5;stroke-width:2}
+    </style>
+  </defs>
+  <rect width="1600" height="820" fill="#fff"/>
+  <text x="800" y="58" text-anchor="middle" class="title">PrivacyFlow: keep secrets local, keep Agents working</text>
+
+  <rect x="40" y="100" width="390" height="470" rx="22" class="panel"/>
+  <text x="235" y="152" text-anchor="middle" class="heading">You + your Agent</text>
+  <text x="235" y="188" text-anchor="middle" class="body">The Agent can read and use local data</text>
+  <rect x="72" y="224" width="326" height="104" rx="14" class="card"/>
+  <text x="92" y="263" class="small">Local values</text>
+  <text x="92" y="299" class="mono">API_KEY=sk-…</text>
+  <text x="92" y="326" class="mono">/Users/howard/project</text>
+  <rect x="72" y="356" width="326" height="164" rx="14" fill="#fff9ed" stroke="#eed59c" stroke-width="2"/>
+  <text x="92" y="397" class="small" fill="#8b6515">Agent continues its normal workflow</text>
+  <text x="92" y="438" class="body">read files · call tools</text>
+  <text x="92" y="476" class="body">edit · test · explain</text>
+
+  <rect x="560" y="100" width="480" height="470" rx="22" class="panel"/>
+  <text x="800" y="152" text-anchor="middle" class="heading">PrivacyFlow (PF)</text>
+  <text x="800" y="188" text-anchor="middle" class="body">A local, protocol-aware privacy gateway</text>
+  <path d="M800 215 932 262v93c0 91-51 147-132 184-81-37-132-93-132-184v-93Z" fill="url(#shield)" stroke="#0b5335" stroke-width="5"/>
+  <path d="M731 363 781 413l96-111" fill="none" stroke="#fff" stroke-width="20" stroke-linecap="round" stroke-linejoin="round"/>
+  <text x="800" y="246" text-anchor="middle" fill="#e8fff1" font-size="18" font-family="-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif" font-weight="700">1  DETECT</text>
+  <text x="800" y="282" text-anchor="middle" fill="#e8fff1" font-size="18" font-family="-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif" font-weight="700">2  REPLACE BEFORE UPLOAD</text>
+  <text x="800" y="318" text-anchor="middle" fill="#e8fff1" font-size="18" font-family="-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif" font-weight="700">3  FORWARD NATIVE PROTOCOL</text>
+  <text x="800" y="495" text-anchor="middle" fill="#e8fff1" font-size="18" font-family="-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif" font-weight="700">4  VALIDATE + RESTORE LOCALLY</text>
+  <text x="800" y="535" text-anchor="middle" fill="#d9f8e5" font-size="18" font-family="-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif">conversation text + tool-use arguments</text>
+
+  <rect x="1170" y="100" width="390" height="470" rx="22" class="panel"/>
+  <text x="1365" y="152" text-anchor="middle" class="heading">Cloud LLM</text>
+  <text x="1365" y="188" text-anchor="middle" class="body">The model sees only safe handles</text>
+  <rect x="1202" y="230" width="326" height="180" rx="14" class="card"/>
+  <text x="1224" y="273" class="small">No raw secret or private path</text>
+  <text x="1224" y="315" class="mono">&lt;PF:v1:secret:…&gt;</text>
+  <text x="1224" y="354" class="mono">&lt;PF:v1:pii:…&gt;</text>
+  <text x="1224" y="393" class="mono">/pf/path/…</text>
+  <rect x="1202" y="438" width="326" height="82" rx="14" fill="#edf4ff" stroke="#b7cef4" stroke-width="2"/>
+  <text x="1365" y="474" text-anchor="middle" class="small" fill="#31598e">The Agent still receives the real value</text>
+  <text x="1365" y="501" text-anchor="middle" class="small" fill="#31598e">only after local validation</text>
+
+  <line x1="430" y1="310" x2="548" y2="310" stroke="#18794e" stroke-width="7" marker-end="url(#arrow)"/>
+  <text x="489" y="286" text-anchor="middle" class="small">replace</text>
+  <line x1="1052" y1="310" x2="1160" y2="310" stroke="#18794e" stroke-width="7" marker-end="url(#arrow)"/>
+  <text x="1106" y="286" text-anchor="middle" class="small">safe request</text>
+  <line x1="1160" y1="510" x2="1052" y2="510" stroke="#18794e" stroke-width="7" marker-end="url(#arrow)"/>
+  <text x="1106" y="548" text-anchor="middle" class="small">response</text>
+  <line x1="548" y1="510" x2="430" y2="510" stroke="#18794e" stroke-width="7" marker-end="url(#arrow)"/>
+  <text x="489" y="548" text-anchor="middle" class="small">restore</text>
+
+  <rect x="40" y="625" width="1520" height="130" rx="22" fill="#f2faf5" stroke="#72b78f" stroke-width="2"/>
+  <text x="800" y="675" text-anchor="middle" class="heading">PF never converts the Agent's protocol</text>
+  <text x="800" y="716" text-anchor="middle" class="body">Chat Completions · Responses · Anthropic Messages · native tool-use parameters</text>
+</svg>

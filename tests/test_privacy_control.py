@@ -103,10 +103,11 @@ def test_privacy_control_bypasses_openai_request_response_stream_and_detect(tmp_
         assert detect.json()["sanitized_text"] == SECRET
 
     audit_text = (tmp_path / "audit.jsonl").read_text(encoding="utf-8")
-    assert '"action": "disable_apg"' in audit_text
+    assert '"action": "disable_pf"' in audit_text
     assert '"phase": "request"' not in audit_text
     persisted = json.loads((tmp_path / "detector-control.json").read_text(encoding="utf-8"))
-    assert persisted["apg_enabled"] is False
+    assert persisted["pf_enabled"] is False
+    assert "apg_enabled" not in persisted
 
 
 def test_privacy_control_state_persists_and_can_be_reenabled(tmp_path) -> None:

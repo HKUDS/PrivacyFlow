@@ -433,7 +433,7 @@ def test_anthropic_agent_materializes_tools_through_native_anthropic_upstream(tm
         payload = json.loads(request.content)
         upstream_payloads.append(payload)
         message_payload = json.dumps(payload.get("messages", []))
-        match = re.search(r"<APG:v1:secret:[^>]+>", message_payload)
+        match = re.search(r"<PF:v1:secret:[^>]+>", message_payload)
         assert match is not None
         placeholder = match.group(0)
         if payload.get("stream"):
@@ -528,13 +528,13 @@ def test_anthropic_agent_materializes_tools_through_native_anthropic_upstream(tm
         )
         assert anthropic_stream.status_code == 200
         assert raw_secret in anthropic_stream.text
-        assert "<APG:v1:secret:" not in anthropic_stream.text
+        assert "<PF:v1:secret:" not in anthropic_stream.text
         assert "msg_stream" in anthropic_stream.text
         assert "event: message_stop" in anthropic_stream.text
 
     assert len(upstream_payloads) == 2
     assert all(raw_secret not in json.dumps(payload) for payload in upstream_payloads)
-    assert all("<APG:v1:secret:" in json.dumps(payload) for payload in upstream_payloads)
+    assert all("<PF:v1:secret:" in json.dumps(payload) for payload in upstream_payloads)
     native_payload = upstream_payloads[0]
     assert native_payload["metadata"] == {"user_id": "42"}
     assert native_payload["thinking"] == {"type": "enabled", "budget_tokens": 128}
@@ -597,7 +597,7 @@ def test_native_anthropic_visible_text_restores_exact_placeholder(tmp_path) -> N
 
     assert response.status_code == 200
     assert response.json()["content"][0]["text"] == f'OPENAI_API_KEY = "{raw_secret}"'
-    assert "<APG:v1:" not in response.text
+    assert "<PF:v1:" not in response.text
     audit = (tmp_path / "audit.jsonl").read_text()
     assert '"sink": "local_user"' in audit
     assert raw_secret not in audit
