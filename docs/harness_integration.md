@@ -2,6 +2,10 @@
 
 APG is a transparent OpenAI/Anthropic-compatible privacy proxy. It does **not** act as a tool permission broker, file-write firewall, or secret capability layer. An agent harness owns those responsibilities. This document defines what APG guarantees and what the harness must provide.
 
+The WebUI can configure Codex, Claude Code, DeepSeek Harness, and nanobot to use APG endpoints. This convenience changes endpoint, model, and local credential configuration only; it does not expand the traffic or tool-execution boundary described below. DeepSeek Harness integration is endpoint mode, not a native plugin. The current official `@deepseek-ai/dsh` launcher uses `$DSH_HOME/settings.yaml` plus `$DSH_HOME/.credentials.yaml`; APG registers a lowercase `apg` provider with `api: openai-completions`, `apiKeyEnv: APG_DSH_API_KEY`, an APG `/v1` URL, and a complete discovered model list. The key is stored under the referenced credential name, never in `settings.yaml`.
+
+If a target configuration already contains a reserved APG provider, preset, or environment key, the first Quick connect request stops with a conflict and lists the affected paths. APG does not overwrite the files silently. The WebUI then asks for explicit migration confirmation; after confirmation, APG records the complete original bytes and permissions in a private transaction snapshot before replacing the configuration. Cancel leaves the files and credentials unchanged. Once connected, **Restore previous configuration** uses that snapshot to return the target to its exact pre-connect state and revokes the connector key. This confirmation is also exposed to API clients as `confirm_existing_config: true` on the connect request.
+
 ## What APG guarantees
 
 1. **Supported textual-field redaction.** Detected secrets, PII, and sensitive local paths in supported request JSON strings are replaced before forwarding. Protocol identifiers and opaque multimodal fields such as `image_url`, `file_data`, audio, image, and screenshot blocks pass through unchanged; unknown formats can also be missed.

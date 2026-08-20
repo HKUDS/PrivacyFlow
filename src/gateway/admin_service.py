@@ -93,6 +93,9 @@ class AdminService:
 
     def connection_info(self) -> dict[str, Any]:
         local_keys = sorted(self.config.local_api_keys)
+        primary_key = self.config.primary_local_api_key
+        if primary_key not in self.config.local_api_keys:
+            primary_key = local_keys[0] if local_keys else ""
         self.audit.log(
             {
                 "phase": "admin_action",
@@ -103,7 +106,7 @@ class AdminService:
             }
         )
         return {
-            "api_key": local_keys[0] if local_keys else "",
+            "api_key": primary_key,
             "available_key_count": len(local_keys),
             "protocols": {
                 "openai": {"base_path": "/v1"},

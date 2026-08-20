@@ -24,6 +24,7 @@ DEFAULT_UPSTREAM_PROFILE_NAME = "默认配置"
 PERSISTED_LAUNCHER_KEYS = {
     "signing_secret",
     "local_api_key",
+    "connector_api_keys",
     "strip_local_v1",
     "upstream_profiles",
     "active_upstream_profile_id",
@@ -36,9 +37,19 @@ class LauncherConfigError(RuntimeError):
 
 def main(argv: Sequence[str] | None = None) -> None:
     parser = argparse.ArgumentParser(prog="apg", description="Start Agent Privacy Gateway.")
-    parser.add_argument("command", nargs="?", choices=["start"], default="start")
+    parser.add_argument("command", nargs="?", choices=["start", "credential"], default="start")
+    parser.add_argument("--connector", choices=["codex", "claude-code", "deepseek-harness", "nanobot"])
     parser.add_argument("--launcher-config", type=Path, default=DEFAULT_LAUNCHER_PATH, help=argparse.SUPPRESS)
     args = parser.parse_args(argv)
+
+    if args.command == "credential":
+        if not args.connector:
+            parser.error("credential requires --connector")
+        try:
+            print(load_connector_api_key(args.launcher_config, args.connector))
+        except LauncherConfigError as exc:
+            parser.error(str(exc))
+        return
 
     try:
         config = prepare_launcher_config(args.launcher_config)
@@ -104,6 +115,9 @@ def prepare_launcher_config(
     if "strip_local_v1" not in config:
         config["strip_local_v1"] = True
         changed = True
+    if not isinstance(config.get("connector_api_keys"), dict):
+        config["connector_api_keys"] = {}
+        changed = True
     profiles, active_profile_id, profiles_changed = _normalize_upstream_profiles(config)
     changed = changed or profiles_changed
     changed = changed or any(
@@ -143,13 +157,23 @@ def apply_launcher_environment(
     environ: MutableMapping[str, str] | None = None,
 ) -> None:
     environment = os.environ if environ is None else environ
+    connector_keys = [str(value) for value in config.get("connector_api_keys", {}).values() if value]
+    existing_local_keys = [value.strip() for value in environment.get("APG_LOCAL_API_KEYS", "").split(",") if value.strip()]
+    primary_local_key = environment.get("APG_PRIMARY_LOCAL_API_KEY", "").strip()
+    if existing_local_keys:
+        primary_local_key = primary_local_key or existing_local_keys[0]
+        merged_local_keys = list(dict.fromkeys([*existing_local_keys, *connector_keys]))
+    else:
+        primary_local_key = primary_local_key or str(config["local_api_key"])
+        merged_local_keys = list(dict.fromkeys([str(config["local_api_key"]), *connector_keys]))
+    environment["APG_LOCAL_API_KEYS"] = ",".join(merged_local_keys)
+    environment.setdefault("APG_PRIMARY_LOCAL_API_KEY", primary_local_key)
     defaults = {
         "APG_UPSTREAM_BASE_URL": str(config["_resolved_upstream_base_url"]),
         "APG_UPSTREAM_API_KEY": str(config["_resolved_upstream_api_key"]),
         "APG_UPSTREAM_PROTOCOL": str(config["_resolved_upstream_protocol"]),
         "APG_UPSTREAM_PROXY": str(config.get("_resolved_upstream_proxy", "")),
         "APG_UPSTREAM_STRIP_LOCAL_V1": "true" if config.get("strip_local_v1", True) else "false",
-        "APG_LOCAL_API_KEYS": str(config["local_api_key"]),
         "APG_SIGNING_SECRET": str(config["signing_secret"]),
         "APG_LAUNCHER_CONFIG_PATH": str(config["_launcher_config_path"]),
     }
@@ -159,6 +183,26 @@ def apply_launcher_environment(
 
 def generate_local_api_key() -> str:
     return f"apg_local_{secrets.token_urlsafe(24)}"
+
+
+def load_connector_api_key(path: Path, connector_id: str) -> str:
+    config = _read_launcher_config(path)
+    keys = config.get("connector_api_keys", {})
+    key = str(keys.get(connector_id, "")) if isinstance(keys, dict) else ""
+    if not key:
+        raise LauncherConfigError(f"No active APG credential exists for connector '{connector_id}'.")
+    return key
+
+
+def save_launcher_connector_api_key(path: Path, connector_id: str, api_key: str | None) -> None:
+    config = prepare_launcher_config(path, environ={})
+    keys = dict(config.get("connector_api_keys", {}))
+    if api_key:
+        keys[connector_id] = api_key
+    else:
+        keys.pop(connector_id, None)
+    config["connector_api_keys"] = keys
+    _write_launcher_config(path, _persistent_launcher_config(config))
 
 
 def save_launcher_local_api_key(path: Path, api_key: str) -> str:
@@ -183,6 +227,10 @@ def save_launcher_upstream_profile(
     api_key: str,
     endpoint_overrides: Mapping[str, str] | None = None,
     proxy: str | None = None,
+    provider_type: str | None = None,
+    models_url: str | None = None,
+    user_agent: str | None = None,
+    model_catalog: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     normalized_protocol = normalize_upstream_protocol(protocol)
     normalized_base_url = normalize_upstream_base_url(base_url)
@@ -200,6 +248,19 @@ def save_launcher_upstream_profile(
     if any(ord(char) < 32 or ord(char) == 127 for char in normalized_key):
         raise LauncherConfigError("The upstream API key contains unsupported control characters.")
     resolved_id = profile_id if existing is not None else f"up_{secrets.token_urlsafe(12)}"
+    normalized_provider_type = str(
+        provider_type if provider_type is not None else (existing or {}).get("provider_type", "custom")
+    ).strip() or "custom"
+    if len(normalized_provider_type) > 64 or any(ord(char) < 32 or ord(char) == 127 for char in normalized_provider_type):
+        raise LauncherConfigError("The upstream provider type is invalid.")
+    normalized_models_url = normalize_upstream_models_url(str(
+        models_url if models_url is not None else (existing or {}).get("models_url", "")
+    ))
+    normalized_user_agent = str(
+        user_agent if user_agent is not None else (existing or {}).get("user_agent", "")
+    ).strip()
+    if len(normalized_user_agent) > 256 or any(ord(char) < 32 or ord(char) > 126 for char in normalized_user_agent):
+        raise LauncherConfigError("The upstream User-Agent is invalid.")
     profile = {
         "id": resolved_id,
         "name": normalized_name,
@@ -208,6 +269,10 @@ def save_launcher_upstream_profile(
         "api_key": normalized_key,
         "endpoint_overrides": normalized_overrides,
         "proxy": normalized_proxy,
+        "provider_type": normalized_provider_type,
+        "models_url": normalized_models_url,
+        "user_agent": normalized_user_agent,
+        "model_catalog": dict(model_catalog) if isinstance(model_catalog, Mapping) else dict((existing or {}).get("model_catalog", {})),
     }
     profiles = [profile if item["id"] == resolved_id else item for item in profiles]
     if existing is None:
@@ -310,6 +375,34 @@ def normalize_upstream_endpoint_overrides(overrides: Mapping[str, str]) -> dict[
     return normalized
 
 
+def normalize_upstream_models_url(models_url: str) -> str:
+    normalized = models_url.strip().rstrip("/")
+    if not normalized:
+        return ""
+    return _validate_upstream_url(normalized)
+
+
+def _safe_normalize_models_url(value: Any) -> str:
+    try:
+        return normalize_upstream_models_url(str(value or ""))
+    except LauncherConfigError:
+        return ""
+
+
+def _safe_normalize_provider_type(value: Any) -> str:
+    normalized = str(value or "").strip() or "custom"
+    if len(normalized) > 64 or any(ord(char) < 32 or ord(char) == 127 for char in normalized):
+        return "custom"
+    return normalized
+
+
+def _safe_normalize_user_agent(value: Any) -> str:
+    normalized = str(value or "").strip()
+    if len(normalized) > 256 or any(ord(char) < 32 or ord(char) > 126 for char in normalized):
+        return ""
+    return normalized
+
+
 def _validate_upstream_url(base_url: str) -> str:
     normalized = base_url.strip().rstrip("/")
     if not normalized or len(normalized) > 2048:
@@ -363,6 +456,10 @@ def _normalize_upstream_profiles(config: dict[str, Any]) -> tuple[list[dict[str,
                 "api_key": str(raw.get("api_key", "")).strip(),
                 "endpoint_overrides": endpoint_overrides,
                 "proxy": str(raw.get("proxy", "")).strip(),
+                "provider_type": _safe_normalize_provider_type(raw.get("provider_type", "custom")),
+                "models_url": _safe_normalize_models_url(raw.get("models_url", "")),
+                "user_agent": _safe_normalize_user_agent(raw.get("user_agent", "")),
+                "model_catalog": dict(raw.get("model_catalog", {})) if isinstance(raw.get("model_catalog"), dict) else {},
             }
             if profile != raw:
                 changed = True

@@ -30,6 +30,8 @@ The WebUI and every `/api/admin/*` data or mutation endpoint require no key. APG
 
 Local-model installation and download are more restrictive than the rest of the unauthenticated control plane: the APG bind address and actual client address must both be loopback. Remote-bound or remote-client sessions can inspect status but receive `LOCAL_MODEL_SETUP_LOCAL_ONLY` for every mutation. Dependency commands come from a fixed server-side manifest and always target APG's isolated managed Runtime; request bodies cannot supply package names, versions, indexes, or command arguments.
 
+Agent Connector mutations use the same double-loopback rule. Connector status may be inspected locally, but connect and restore require both APG's bind address and the actual client address to be loopback. Connector responses and audit events never include dedicated Connector keys.
+
 ## Views
 
 ### Overview
@@ -38,7 +40,19 @@ When the launcher has no complete provider connection, the dashboard requires a 
 
 Every configuration exposes all three native formats by default. APG routes each local endpoint to the matching native upstream endpoint without conversion; a provider that does not support the requested format returns its own upstream error. The connectivity tester still lets users choose a format and model so each route can be checked independently. Pasting a complete terminal endpoint such as `/chat/completions`, `/responses`, or `/messages` is normalized to the shared Base URL. Rare providers with unrelated routes can use an optional full-endpoint override per format. Anthropic Messages uses `x-api-key` and `anthropic-version: 2023-06-01`; a local `/v1/messages` request stays in native Anthropic JSON/SSE form end to end, apart from APG's privacy transformations and system-contract injection.
 
-The Agent connection strip displays the OpenAI-compatible and Anthropic local Base URLs simultaneously and provides an independent copy action for each. On a new launcher installation, the local Agent API key is generated with cryptographic randomness and persisted in the private launcher file. The Agent key stays masked by default, and an eye icon temporarily reveals it. APG intentionally does not generate Agent-specific model configuration: users select the model in their Agent and replace only its request URL and API key with the displayed APG connection details. The rest of the view summarizes the latest audit window: requests, interceptions, local tool-argument materializations, active protected values, seven-day activity, and risk distribution. The upstream is represented by hostname only.
+The Agent connection strip displays the OpenAI-compatible and Anthropic local Base URLs simultaneously and provides an independent copy action for each. On a new launcher installation, the primary local Agent API key is generated with cryptographic randomness and persisted in the private launcher file. The key stays masked by default, and an eye icon temporarily reveals it. This strip is the manual path for unsupported Agents; the dedicated quick-connect view manages supported Agent-specific configuration. The rest of the view summarizes the latest audit window: requests, interceptions, local tool-argument materializations, active protected values, seven-day activity, and risk distribution. The upstream is represented by hostname only.
+
+### Agent Quick Connect
+
+The Agent quick-connect view supports installed user-level Codex, Claude Code, DeepSeek Harness, and nanobot instances. It does not install or start Agents, edit project configuration, or manage nanobot custom `--config` instances. DeepSeek Harness uses its documented endpoint provider configuration; there is no APG dsh plugin.
+
+Before writing, the server refreshes the upstream model catalog and runs exactly one real protocol probe: Responses for Codex, Anthropic Messages for Claude Code, and Chat Completions for dsh and nanobot. APG does not translate protocols. Model discovery first tries the configured Base URL and, after a 404/405/501, retries known compatibility-prefix siblings such as the root `/v1/models` and `/models` routes; the successful endpoint is reported in the result. dsh receives the complete catalog; the other connectors receive the selected default model. A catalog failure permits manual entry for Codex, Claude Code, and nanobot, but blocks dsh because its generated catalog must be complete.
+
+Connect is a filesystem transaction. APG validates regular-file ownership, rejects symbolic links, prepares and parses every result, snapshots original bytes and permissions, then atomically replaces the targets. Dedicated Connector keys are persisted privately and loaded into local request authentication without being returned by an API. Codex obtains its key through `apg credential --connector codex`; the other formats use their documented local credential fields.
+
+If a target already contains a reserved provider, preset, or environment key, the first connect attempt returns `409 CONNECTOR_CONFIG_CONFLICT` with paths only. The WebUI asks for explicit migration confirmation; the confirmed request sends `confirm_existing_config: true`. APG then snapshots the complete original files before replacement, so canceling leaves the configuration untouched and Restore can still return the exact pre-connect state.
+
+Restore is the only connected-state action. It restores the exact original bytes and mode, or removes a file created by APG. A post-connect hash mismatch first returns `409` with paths only. After explicit confirmation, APG saves the current files as a safety backup and restores the baseline. The Connector key is revoked only after successful restoration. Completed transactions and safety backups are retained up to five per Connector.
 
 | Agent endpoint | Native upstream route | Format |
 | --- | --- | --- |
@@ -67,6 +81,8 @@ The registry exposes kind, subtype, scope, lifecycle state, materialization clas
 The detector view manages complete, ordered local pipelines. Built-in templates cover credentials and keys, personal information, the local development environment, and comprehensive protection. Templates are read-only; choosing **Copy and edit** creates an independent user configuration.
 
 A user configuration has a name, description, total timeout, and an ordered module list. It can be copied, renamed, activated, or deleted when inactive. Modules can be added, copied, edited, enabled, disabled, removed, and reordered by dragging the handle. All enabled modules run in display order and their findings are merged; a match does not short-circuit later modules. An internal revision still protects concurrent saves, but it is not presented as a user setting.
+
+The model catalog follows a provider-switcher style workflow: a saved profile may provide an explicit catalog URL, otherwise APG derives `/v1/models` and known compatibility siblings. A 404/405/501 is the only condition that advances to the next candidate. Catalog requests use `Accept: application/json` and a stable APG User-Agent (or the optional profile override); an Anthropic-configured profile also sends Bearer auth alongside its native headers so a root OpenAI-compatible catalog such as DeepSeek's can be discovered. Catalog responses are bounded to 500 safe identifiers, preserve provider display names/ownership for the UI, and never persist the response payload or API key. `POST /models/preview` performs the same discovery against unsaved values without writing the launcher file. APG keeps display labels separate from the actual model ID; it does not rewrite model names at proxy runtime.
 
 The WebUI can create regular-expression, entropy, path, and local-model modules. Regular expressions are checked for length, empty matches, a safe syntax subset, and common ReDoS structures. High-entropy detection is optional and disabled in built-in templates because it can flag normal code identifiers; users can enable it for strict opaque-token scanning. A local-model module must select a model that the Local model management page has already verified as available. Explicit preparation and download are controlled by that page; deployment-level `allow_model_download` applies only to deployment-managed runtime modules. YAML external-tool and Python-plugin modules remain operational but are shown as deployment-managed and read-only.
 
@@ -100,8 +116,13 @@ APG_RUN_LOCAL_MODEL_INTEGRATION=1 .venv/bin/pytest -q tests/test_local_models_in
 | --- | --- | --- |
 | `GET` | `/api/admin/overview` | Safe dashboard summary |
 | `GET` | `/api/admin/connection` | One local Agent API key and protocol base paths |
+| `GET` | `/api/admin/agent-connectors` | Installation, paths, protocol, connection, and external-change status without keys |
+| `POST` | `/api/admin/agent-connectors/{id}/connect` | Probe the required protocol and transactionally connect an installed Agent |
+| `POST` | `/api/admin/agent-connectors/{id}/restore` | Restore the exact pre-connect snapshot, with explicit external-change confirmation |
 | `GET` | `/api/admin/upstream-configuration` | Provider-key configured status and safe upstream metadata |
 | `PUT` | `/api/admin/upstream-configuration` | Validate, persist, and hot-apply an upstream Base URL and provider API key without echoing the key |
+| `GET` | `/api/admin/upstream-configuration/models` | Fetch the active provider catalog; `X-APG-Model-Catalog: rich`, `profile_id`, or `refresh=true` returns display options, source, cache time, and categorized errors |
+| `POST` | `/api/admin/upstream-configuration/models/preview` | Fetch an unsaved catalog from `{base_url, protocol, api_key, models_url?, user_agent?}` without persistence or secret echo |
 | `GET` | `/api/admin/audit` | Filtered audit events |
 | `GET` | `/api/admin/audit/operations` | Separate replacement or materialization operation list; optional `include_raw=true` |
 | `GET` | `/api/admin/audit/requests` | Request-level replacement/materialization summaries |

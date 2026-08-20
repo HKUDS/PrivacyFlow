@@ -6,6 +6,7 @@ import warnings
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlparse
 
 from gateway.upstream_protocol import (
     OPENAI_CHAT_COMPLETIONS,
@@ -19,6 +20,9 @@ class UpstreamConfig:
     base_url: str = "https://api.openai.com"
     api_key: str = ""
     protocol: str = OPENAI_CHAT_COMPLETIONS
+    provider_type: str = "custom"
+    models_url: str = ""
+    user_agent: str = ""
     timeout_seconds: float = 60.0
     strip_local_v1: bool = False
     endpoint_overrides: dict[str, str] = field(default_factory=dict)
@@ -33,6 +37,7 @@ class GatewayConfig:
     audit_log_path: str = ".apg/audit.jsonl"
     signing_secret: str = "dev-only-change-me"
     local_api_keys: set[str] = field(default_factory=lambda: {"apg-local"})
+    primary_local_api_key: str = ""
     admin_enabled: bool = True
     workspace_id: str = "default"
     strict_mode: bool = True
@@ -56,6 +61,41 @@ def _load_yaml(path: Path) -> dict[str, Any]:
     return value
 
 
+def _safe_optional_upstream_url(value: Any) -> str:
+    normalized = str(value or "").strip().rstrip("/")
+    if not normalized or len(normalized) > 2048 or any(ord(char) < 32 or ord(char) == 127 for char in normalized):
+        return ""
+    try:
+        parsed = urlparse(normalized)
+        _ = parsed.port
+    except ValueError:
+        return ""
+    if (
+        parsed.scheme not in {"http", "https"}
+        or not parsed.hostname
+        or parsed.username is not None
+        or parsed.password is not None
+        or parsed.query
+        or parsed.fragment
+    ):
+        return ""
+    return normalized
+
+
+def _safe_optional_user_agent(value: Any) -> str:
+    normalized = str(value or "").strip()
+    if len(normalized) > 256 or any(ord(char) < 32 or ord(char) > 126 for char in normalized):
+        return ""
+    return normalized
+
+
+def _safe_provider_type(value: Any) -> str:
+    normalized = str(value or "").strip() or "custom"
+    if len(normalized) > 64 or any(ord(char) < 32 or ord(char) == 127 for char in normalized):
+        return "custom"
+    return normalized
+
+
 def load_config(path: str | None = None) -> GatewayConfig:
     config_path = Path(path or os.getenv("APG_CONFIG_PATH", "")) if path or os.getenv("APG_CONFIG_PATH") else None
     raw = _load_yaml(config_path) if config_path else {}
@@ -70,6 +110,9 @@ def load_config(path: str | None = None) -> GatewayConfig:
         base_url=os.getenv("APG_UPSTREAM_BASE_URL", upstream_raw.get("base_url", "https://api.openai.com")).rstrip("/"),
         api_key=os.getenv("APG_UPSTREAM_API_KEY", upstream_raw.get("api_key", "")),
         protocol=upstream_protocol,
+        provider_type=_safe_provider_type(os.getenv("APG_UPSTREAM_PROVIDER_TYPE", upstream_raw.get("provider_type", "custom"))),
+        models_url=_safe_optional_upstream_url(os.getenv("APG_UPSTREAM_MODELS_URL", upstream_raw.get("models_url", ""))),
+        user_agent=_safe_optional_user_agent(os.getenv("APG_UPSTREAM_USER_AGENT", upstream_raw.get("user_agent", ""))),
         timeout_seconds=float(os.getenv("APG_UPSTREAM_TIMEOUT", upstream_raw.get("timeout_seconds", 60.0))),
         strip_local_v1=_env_bool("APG_UPSTREAM_STRIP_LOCAL_V1", upstream_raw.get("strip_local_v1", False)),
         endpoint_overrides={
@@ -91,6 +134,7 @@ def load_config(path: str | None = None) -> GatewayConfig:
     if not isinstance(raw_keys, (list, tuple, set)):
         raw_keys = [raw_keys]
     local_api_keys = {str(key).strip() for key in raw_keys if str(key).strip()}
+    primary_local_api_key = os.getenv("APG_PRIMARY_LOCAL_API_KEY", str(raw.get("primary_local_api_key", ""))).strip()
     signing_secret = os.getenv("APG_SIGNING_SECRET", raw.get("signing_secret", "dev-only-change-me"))
 
     if not local_api_keys:
@@ -123,6 +167,7 @@ def load_config(path: str | None = None) -> GatewayConfig:
         audit_log_path=os.getenv("APG_AUDIT_LOG_PATH", raw.get("audit_log_path", ".apg/audit.jsonl")),
         signing_secret=signing_secret,
         local_api_keys=local_api_keys,
+        primary_local_api_key=primary_local_api_key,
         admin_enabled=_env_bool("APG_ADMIN_ENABLED", raw.get("admin_enabled", True)),
         workspace_id=os.getenv("APG_WORKSPACE_ID", raw.get("workspace_id", "default")),
         strict_mode=strict_mode,

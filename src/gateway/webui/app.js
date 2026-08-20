@@ -7,6 +7,7 @@ const PAGE_META = {
   protected: ["LOCAL MAPPING REGISTRY", "受保护值", "本地映射生命周期与撤销"],
   detectors: ["DETECTION PIPELINE", "检测器配置", "按检测内容组织的本地模块流水线"],
   "local-models": ["LOCAL MODEL RUNTIME", "本地模型管理", "添加模型后由 APG 自动准备、下载并验证"],
+  "agent-connectors": ["LOCAL AGENT CONFIGURATION", "Agent 快速接入", "一键接入 APG，并可完整恢复原配置"],
 };
 const UPSTREAM_PROTOCOL_LABELS = {
   openai_chat_completions: "OpenAI Chat Completions",
@@ -46,13 +47,18 @@ const state = {
   buildId: "",
   localModelJobTimer: null,
   localModelTarget: "",
+  agentConnectors: null,
+  connectorTarget: null,
+  connectorRestoreTarget: null,
+  connectorMigrationTarget: null,
+  connectorMigrationModel: "",
   confirmAction: null,
 };
 
 const $ = (selector, root = document) => root.querySelector(selector);
 const $$ = (selector, root = document) => [...root.querySelectorAll(selector)];
 const escapeHtml = (value) => String(value ?? "").replace(/[&<>'"]/g, (char) => ({"&":"&amp;","<":"&lt;",">":"&gt;","'":"&#39;",'"':"&quot;"}[char]));
-const DYNAMIC_ICONS = new Set(["arrow-right", "ban", "brain-circuit", "check-circle-2", "circle-x", "copy", "download", "eye", "eye-off", "folder-tree", "gauge", "grip-vertical", "hard-drive", "package-check", "pencil", "plus", "power", "regex-reference", "rotate-cw", "search", "server-cog", "trash-2", "wrench"]);
+const DYNAMIC_ICONS = new Set(["arrow-right", "ban", "brain-circuit", "check-circle-2", "circle-x", "copy", "download", "eye", "eye-off", "folder-tree", "gauge", "grip-vertical", "hard-drive", "package-check", "pencil", "plug-zap", "plus", "power", "regex-reference", "rotate-cw", "search", "server-cog", "trash-2", "triangle-alert", "undo-2", "wrench"]);
 
 document.addEventListener("DOMContentLoaded", init);
 
@@ -204,6 +210,11 @@ function bindActions() {
   $("#manual-model-form").addEventListener("submit", addManualLocalModel);
   $("#prepare-all-models").addEventListener("click", () => prepareLocalModels([], ["inspect", "runtime", "download", "verify"]));
   $("#local-model-list").addEventListener("click", handleLocalModelAction);
+  $("#connector-list").addEventListener("click", handleConnectorAction);
+  $("#connector-form").addEventListener("submit", connectAgent);
+  $("#connector-model-select").addEventListener("change", syncConnectorModelInput);
+  $("#connector-restore-form").addEventListener("submit", confirmConnectorRestore);
+  $("#connector-migrate-form").addEventListener("submit", confirmConnectorMigration);
   $("#confirm-action").addEventListener("click", async () => {
     const action = state.confirmAction;
     $("#confirm-modal").close();
@@ -236,6 +247,10 @@ function showView(view, updateHash = true) {
   if (updateHash && location.hash !== "#" + view) history.pushState(null, "", "#" + view);
   $$(".view").forEach((element) => element.classList.toggle("is-active", element.id === "view-" + view));
   $$(".nav-item").forEach((element) => element.classList.toggle("is-active", element.dataset.view === view));
+  const activeNavigation = $(`.nav-item[data-view="${view}"]`);
+  if (activeNavigation && matchMedia("(max-width: 760px)").matches) {
+    activeNavigation.scrollIntoView({block: "nearest", inline: "center", behavior: "smooth"});
+  }
   const [eyebrow, title, subtitle] = PAGE_META[view];
   $("#page-eyebrow").textContent = eyebrow;
   $("#page-title").textContent = title;
@@ -244,7 +259,7 @@ function showView(view, updateHash = true) {
 }
 
 async function loadView(view, force = false) {
-  const loaders = {overview: loadOverview, audit: loadAudit, protected: loadProtected, detectors: loadDetectors, "local-models": loadLocalModels};
+  const loaders = {overview: loadOverview, audit: loadAudit, protected: loadProtected, detectors: loadDetectors, "local-models": loadLocalModels, "agent-connectors": loadAgentConnectors};
   if (!force && state.loaded.has(view)) return;
   $("#refresh-button").classList.add("is-loading");
   try { await loaders[view](); state.loaded.add(view); }
@@ -263,9 +278,259 @@ async function api(path, options = {}) {
     const error = new Error(typeof detail === "string" ? detail : detail?.message || "请求失败");
     error.status = response.status;
     error.code = detail?.code;
+    error.paths = Array.isArray(detail?.paths) ? detail.paths : [];
+    error.requiresConfirmation = detail?.requires_confirmation === true;
     throw error;
   }
   return body;
+}
+
+async function loadAgentConnectors() {
+  if (!state.capabilities.includes("agent_connectors_v1")) {
+    state.agentConnectors = {unsupported: true, connectors: []};
+  } else {
+    state.agentConnectors = await api("/agent-connectors");
+  }
+  renderAgentConnectors();
+}
+
+function renderAgentConnectors() {
+  const list = $("#connector-list");
+  if (state.agentConnectors?.unsupported) {
+    list.innerHTML = `<div class="connector-empty"><strong>${escapeHtml(uiText("APG 需要重启或更新"))}</strong><span>${escapeHtml(uiText("当前后端不支持 Agent 快速接入。"))}</span></div>`;
+    return;
+  }
+  const connectors = state.agentConnectors?.connectors || [];
+  if (!connectors.length) {
+    list.innerHTML = `<div class="connector-empty">${escapeHtml(uiText("没有可用的 Agent Connector"))}</div>`;
+    return;
+  }
+  list.innerHTML = connectors.map((connector) => {
+    const status = connectorStatus(connector.status);
+    const connected = Boolean(connector.connected);
+    const disabled = connector.status === "not_installed";
+    const actionLabel = connected ? uiText("恢复原配置") : uiText("快速接入");
+    const actionIcon = connected ? "undo-2" : "plug-zap";
+    const path = (connector.paths || []).join(" · ");
+    return `<article class="connector-row ${connector.status === "configuration_changed" ? "has-warning" : ""}">
+      <div class="connector-identity">${connectorIconMarkup(connector.id)}<div><strong>${escapeHtml(connector.name)}</strong><span class="mono">${escapeHtml(path)}</span></div></div>
+      <div class="connector-details"><span>${escapeHtml(uiText("所需协议"))}</span><strong>${escapeHtml(protocolLabel(connector.protocol))}</strong>${connector.model ? `<small>${escapeHtml(uiText("默认模型"))}: ${escapeHtml(connector.model)}</small>` : ""}${connector.executable ? `<small class="mono">${escapeHtml(connector.executable)}</small>` : connector.detection === "not_found_on_apg_path" ? `<small>${escapeHtml(uiText("命令未出现在 APG 的 PATH 中"))}</small>` : ""}</div>
+      <span class="badge ${status.className}">${escapeHtml(status.label)}</span>
+      <button class="${connected ? "secondary-button" : "primary-button"} labeled-icon-button" type="button" data-connector-action="${connected ? "restore" : "connect"}" data-connector-id="${escapeHtml(connector.id)}" ${disabled ? "disabled" : ""}>${iconMarkup(actionIcon)}<span>${escapeHtml(actionLabel)}</span></button>
+    </article>`;
+  }).join("");
+  renderIcons(list);
+}
+
+function connectorStatus(status) {
+  return ({
+    not_installed: {label: uiText("未安装"), className: "neutral"},
+    ready: {label: uiText("可接入"), className: "blue"},
+    connected: {label: uiText("已连接"), className: "green"},
+    configuration_changed: {label: uiText("配置已变更"), className: "amber"},
+    attention_required: {label: uiText("需要处理"), className: "red"},
+  })[status] || {label: uiText("需要处理"), className: "red"};
+}
+
+function connectorIconMarkup(connectorId) {
+  const icon = ({
+    codex: "agent-codex.svg",
+    "claude-code": "agent-claude-code.svg",
+    "deepseek-harness": "agent-deepseek-harness.svg",
+    nanobot: "agent-nanobot.svg",
+  })[connectorId];
+  if (!icon) return "";
+  return `<span class="connector-agent-mark connector-agent-mark-${escapeHtml(connectorId)}" aria-hidden="true"><img src="/ui/assets/${icon}" alt=""></span>`;
+}
+
+function protocolLabel(protocol) {
+  return UPSTREAM_PROTOCOL_LABELS[protocol] || protocol;
+}
+
+async function handleConnectorAction(event) {
+  const button = event.target.closest("[data-connector-action]");
+  if (!button) return;
+  const connector = (state.agentConnectors?.connectors || []).find((item) => item.id === button.dataset.connectorId);
+  if (!connector) return;
+  button.disabled = true;
+  try {
+    if (button.dataset.connectorAction === "connect") await openConnectorDialog(connector);
+    else await restoreAgent(connector, false);
+  } finally {
+    if (button.isConnected) button.disabled = false;
+  }
+}
+
+async function openConnectorDialog(connector) {
+  state.connectorTarget = connector;
+  $("#connector-agent-name").textContent = connector.name;
+  $("#connector-protocol").textContent = protocolLabel(connector.protocol);
+  $("#connector-error").textContent = "";
+  $("#connector-model-note").textContent = uiText("正在获取上游模型列表…");
+  const select = $("#connector-model-select");
+  select.innerHTML = `<option value="">${escapeHtml(uiText("正在加载…"))}</option>`;
+  select.disabled = true;
+  $("#connector-manual-model").value = "";
+  $("#connector-manual-model-field").classList.add("is-hidden");
+  $("#connector-submit").disabled = true;
+  $("#connector-modal").showModal();
+  try {
+    const result = await api("/upstream-configuration/models", {headers: {"X-APG-Model-Catalog": "rich"}});
+    const models = result.ok && Array.isArray(result.models) ? result.models : [];
+    const options = result.ok && Array.isArray(result.model_options) && result.model_options.length
+      ? result.model_options
+      : models.map((id) => ({id, display_name: id, owned_by: ""}));
+    if (models.length) {
+      select.innerHTML = `<option value="">${escapeHtml(uiText("选择默认模型"))}</option>${renderConnectorModelOptions(options)}`;
+      $("#connector-model-note").textContent = `${uiText("已获取")} ${models.length} ${uiText("个模型")}`;
+    } else {
+      if (connector.id === "deepseek-harness") {
+        select.innerHTML = `<option value="">${escapeHtml(uiText("没有可用模型"))}</option>`;
+        $("#connector-model-note").textContent = uiText("DeepSeek Harness 需要完整的上游模型目录，当前无法接入。");
+        $("#connector-submit").disabled = true;
+      } else {
+        select.innerHTML = `<option value="__manual__">${escapeHtml(uiText("手动输入模型 ID"))}</option>`;
+        $("#connector-model-note").textContent = uiText("上游未返回模型，请手动输入模型 ID。");
+      }
+    }
+  } catch (error) {
+    if (connector.id === "deepseek-harness") {
+      select.innerHTML = `<option value="">${escapeHtml(uiText("模型目录不可用"))}</option>`;
+      $("#connector-model-note").textContent = uiText("DeepSeek Harness 需要完整的上游模型目录，当前无法接入。");
+      $("#connector-submit").disabled = true;
+    } else {
+      select.innerHTML = `<option value="__manual__">${escapeHtml(uiText("手动输入模型 ID"))}</option>`;
+      $("#connector-model-note").textContent = uiText("无法获取模型列表，请手动输入模型 ID。");
+    }
+  } finally {
+    select.disabled = false;
+    if (connector.id !== "deepseek-harness" || select.value) $("#connector-submit").disabled = false;
+    syncConnectorModelInput();
+    select.focus();
+  }
+}
+
+function renderConnectorModelOptions(options) {
+  const groups = new Map();
+  for (const option of options) {
+    const id = String(option?.id || "").trim();
+    if (!id) continue;
+    const group = String(option?.owned_by || "").trim() || uiText("上游模型");
+    if (!groups.has(group)) groups.set(group, []);
+    groups.get(group).push(option);
+  }
+  const render = (option) => {
+    const id = String(option.id || "");
+    const display = String(option.display_name || id);
+    const label = display === id ? id : `${display} · ${id}`;
+    return `<option value="${escapeHtml(id)}">${escapeHtml(label)}</option>`;
+  };
+  if (groups.size <= 1) return [...groups.values()].flat().map(render).join("");
+  return [...groups.entries()].map(([group, items]) => `<optgroup label="${escapeHtml(group)}">${items.map(render).join("")}</optgroup>`).join("");
+}
+
+function syncConnectorModelInput() {
+  const manual = $("#connector-model-select").value === "__manual__";
+  $("#connector-manual-model-field").classList.toggle("is-hidden", !manual);
+  if (manual) $("#connector-manual-model").focus();
+}
+
+async function connectAgent(event) {
+  event.preventDefault();
+  const connector = state.connectorTarget;
+  if (!connector) return;
+  const selected = $("#connector-model-select").value;
+  const model = (selected === "__manual__" ? $("#connector-manual-model").value : selected).trim();
+  if (!model) {
+    $("#connector-error").textContent = uiText("请选择或输入模型 ID。");
+    return;
+  }
+  const submit = $("#connector-submit");
+  submit.disabled = true;
+  $("#connector-error").textContent = "";
+  $("#connector-model-note").textContent = uiText("正在验证协议并更新配置…");
+  try {
+    await api(`/agent-connectors/${encodeURIComponent(connector.id)}/connect`, {method: "POST", body: JSON.stringify({model})});
+    $("#connector-modal").close();
+    await loadAgentConnectors();
+    toast(`${connector.name} ${uiText("已接入 APG")}`);
+  } catch (error) {
+    if (error.status === 409 && error.code === "CONNECTOR_CONFIG_CONFLICT") {
+      state.connectorMigrationTarget = connector;
+      state.connectorMigrationModel = model;
+      $("#connector-modal").close();
+      $("#connector-migrate-agent-name").textContent = connector.name;
+      $("#connector-migrate-error").textContent = "";
+      $("#connector-migrate-paths").innerHTML = (error.paths || []).map((path) => `<li class="mono">${escapeHtml(path)}</li>`).join("");
+      $("#connector-migrate-modal").showModal();
+      $("#connector-migrate-submit").focus();
+      return;
+    }
+    $("#connector-error").textContent = connectorErrorMessage(error);
+  } finally {
+    submit.disabled = false;
+  }
+}
+
+async function confirmConnectorMigration(event) {
+  event.preventDefault();
+  const connector = state.connectorMigrationTarget;
+  const model = state.connectorMigrationModel;
+  if (!connector || !model) return;
+  const submit = $("#connector-migrate-submit");
+  submit.disabled = true;
+  $("#connector-migrate-error").textContent = "";
+  try {
+    await api(`/agent-connectors/${encodeURIComponent(connector.id)}/connect`, {
+      method: "POST",
+      body: JSON.stringify({model, confirm_existing_config: true}),
+    });
+    $("#connector-migrate-modal").close();
+    state.connectorMigrationTarget = null;
+    state.connectorMigrationModel = "";
+    await loadAgentConnectors();
+    toast(`${connector.name} ${uiText("已接入 APG")}`);
+  } catch (error) {
+    $("#connector-migrate-error").textContent = connectorErrorMessage(error);
+  } finally {
+    submit.disabled = false;
+  }
+}
+
+async function restoreAgent(connector, confirmExternalChanges) {
+  try {
+    await api(`/agent-connectors/${encodeURIComponent(connector.id)}/restore`, {
+      method: "POST", body: JSON.stringify({confirm_external_changes: confirmExternalChanges}),
+    });
+    $("#connector-restore-modal").close();
+    await loadAgentConnectors();
+    toast(`${connector.name} ${uiText("已恢复原配置")}`);
+  } catch (error) {
+    if (error.status === 409 && error.code === "CONNECTOR_EXTERNAL_CHANGES" && !confirmExternalChanges) {
+      state.connectorRestoreTarget = connector;
+      $("#connector-restore-error").textContent = "";
+      $("#connector-restore-paths").innerHTML = (error.paths || []).map((path) => `<li class="mono">${escapeHtml(path)}</li>`).join("");
+      $("#connector-restore-modal").showModal();
+      $("#connector-restore-submit").focus();
+      return;
+    }
+    if (confirmExternalChanges) throw error;
+    handleError(error);
+  }
+}
+
+async function confirmConnectorRestore(event) {
+  event.preventDefault();
+  if (!state.connectorRestoreTarget) return;
+  const submit = $("#connector-restore-submit");
+  submit.disabled = true;
+  try {
+    await restoreAgent(state.connectorRestoreTarget, true);
+  } catch (error) {
+    $("#connector-restore-error").textContent = error.message;
+  } finally {
+    submit.disabled = false;
+  }
 }
 
 async function loadLocalModels() {
@@ -772,6 +1037,8 @@ function renderUpstreamConfiguration() {
   $("#upstream-endpoint-openai-chat-completions").value = endpointOverrides.openai_chat_completions || "";
   $("#upstream-endpoint-openai-responses").value = endpointOverrides.openai_responses || "";
   $("#upstream-endpoint-anthropic-messages").value = endpointOverrides.anthropic_messages || "";
+  $("#upstream-models-url").value = editing && !showingDefaults ? (editingProfile?.models_url || "") : "";
+  $("#upstream-user-agent").value = editing && !showingDefaults ? (editingProfile?.user_agent || "") : "";
   $("#upstream-key-form").classList.toggle("is-hidden", !editing);
   $("#upstream-connectivity-test").classList.toggle("is-hidden", !configured || editing);
   $("#edit-upstream-key").classList.toggle("is-hidden", !configured || editing);
@@ -811,6 +1078,8 @@ async function saveUpstreamApiKey(event) {
       openai_responses: $("#upstream-endpoint-openai-responses").value.trim(),
       anthropic_messages: $("#upstream-endpoint-anthropic-messages").value.trim(),
     };
+    const modelsUrl = $("#upstream-models-url").value.trim();
+    const userAgent = $("#upstream-user-agent").value.trim();
     state.upstream = await api("/upstream-configuration", {
       method: "PUT",
       body: JSON.stringify({
@@ -819,6 +1088,9 @@ async function saveUpstreamApiKey(event) {
         base_url: baseUrl,
         api_key: apiKey,
         endpoint_overrides: endpointOverrides,
+        provider_type: "custom",
+        models_url: modelsUrl,
+        user_agent: userAgent,
       }),
     });
     input.value = "";
@@ -2305,6 +2577,16 @@ function toast(message, error = false) {
 
 function handleError(error) {
   toast(localModelErrorMessage(error.code, error.message || "请求失败"), true);
+}
+
+function connectorErrorMessage(error) {
+  const message = ({
+    CONNECTOR_CONFIG_CONFLICT: "检测到已有 Agent 配置。确认迁移后，APG 会先保存完整快照再替换；取消则不改动。",
+    CONNECTOR_CONCURRENT_CHANGE: "配置在接入前发生了变化，请重新打开快速接入并确认迁移。",
+    CONNECTOR_EXTERNAL_CHANGES: "接入后的配置已被外部修改，请先恢复原配置。",
+    CONNECTOR_PROTOCOL_PROBE_FAILED: "所选模型未通过该 Agent 所需的协议测试。",
+  })[error.code];
+  return uiText(message || error.message || "接入失败。");
 }
 
 function debounce(fn, wait) {

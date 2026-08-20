@@ -31,6 +31,10 @@ _TERMINAL_API_PATHS = (
     "/models",
 )
 
+# A stable, non-secret User-Agent keeps model-list requests distinguishable from
+# browser traffic and avoids providers/CDNs rejecting a request with no UA.
+DEFAULT_USER_AGENT = "agent-privacy-gateway"
+
 
 def _is_json_content_type(value: str) -> bool:
     media_type = value.split(";", 1)[0].strip().lower()
@@ -100,6 +104,13 @@ class UpstreamClient:
 
     def resolve_upstream_url(self, upstream_path: str) -> str:
         """Resolve a route against either an API root or a configured full endpoint."""
+        parsed_request = urlsplit(upstream_path)
+        if parsed_request.scheme in {"http", "https"} and parsed_request.netloc:
+            # Model discovery may retry a sibling catalog URL outside the
+            # configured protocol prefix (for example DeepSeek's
+            # /anthropic/v1/models -> /models). Preserve that absolute target
+            # instead of joining it to the configured Base URL a second time.
+            return upstream_path
         request_protocol = upstream_protocol_for_path(upstream_path)
         requested_terminal = _terminal_api_path(urlsplit(upstream_path).path)
         override = self.config.endpoint_overrides.get(request_protocol, "")
@@ -123,24 +134,51 @@ class UpstreamClient:
         method: str,
         upstream_path: str,
         payload: Any | None = None,
+        extra_headers: dict[str, str] | None = None,
     ) -> tuple[int, dict[str, str], Any]:
         """Request an already-resolved upstream path without applying local route rewriting."""
         headers = self._headers(upstream_protocol_for_path(upstream_path))
+        if extra_headers:
+            headers.update({str(key): str(value) for key, value in extra_headers.items() if str(value).strip()})
         client = self._get_client()
         resp = await client.request(method, self.resolve_upstream_url(upstream_path), headers=headers, json=payload)
         content_type = resp.headers.get("content-type", "")
-        if _is_json_content_type(content_type):
-            try:
-                body: Any = resp.json()
-            except (json.JSONDecodeError, UnicodeDecodeError):
-                # Malformed JSON body would otherwise surface as an unhandled
-                # 500 (JSONDecodeError is a ValueError, not an httpx.HTTPError,
-                # so the callers' except clauses never see it). Normalize it to
-                # the same safe error body used for non-JSON responses.
-                body = {"error": {"message": "Upstream returned malformed JSON response", "status_code": resp.status_code}}
-        else:
-            body = {"error": {"message": "Upstream returned non-JSON response", "status_code": resp.status_code}}
+        try:
+            # Some compatible providers omit or mislabel Content-Type. Parse
+            # the bounded response body first; callers still use the header to
+            # classify a non-JSON error when decoding fails.
+            body: Any = resp.json()
+        except (json.JSONDecodeError, UnicodeDecodeError, ValueError):
+            body = {
+                "error": {
+                    "message": "Upstream returned malformed JSON response"
+                    if _is_json_content_type(content_type)
+                    else "Upstream returned non-JSON response",
+                    "status_code": resp.status_code,
+                }
+            }
         return resp.status_code, self._response_headers(resp, "application/json"), body
+
+    async def request_json_model_catalog(
+        self,
+        upstream_path: str,
+    ) -> tuple[int, dict[str, str], Any]:
+        """Fetch a provider model catalog with catalog-compatible auth headers.
+
+        A provider can expose Anthropic inference below ``/anthropic`` while its
+        OpenAI-compatible ``/models`` resource remains at the host root.  Keep
+        the configured Anthropic headers, but also send Bearer auth so that the
+        root catalog accepts the same key (the request is still made only to the
+        configured upstream target).
+        """
+        extra_headers: dict[str, str] = {}
+        if canonical_upstream_protocol(self.config.protocol) == ANTHROPIC_MESSAGES:
+            extra_headers["Authorization"] = f"Bearer {self.config.api_key}"
+        return await self.request_json_upstream_path(
+            "GET",
+            upstream_path,
+            extra_headers=extra_headers,
+        )
 
     async def stream_request(self, method: str, path: str, payload: Any | None = None) -> tuple[int, dict[str, str], AsyncIterator[bytes]]:
         upstream_path = self.upstream_path(path)
@@ -171,7 +209,11 @@ class UpstreamClient:
         return headers
 
     def _headers(self, protocol: str = "") -> dict[str, str]:
-        headers = {"Content-Type": "application/json"}
+        headers = {"Content-Type": "application/json", "Accept": "application/json"}
+        user_agent = str(getattr(self.config, "user_agent", "") or "").strip()
+        if len(user_agent) > 256 or any(ord(char) < 32 or ord(char) > 126 for char in user_agent):
+            user_agent = ""
+        headers["User-Agent"] = (user_agent or DEFAULT_USER_AGENT)[:256]
         effective_protocol = protocol or canonical_upstream_protocol(self.config.protocol)
         if effective_protocol == ANTHROPIC_MESSAGES:
             headers["x-api-key"] = self.config.api_key

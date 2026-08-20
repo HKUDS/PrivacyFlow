@@ -245,6 +245,21 @@ def test_webui_assets_and_admin_api_require_no_authentication(tmp_path) -> None:
         assert '<button class="nav-item" type="button" data-view="local-models">' in page.text
         assert 'data-lucide="hard-drive-download"' in page.text
         assert 'id="view-local-models"' in page.text
+        assert 'id="view-agent-connectors"' in page.text
+        assert 'id="connector-modal"' in page.text
+        assert 'id="connector-restore-modal"' in page.text
+        assert 'id="connector-migrate-modal"' in page.text
+        assert 'confirm_existing_config' in app_js.text
+        assert '"agent-connectors": loadAgentConnectors' in app_js.text
+        assert 'api("/agent-connectors")' in app_js.text
+        assert 'connectorIconMarkup(connector.id)' in app_js.text
+        assert '"agent-codex.svg"' in app_js.text
+        assert '"agent-claude-code.svg"' in app_js.text
+        assert '"agent-deepseek-harness.svg"' in app_js.text
+        assert '"agent-nanobot.svg"' in app_js.text
+        assert "Agent quick connect" in i18n_js.text
+        assert "Restore previous configuration" in i18n_js.text
+        assert "Confirm migration and connect" in i18n_js.text
         assert 'id="manual-model-form"' in page.text
         assert 'id="prepare-all-models"' in page.text
         assert 'id="repair-model-runtime"' not in page.text
@@ -839,6 +854,82 @@ def test_webui_upstream_model_list_uses_standard_v1_route_for_root_base_url(tmp_
     assert response.json()["target_endpoint"] == "https://upstream.example/v1/models"
     assert response.json()["models"] == ["gpt-test"]
     assert captured["url"] == "https://upstream.example/v1/models"
+
+
+def test_webui_upstream_model_list_falls_back_from_anthropic_compatibility_path(tmp_path) -> None:
+    captured: list[tuple[str, dict[str, str]]] = []
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        captured.append((str(request.url), dict(request.headers)))
+        if request.url.path == "/models":
+            return httpx.Response(200, json={"data": [{"id": "deepseek-v4-flash"}, {"id": "deepseek-v4-pro"}]})
+        return httpx.Response(404, headers={"content-type": "text/html"}, text="not found")
+
+    base = _config(tmp_path)
+    upstream_config = UpstreamConfig(
+        base_url="https://api.deepseek.com/anthropic",
+        api_key="provider-key",
+        protocol=ANTHROPIC_MESSAGES,
+        strip_local_v1=True,
+    )
+    upstream = UpstreamClient(upstream_config, transport=httpx.MockTransport(handler))
+    cfg = GatewayConfig(**{**base.__dict__, "upstream": upstream_config})
+
+    with TestClient(create_app(cfg, upstream)) as client:
+        response = client.get(
+            "/api/admin/upstream-configuration/models",
+            headers=_admin_headers(),
+        )
+
+    assert response.status_code == 200
+    result = response.json()
+    assert result["ok"] is True
+    assert result["target_endpoint"] == "https://api.deepseek.com/models"
+    assert result["models"] == ["deepseek-v4-flash", "deepseek-v4-pro"]
+    assert [url for url, _ in captured] == [
+        "https://api.deepseek.com/anthropic/v1/models",
+        "https://api.deepseek.com/v1/models",
+        "https://api.deepseek.com/models",
+    ]
+    assert all("x-api-key" in headers for _, headers in captured)
+    assert all(headers.get("user-agent") == "agent-privacy-gateway" for _, headers in captured)
+    # Root-compatible model catalogs also accept the Bearer form used by
+    # cc-switch, while the configured Anthropic headers remain present.
+    assert all(headers.get("authorization") == "Bearer provider-key" for _, headers in captured)
+
+
+def test_webui_upstream_model_list_falls_back_to_unversioned_root_for_stripped_base(tmp_path) -> None:
+    captured: list[str] = []
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        captured.append(str(request.url))
+        if request.url.path == "/models":
+            return httpx.Response(200, json={"data": [{"id": "deepseek-v4-flash"}]})
+        return httpx.Response(404, headers={"content-type": "application/json"}, json={"error": {"message": "not found"}})
+
+    base = _config(tmp_path)
+    upstream_config = UpstreamConfig(
+        base_url="https://api.deepseek.com",
+        api_key="provider-key",
+        protocol=OPENAI_CHAT_COMPLETIONS,
+        strip_local_v1=True,
+    )
+    upstream = UpstreamClient(upstream_config, transport=httpx.MockTransport(handler))
+    cfg = GatewayConfig(**{**base.__dict__, "upstream": upstream_config})
+
+    with TestClient(create_app(cfg, upstream)) as client:
+        response = client.get(
+            "/api/admin/upstream-configuration/models",
+            headers=_admin_headers(),
+        )
+
+    assert response.status_code == 200
+    assert response.json()["target_endpoint"] == "https://api.deepseek.com/models"
+    assert response.json()["models"] == ["deepseek-v4-flash"]
+    assert captured == [
+        "https://api.deepseek.com/v1/models",
+        "https://api.deepseek.com/models",
+    ]
 
 
 def test_webui_full_chat_completions_endpoint_resolves_models_and_test_as_siblings(tmp_path) -> None:

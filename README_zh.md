@@ -111,6 +111,11 @@ and use key sk-example-not-a-real-key.
 
 ## ⚡ 快速开始
 
+> **最快路径：一键接入 Agent。** APG 启动并启用上游配置后，打开 WebUI 的
+> **Agent 快速接入**，选择模型并点击 **快速接入**。APG 会自动检测已经安装的
+> Codex、Claude Code、DeepSeek Harness 或 nanobot，预检原生协议并写入用户级配置，
+> 无需手动复制 endpoint 或 API Key；之后可随时点击 **恢复原配置** 撤销接入。
+
 ### 1. 安装
 
 要求：macOS、Linux 或 Windows，以及 Python 3.11 或更高版本。
@@ -151,9 +156,13 @@ WebUI: http://127.0.0.1:8765/ui/
 在支持文件权限的系统中，供应商密钥会以 `0600` 权限写入本地启动配置；管理 API 永远不会返回供应商密钥。
 每个连接默认开放 Chat Completions、Responses 和 Anthropic Messages 三种入口。APG 根据收到请求的本地端点选择匹配的原生上游端点，不会在格式之间转换；如果供应商不支持该格式，APG 会返回实际上游错误。
 
-### 4. 将 Agent 指向 APG
+### 4. 将 Agent 接入 APG
 
-从 WebUI 的 **Agent 接入**区域复制 Base URL 和自动生成的本地 API Key。模型仍然由用户在 Agent 中选择——APG 不负责决定 Agent 使用哪个模型。
+WebUI 的 **Agent 快速接入**页面可自动配置已经安装的 Codex、Claude Code、DeepSeek Harness 和 nanobot。选择模型后，APG 会重新读取上游模型目录，并用该 Agent 的原生协议进行真实测试；只有测试成功才会写入用户级配置。DeepSeek Harness 使用 endpoint 配置，不安装原生插件。
+
+每个 Agent 使用独立的本地 Key。接入前的配置文件会被完整快照；点击 **恢复原配置** 后按原始字节和权限还原，原本不存在的文件会被删除。如果目标配置中已经存在相关的 provider、preset 或环境变量，首次接入会先列出文件路径并要求明确确认迁移；确认后才会先保存完整快照再覆盖，取消不会修改任何文件。如果文件在接入后被修改，APG 会先要求确认并保存当前版本的安全备份。
+
+概览页仍提供 Base URL 和主本地 API Key，便于手动接入其他 Agent。
 
 | Agent 请求格式 | APG Base URL |
 | --- | --- |
@@ -162,7 +171,7 @@ WebUI: http://127.0.0.1:8765/ui/
 | Anthropic Messages | `http://127.0.0.1:8765` |
 
 > [!NOTE]
-> APG 不会在 Chat Completions、Responses 和 Anthropic Messages 之间转换协议，Agent 与上游必须支持相同的请求格式。如需管理并快速切换不同 Agent 和模型服务商的连接配置，推荐将 APG 与 [CC Switch](https://github.com/farion1231/cc-switch) 搭配使用。CC Switch 用于管理配置，并不是 APG 的协议转换层。
+> APG 不会在 Chat Completions、Responses 和 Anthropic Messages 之间转换协议，Agent 与上游必须支持相同的请求格式。快速接入只管理模型 endpoint、模型名和本地凭据，不扩大 APG 的安全边界：工具权限、工具执行和本地会话日志仍由 Agent 负责。
 
 在开发检出目录中也可以使用仓库根目录下的 `./apg` 包装脚本。安装后的环境应使用 `apg` 命令。
 

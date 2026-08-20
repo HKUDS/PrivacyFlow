@@ -166,6 +166,13 @@ data-loss prevention.
 
 ## ⚡ Quick Start
 
+> **Fast path: connect your Agent in one click.** Once APG is running and an
+> upstream is enabled, open **Agent quick connect**, choose a model, and click
+> **Quick connect**. APG detects your installed Codex, Claude Code, DeepSeek
+> Harness, or nanobot, validates its native protocol, and writes the user-level
+> configuration for you—no manual endpoint or key copying. The change can be
+> undone at any time with **Restore previous configuration**.
+
 ### 1. Install
 
 Requirements: Python 3.11 or newer on macOS, Linux, or Windows.
@@ -212,7 +219,26 @@ entrypoints by default. APG selects the matching native upstream route from the
 incoming endpoint and never converts between formats. If the provider does not
 support that format, APG returns the actual upstream error.
 
-### 4. Point your Agent at APG
+### 4. Connect an Agent to APG
+
+The WebUI's **Agent quick connect** view configures installed Codex, Claude Code,
+DeepSeek Harness, and nanobot user-level instances. APG refreshes the upstream
+model catalog and performs a real probe using the Agent's native protocol before
+writing any file. DeepSeek Harness uses endpoint configuration; APG does not
+install a native dsh plugin.
+
+Each Agent receives a dedicated local key. APG snapshots complete configuration
+files before connection. **Restore previous configuration** writes back the exact
+original bytes and permissions, or removes a file that did not previously exist.
+If a target already contains a reserved provider, preset, or environment key,
+the first attempt lists the affected paths and asks for explicit migration
+confirmation. APG only replaces the files after confirmation, and saves the
+complete pre-connect snapshot first; cancel leaves the configuration untouched.
+If a file changed after connection, APG requires confirmation and saves the
+current version as a safety backup first.
+
+The Overview connection strip remains available for manually connecting other
+Agents with APG's Base URL and primary local API key.
 
 Copy the Base URL and generated local API key from **Agent connection** in the
 WebUI. Select the model in the Agent itself—APG deliberately does not own model

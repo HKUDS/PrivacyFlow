@@ -7,11 +7,12 @@ import secrets
 import time
 import uuid
 import warnings
+import ipaddress
 from contextlib import asynccontextmanager
 from dataclasses import replace
 from pathlib import Path
 from typing import Any
-from urllib.parse import urlsplit
+from urllib.parse import urlsplit, urlunsplit
 
 import httpx
 from fastapi import FastAPI, Header, HTTPException, Request, Response
@@ -19,6 +20,7 @@ from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Redirect
 
 from gateway import __version__
 from gateway.admin_service import AdminNotFoundError, AdminService
+from gateway.agent_connectors import CONNECTOR_PROTOCOLS, AgentConnectorService, ConnectorError
 from gateway.audit_logger import AuditLogger, scrub_audit_value
 from gateway.cli.launcher import (
     LauncherConfigError,
@@ -39,6 +41,13 @@ from gateway.detector_control import (
 from gateway.detector_manager import DetectorManager
 from gateway.mapping_store import MappingRetentionConflictError, MappingStore
 from gateway.local_models import LocalModelError, LocalModelService
+from gateway.model_catalog import (
+    ModelCatalog,
+    build_model_catalog_urls,
+    fetch_model_catalog,
+    normalize_cached_catalog,
+    safe_catalog_cache,
+)
 from gateway.placeholder_parser import APG_PLACEHOLDER_FORMAT_EXAMPLE, PlaceholderSigner
 from gateway.policy_engine import PolicyEngine
 from gateway.redaction_engine import (
@@ -59,7 +68,7 @@ from gateway.upstream_protocol import (
 )
 
 APG_BUILD_ID = os.environ.get("APG_BUILD_ID", f"apg-{__version__}")
-APG_CAPABILITIES = ["local_models_v2"]
+APG_CAPABILITIES = ["local_models_v2", "agent_connectors_v1"]
 _UPSTREAM_TRACE_HEADERS = {
     "x-request-id",
     "request-id",
@@ -90,6 +99,22 @@ def _safe_upstream_trace_headers(headers: dict[str, str]) -> dict[str, str]:
         if value and len(value) <= 512 and all(32 <= ord(char) < 127 for char in value):
             safe[normalized_name] = value
     return safe
+
+
+def _safe_public_upstream_url(value: str) -> str:
+    try:
+        parsed = urlsplit(str(value or ""))
+        if parsed.scheme not in {"http", "https"} or not parsed.hostname:
+            return ""
+        host = parsed.hostname
+        if ":" in host and not host.startswith("["):
+            host = f"[{host}]"
+        netloc = host
+        if parsed.port:
+            netloc = f"{netloc}:{parsed.port}"
+        return urlunsplit((parsed.scheme, netloc, parsed.path, "", ""))
+    except ValueError:
+        return ""
 
 
 def _safe_upstream_error_details(body: Any) -> dict[str, str]:
@@ -135,7 +160,7 @@ def _safe_upstream_error_details(body: Any) -> dict[str, str]:
     }
 
 
-def _safe_upstream_model_ids(body: Any, *, limit: int = 500) -> tuple[list[str], bool]:
+def _safe_upstream_model_ids(body: Any, *, limit: int | None = 500) -> tuple[list[str], bool]:
     """Return only bounded, printable model identifiers from common list shapes."""
     candidates: Any = body
     if isinstance(body, dict):
@@ -162,7 +187,7 @@ def _safe_upstream_model_ids(body: Any, *, limit: int = 500) -> tuple[list[str],
             or model_id in seen
         ):
             continue
-        if len(models) >= limit:
+        if limit is not None and len(models) >= limit:
             truncated = True
             break
         seen.add(model_id)
@@ -196,12 +221,6 @@ def _agent_model_list(model_ids: list[str]) -> dict[str, Any]:
         "first_id": data[0]["id"] if data else None,
         "last_id": data[-1]["id"] if data else None,
     }
-
-
-def _upstream_models_path(base_url: str) -> str:
-    """Use the standard models route without duplicating a Base URL's existing /v1 suffix."""
-    base_path = urlsplit(base_url).path.rstrip("/")
-    return "/models" if base_path.endswith("/v1") else "/v1/models"
 
 
 def _safe_upstream_error_details_from_bytes(content: bytes) -> dict[str, str]:
@@ -382,6 +401,8 @@ def _tool_arguments_error_response(
 
 def create_app(config: GatewayConfig | None = None, upstream_client: UpstreamClient | None = None) -> FastAPI:
     cfg = config or load_config()
+    if not cfg.primary_local_api_key and cfg.local_api_keys:
+        object.__setattr__(cfg, "primary_local_api_key", sorted(cfg.local_api_keys)[0])
 
     # The management plane is loopback-only by design and has no app-layer auth.
     if cfg.bind_host not in {"127.0.0.1", "localhost", "::1"} and cfg.admin_enabled:
@@ -428,6 +449,10 @@ def create_app(config: GatewayConfig | None = None, upstream_client: UpstreamCli
                 "base_url": cfg.upstream.base_url,
                 "api_key": cfg.upstream.api_key,
                 "endpoint_overrides": dict(cfg.upstream.endpoint_overrides),
+                "provider_type": cfg.upstream.provider_type,
+                "models_url": cfg.upstream.models_url,
+                "user_agent": cfg.upstream.user_agent,
+                "model_catalog": {},
                 "persisted": False,
             }
         ]
@@ -446,6 +471,9 @@ def create_app(config: GatewayConfig | None = None, upstream_client: UpstreamCli
             base_url=str(persisted_active_profile["base_url"]),
             api_key=str(persisted_active_profile["api_key"]),
             endpoint_overrides=dict(persisted_active_profile.get("endpoint_overrides", {})),
+            provider_type=str(persisted_active_profile.get("provider_type", "custom")),
+            models_url=str(persisted_active_profile.get("models_url", "")),
+            user_agent=str(persisted_active_profile.get("user_agent", "")),
         )
         update_config = getattr(upstream, "update_config", None)
         if callable(update_config):
@@ -454,6 +482,11 @@ def create_app(config: GatewayConfig | None = None, upstream_client: UpstreamCli
     detector_state_path = str(Path(cfg.database_path).with_name("detector-control.json"))
     local_model_state_path = Path(cfg.database_path).with_name("local-models.json")
     local_model_cache_path = Path(cfg.database_path).with_name("models")
+    connector_service = AgentConnectorService(
+        Path(launcher_config_path).parent,
+        launcher_config_path,
+        base_url=f"http://{'[' + cfg.bind_host + ']' if ':' in cfg.bind_host and not cfg.bind_host.startswith('[') else cfg.bind_host}:{cfg.bind_port}",
+    )
 
     def apply_detector_manager(manager: DetectorManager) -> None:
         # Replacing the manager is atomic in CPython. In-flight requests retain
@@ -499,6 +532,10 @@ def create_app(config: GatewayConfig | None = None, upstream_client: UpstreamCli
         base_url: str,
         api_key: str,
         endpoint_overrides: dict[str, str] | None = None,
+        *,
+        provider_type: str | None = None,
+        models_url: str | None = None,
+        user_agent: str | None = None,
     ) -> UpstreamConfig:
         nonlocal runtime_upstream_config
         runtime_upstream_config = replace(
@@ -507,6 +544,9 @@ def create_app(config: GatewayConfig | None = None, upstream_client: UpstreamCli
             base_url=base_url,
             api_key=api_key,
             endpoint_overrides=dict(endpoint_overrides or {}),
+            provider_type=str(provider_type if provider_type is not None else runtime_upstream_config.provider_type),
+            models_url=str(models_url if models_url is not None else runtime_upstream_config.models_url),
+            user_agent=str(user_agent if user_agent is not None else runtime_upstream_config.user_agent),
         )
         update_config = getattr(upstream, "update_config", None)
         if callable(update_config):
@@ -516,11 +556,11 @@ def create_app(config: GatewayConfig | None = None, upstream_client: UpstreamCli
     def resolved_upstream_target(upstream_path: str) -> str:
         resolver = getattr(upstream, "resolve_upstream_url", None)
         if callable(resolver):
-            return str(resolver(upstream_path))
-        return f"{active_upstream_config().base_url}{upstream_path}"
+            return _safe_public_upstream_url(str(resolver(upstream_path)))
+        return _safe_public_upstream_url(f"{active_upstream_config().base_url}{upstream_path}")
 
     def public_upstream_profile(profile: dict[str, Any]) -> dict[str, Any]:
-        return {
+        public = {
             "id": str(profile.get("id", "")),
             "name": str(profile.get("name", "")),
             "protocol": canonical_upstream_protocol(str(profile.get("protocol", ""))),
@@ -531,6 +571,19 @@ def create_app(config: GatewayConfig | None = None, upstream_client: UpstreamCli
             "active": str(profile.get("id", "")) == active_upstream_profile_id,
             "persisted": bool(profile.get("persisted", False)),
         }
+        provider_type = str(profile.get("provider_type", "custom"))
+        models_url = str(profile.get("models_url", ""))
+        user_agent = str(profile.get("user_agent", ""))
+        catalog = normalize_cached_catalog(profile.get("model_catalog"))
+        if provider_type != "custom":
+            public["provider_type"] = provider_type
+        if models_url:
+            public["models_url"] = models_url
+        if user_agent:
+            public["user_agent"] = user_agent
+        if catalog and (catalog.get("fetched_at") or catalog.get("models") or catalog.get("error")):
+            public["model_catalog"] = catalog
+        return public
 
     def upstream_configuration_info() -> dict[str, Any]:
         active = active_upstream_config()
@@ -683,6 +736,7 @@ def create_app(config: GatewayConfig | None = None, upstream_client: UpstreamCli
     app.state.admin_service = admin
     app.state.detector_control = detector_control
     app.state.local_models = local_models
+    app.state.agent_connectors = connector_service
 
     def authenticate(auth: str | None, requested_session_id: str | None, x_api_key: str | None = None) -> str:
         if x_api_key:
@@ -731,6 +785,192 @@ def create_app(config: GatewayConfig | None = None, upstream_client: UpstreamCli
                     "message": "Local model setup is only available from a loopback-bound APG server.",
                     "reason": reason,
                 },
+            )
+
+    def require_connector_write_access(request: Request) -> None:
+        try:
+            bind_is_loopback = cfg.bind_host == "localhost" or ipaddress.ip_address(cfg.bind_host).is_loopback
+        except ValueError:
+            bind_is_loopback = False
+        client_host = request.client.host if request.client is not None else ""
+        try:
+            client_is_loopback = ipaddress.ip_address(client_host).is_loopback
+        except ValueError:
+            client_is_loopback = client_host == "localhost"
+        if not bind_is_loopback or not client_is_loopback:
+            raise HTTPException(
+                status_code=403,
+                detail={"code": "CONNECTOR_LOCAL_ONLY", "message": "Agent configuration changes require a loopback-bound APG and loopback client."},
+            )
+
+    def connector_error(exc: ConnectorError) -> HTTPException:
+        detail: dict[str, Any] = {"code": exc.code, "message": str(exc)}
+        if exc.paths:
+            detail["paths"] = exc.paths
+        if exc.requires_confirmation:
+            detail["requires_confirmation"] = True
+        return HTTPException(status_code=exc.status_code, detail=detail)
+
+    async def fetch_upstream_model_catalog() -> tuple[int, dict[str, str], Any, str]:
+        """Fetch models with ordered URL fallbacks for compatibility prefixes."""
+        active = active_upstream_config()
+        candidates = build_model_catalog_urls(
+            active.base_url,
+            models_url=active.models_url,
+            strip_local_v1=active.strip_local_v1,
+        )
+        direct_request = getattr(upstream, "request_json_upstream_path", None)
+        last_result: tuple[int, dict[str, str], Any, str] | None = None
+        for target_endpoint in candidates:
+            try:
+                catalog_request = getattr(upstream, "request_json_model_catalog", None)
+                if callable(catalog_request):
+                    status, headers, body = await catalog_request(target_endpoint)
+                elif callable(direct_request):
+                    try:
+                        status, headers, body = await direct_request("GET", target_endpoint)
+                    except TypeError:
+                        status, headers, body = await direct_request("GET", urlsplit(target_endpoint).path or "/")
+                else:
+                    # Test doubles and legacy clients only expose request_json;
+                    # pass the candidate path while the real UpstreamClient gets
+                    # the absolute URL above and preserves its host/path.
+                    candidate_path = urlsplit(target_endpoint).path or "/"
+                    status, headers, body = await upstream.request_json("GET", candidate_path)
+            except httpx.HTTPError:
+                raise
+            last_result = (status, headers, body, target_endpoint)
+            if status not in {404, 405, 501}:
+                break
+        if last_result is None:
+            raise ConnectorError(
+                "The upstream model catalog URL could not be derived.",
+                code="CONNECTOR_MODEL_LIST_FAILED",
+                status_code=502,
+            )
+        return last_result
+
+    async def fetch_upstream_catalog(*, limit: int | None = 500) -> ModelCatalog:
+        """Use the shared catalog service for UI, preview, and Agent connectors."""
+        active = active_upstream_config()
+
+        async def request_candidate(target_endpoint: str) -> tuple[int, dict[str, str], Any]:
+            catalog_request = getattr(upstream, "request_json_model_catalog", None)
+            if callable(catalog_request):
+                return await catalog_request(target_endpoint)
+            direct_request = getattr(upstream, "request_json_upstream_path", None)
+            if callable(direct_request):
+                try:
+                    return await direct_request("GET", target_endpoint)
+                except TypeError:
+                    # Older test doubles/custom clients may not accept the
+                    # direct absolute-path method; fall back to the path API.
+                    pass
+            candidate_path = urlsplit(target_endpoint).path or "/"
+            return await upstream.request_json("GET", candidate_path)
+
+        return await fetch_model_catalog(
+            request_candidate,
+            active.base_url,
+            models_url=active.models_url,
+            strip_local_v1=active.strip_local_v1,
+            limit=limit,
+        )
+
+    def cache_upstream_catalog(profile_id: str, catalog: ModelCatalog, *, persist: bool = True) -> None:
+        """Keep non-secret discovery metadata in memory and in saved profiles."""
+        nonlocal runtime_upstream_profiles
+        cache = safe_catalog_cache(catalog)
+        updated: dict[str, Any] | None = None
+        for item in runtime_upstream_profiles:
+            if str(item.get("id")) == profile_id:
+                item["model_catalog"] = cache
+                updated = item
+                break
+        if not persist or not updated or not updated.get("persisted"):
+            return
+        try:
+            saved = save_launcher_upstream_profile(
+                launcher_config_path,
+                profile_id=profile_id,
+                name=str(updated.get("name", "")),
+                protocol=str(updated.get("protocol", OPENAI_CHAT_COMPLETIONS)),
+                base_url=str(updated.get("base_url", "")),
+                api_key=str(updated.get("api_key", "")),
+                endpoint_overrides=dict(updated.get("endpoint_overrides", {})),
+                proxy=str(updated.get("proxy", "")),
+                provider_type=str(updated.get("provider_type", "custom")),
+                models_url=str(updated.get("models_url", "")),
+                user_agent=str(updated.get("user_agent", "")),
+                model_catalog=cache,
+            )
+            updated.update(saved)
+            updated["persisted"] = True
+        except (LauncherConfigError, OSError):
+            # Discovery remains useful even when a profile is read-only or an
+            # older launcher cannot persist the optional metadata.
+            return
+
+    def legacy_catalog_response(catalog: ModelCatalog, *, endpoint: str = "/v1/models") -> dict[str, Any]:
+        """Keep the original compact model-list response shape for the UI."""
+        public = catalog.public()
+        error = catalog.error
+        error_type = None
+        if error is not None:
+            error_type = {
+                "response_format": "UpstreamResponseFormatError",
+                "timeout": "TimeoutException",
+                "unreachable": "HTTPError",
+            }.get(error.category, "UpstreamModelCatalogError")
+        return {
+            "ok": bool(public["ok"]),
+            "endpoint": endpoint,
+            "target_endpoint": public.get("source_endpoint"),
+            "status_code": public.get("status_code"),
+            "latency_ms": public.get("latency_ms", 0),
+            "models": public.get("models", []),
+            "truncated": bool(public.get("truncated", False)),
+            "upstream_trace_headers": public.get("upstream_trace_headers", {}),
+            "error": {
+                "type": error_type,
+                "code": error.code if error is not None else None,
+                "message": error.message if error is not None else None,
+            }
+            if error is not None
+            else None,
+        }
+
+    async def fetch_connector_models() -> list[str]:
+        if not upstream_is_configured() or not active_upstream_profile_id:
+            raise ConnectorError("Configure and activate an upstream connection first.", code="CONNECTOR_UPSTREAM_REQUIRED", status_code=409)
+        catalog = await fetch_upstream_catalog(limit=None)
+        if catalog.error:
+            if catalog.error.code == "APG_UPSTREAM_MODEL_CATALOG_EMPTY":
+                cache_upstream_catalog(active_upstream_profile_id, catalog, persist=False)
+                return []
+            raise ConnectorError(
+                catalog.error.message,
+                code="CONNECTOR_MODEL_LIST_FAILED",
+                status_code=502,
+            )
+        cache_upstream_catalog(active_upstream_profile_id, catalog, persist=False)
+        return catalog.ids
+
+    async def probe_connector(protocol: str, model: str) -> None:
+        endpoint, payload = _upstream_connectivity_probe(protocol, model)
+        try:
+            status, _, body = await upstream.request_json("POST", endpoint, payload)
+        except httpx.HTTPError as exc:
+            raise ConnectorError("The upstream protocol probe could not be reached.", code="CONNECTOR_PROTOCOL_PROBE_FAILED", status_code=502) from exc
+        if not 200 <= status < 300:
+            details = _safe_upstream_error_details(body)
+            message = details.get("upstream_error_message") or f"The upstream protocol probe returned HTTP {status}."
+            raise ConnectorError(message, code="CONNECTOR_PROTOCOL_PROBE_FAILED", status_code=409)
+        if not _matches_upstream_response_schema(protocol, body):
+            raise ConnectorError(
+                "The upstream response did not match the protocol required by this Agent.",
+                code="CONNECTOR_PROTOCOL_MISMATCH",
+                status_code=409,
             )
 
     def local_model_error(exc: LocalModelError) -> HTTPException:
@@ -997,12 +1237,7 @@ def create_app(config: GatewayConfig | None = None, upstream_client: UpstreamCli
         if not upstream_is_configured():
             return upstream_not_configured_response()
         try:
-            models_upstream_path = _upstream_models_path(active_upstream_config().base_url)
-            direct_request = getattr(upstream, "request_json_upstream_path", None)
-            if callable(direct_request):
-                status, headers, body = await direct_request("GET", models_upstream_path)
-            else:
-                status, headers, body = await upstream.request_json("GET", "/v1/models")
+            status, headers, body, _ = await fetch_upstream_model_catalog()
         except httpx.HTTPError as exc:
             return _upstream_error_response(exc, audit, request_id, session_id, cfg.workspace_id, "/v1/models")
         content_type = str(headers.get("content-type", "")).lower()
@@ -1111,6 +1346,10 @@ def create_app(config: GatewayConfig | None = None, upstream_client: UpstreamCli
         async def webui_asset(asset_name: str) -> Response:
             if asset_name not in {
                 "apg-icon.png",
+                "agent-claude-code.svg",
+                "agent-codex.svg",
+                "agent-deepseek-harness.svg",
+                "agent-nanobot.svg",
                 "app.js",
                 "i18n.js",
                 "lucide.min.js",
@@ -1255,22 +1494,123 @@ def create_app(config: GatewayConfig | None = None, upstream_client: UpstreamCli
         ) -> Response:
             return JSONResponse(admin.connection_info(), headers={"Cache-Control": "no-store"})
 
+        @app.get("/api/admin/agent-connectors")
+        async def admin_agent_connectors() -> Response:
+            return JSONResponse(connector_service.list(), headers={"Cache-Control": "no-store"})
+
+        @app.post("/api/admin/agent-connectors/{connector_id}/connect")
+        async def connect_admin_agent_connector(connector_id: str, request: Request) -> Response:
+            require_connector_write_access(request)
+            protocol = CONNECTOR_PROTOCOLS.get(connector_id)
+            if protocol is None:
+                raise HTTPException(status_code=404, detail={"code": "CONNECTOR_NOT_FOUND", "message": "Unknown Agent connector."})
+            body = await admin_body(request)
+            if "model" not in body or not set(body).issubset({"model", "confirm_existing_config"}):
+                raise HTTPException(
+                    status_code=400,
+                    detail={
+                        "code": "CONNECTOR_REQUEST_INVALID",
+                        "message": "The request must contain 'model' and may contain only 'confirm_existing_config'.",
+                    },
+                )
+            model = body.get("model")
+            if not isinstance(model, str):
+                raise HTTPException(status_code=400, detail={"code": "CONNECTOR_MODEL_INVALID", "message": "The model ID is invalid."})
+            confirm_existing_config = body.get("confirm_existing_config", False)
+            if not isinstance(confirm_existing_config, bool):
+                raise HTTPException(
+                    status_code=400,
+                    detail={"code": "CONNECTOR_REQUEST_INVALID", "message": "'confirm_existing_config' must be a boolean."},
+                )
+            model = model.strip()
+            if not model or len(model) > 256 or any(ord(char) < 32 or ord(char) == 127 for char in model):
+                raise HTTPException(status_code=400, detail={"code": "CONNECTOR_MODEL_INVALID", "message": "The model ID is invalid."})
+            try:
+                models = await fetch_connector_models()
+            except ConnectorError as exc:
+                if connector_id == "deepseek-harness" or exc.code == "CONNECTOR_UPSTREAM_REQUIRED":
+                    raise connector_error(exc) from exc
+                models = []
+            if connector_id == "deepseek-harness" and not models:
+                raise HTTPException(
+                    status_code=409,
+                    detail={"code": "CONNECTOR_MODEL_LIST_EMPTY", "message": "DeepSeek Harness requires a non-empty upstream model catalog."},
+                )
+            if models and model not in models:
+                raise HTTPException(
+                    status_code=409,
+                    detail={"code": "CONNECTOR_MODEL_NOT_FOUND", "message": "The selected model is no longer present in the upstream model catalog."},
+                )
+            try:
+                await probe_connector(protocol, model)
+                result = connector_service.connect(
+                    connector_id,
+                    model,
+                    models or [model.strip()],
+                    confirm_existing_config=confirm_existing_config,
+                )
+            except ConnectorError as exc:
+                raise connector_error(exc) from exc
+            cfg.local_api_keys.add(connector_service.credential(connector_id))
+            audit.log({
+                "phase": "admin_action", "workspace_id": cfg.workspace_id,
+                "action": "connect_agent", "connector_id": connector_id,
+                "protocol": protocol, "result_code": "OK",
+                "migrated_existing_config": confirm_existing_config,
+            })
+            return JSONResponse(result, headers={"Cache-Control": "no-store"})
+
+        @app.post("/api/admin/agent-connectors/{connector_id}/restore")
+        async def restore_admin_agent_connector(connector_id: str, request: Request) -> Response:
+            require_connector_write_access(request)
+            body = await admin_body(request)
+            if set(body) != {"confirm_external_changes"} or not isinstance(body.get("confirm_external_changes"), bool):
+                raise HTTPException(
+                    status_code=400,
+                    detail={"code": "CONNECTOR_REQUEST_INVALID", "message": "The request must contain only the boolean 'confirm_external_changes'."},
+                )
+            previous_key = ""
+            try:
+                previous_key = connector_service.credential(connector_id)
+            except LauncherConfigError:
+                pass
+            try:
+                result = connector_service.restore(
+                    connector_id,
+                    confirm_external_changes=body["confirm_external_changes"],
+                )
+            except ConnectorError as exc:
+                raise connector_error(exc) from exc
+            if previous_key:
+                cfg.local_api_keys.discard(previous_key)
+            audit.log({
+                "phase": "admin_action", "workspace_id": cfg.workspace_id,
+                "action": "restore_agent_configuration", "connector_id": connector_id,
+                "result_code": "OK",
+            })
+            return JSONResponse(result, headers={"Cache-Control": "no-store"})
+
         @app.post("/api/admin/connection/api-key")
         async def regenerate_admin_connection_api_key(
         ) -> Response:
             generated = generate_local_api_key()
+            previous_primary = cfg.primary_local_api_key
+            if previous_primary not in cfg.local_api_keys:
+                previous_primary = sorted(cfg.local_api_keys)[0] if cfg.local_api_keys else ""
             try:
                 save_launcher_local_api_key(launcher_config_path, generated)
             except LauncherConfigError as exc:
                 raise HTTPException(status_code=400, detail=str(exc)) from exc
-            cfg.local_api_keys.clear()
+            if previous_primary:
+                cfg.local_api_keys.discard(previous_primary)
             cfg.local_api_keys.add(generated)
+            object.__setattr__(cfg, "primary_local_api_key", generated)
             audit.log(
                 {
                     "phase": "admin_action",
                     "workspace_id": cfg.workspace_id,
                     "action": "rotate_agent_api_key",
-                    "available_key_count": 1,
+                    "available_key_count": len(cfg.local_api_keys),
                     "result_code": "OK",
                 }
             )
@@ -1283,76 +1623,48 @@ def create_app(config: GatewayConfig | None = None, upstream_client: UpstreamCli
 
         @app.get("/api/admin/upstream-configuration/models")
         async def list_admin_upstream_models(
+            request: Request,
+            profile_id: str = "",
+            refresh: bool = False,
         ) -> Response:
             if not upstream_is_configured() or not active_upstream_profile_id:
                 raise HTTPException(status_code=409, detail="Configure and activate an upstream connection first")
 
             endpoint = "/v1/models"
-            active = active_upstream_config()
-            upstream_path = _upstream_models_path(active.base_url)
-            target_endpoint = resolved_upstream_target(upstream_path)
-            started = time.perf_counter()
-            try:
-                direct_request = getattr(upstream, "request_json_upstream_path", None)
-                if callable(direct_request):
-                    status, headers, upstream_body = await direct_request("GET", upstream_path)
-                else:
-                    status, headers, upstream_body = await upstream.request_json("GET", endpoint)
-                latency_ms = max(0, round((time.perf_counter() - started) * 1000))
-                content_type = str(headers.get("content-type", "")).lower()
-                non_json = 200 <= status < 300 and "json" not in content_type
-                success = 200 <= status < 300 and not non_json
-                models, truncated = _safe_upstream_model_ids(upstream_body) if success else ([], False)
-                error_details = _safe_upstream_error_details(upstream_body) if not success else {}
-                if non_json:
-                    error_details = {
-                        "upstream_error_type": "UpstreamResponseFormatError",
-                        "upstream_error_code": "APG_UPSTREAM_NON_JSON",
-                        "upstream_error_message": "The upstream model-list endpoint returned a non-JSON response.",
+            rich_result = bool(profile_id or refresh or request.headers.get("x-apg-model-catalog") == "rich")
+            if rich_result:
+                requested_profile = profile_id or active_upstream_profile_id
+                if requested_profile != active_upstream_profile_id:
+                    raise HTTPException(
+                        status_code=409,
+                        detail={
+                            "code": "APG_PROFILE_NOT_ACTIVE",
+                            "message": "Activate the upstream profile before refreshing its model catalog.",
+                        },
+                    )
+                catalog = await fetch_upstream_catalog()
+                cache_upstream_catalog(requested_profile, catalog)
+                result = {
+                    **catalog.public(include_attempts=True),
+                    "endpoint": endpoint,
+                    "target_endpoint": catalog.public().get("source_endpoint"),
+                }
+                audit.log(
+                    {
+                        "phase": "admin_action",
+                        "workspace_id": cfg.workspace_id,
+                        "action": "list_upstream_models",
+                        "endpoint": endpoint,
+                        "status": result["status_code"],
+                        "latency_ms": result["latency_ms"],
+                        "model_count": len(result["models"]),
+                        "result_code": "OK" if result["ok"] else str((result.get("error") or {}).get("code") or "UPSTREAM_MODELS_FAILED"),
                     }
-                result = {
-                    "ok": success,
-                    "endpoint": endpoint,
-                    "target_endpoint": target_endpoint,
-                    "status_code": status,
-                    "latency_ms": latency_ms,
-                    "models": models,
-                    "truncated": truncated,
-                    "upstream_trace_headers": _safe_upstream_trace_headers(headers),
-                    "error": {
-                        "type": error_details.get("upstream_error_type") or None,
-                        "code": error_details.get("upstream_error_code") or None,
-                        "message": error_details.get("upstream_error_message") or None,
-                    }
-                    if not success
-                    else None,
-                }
-            except httpx.TimeoutException:
-                latency_ms = max(0, round((time.perf_counter() - started) * 1000))
-                result = {
-                    "ok": False,
-                    "endpoint": endpoint,
-                    "target_endpoint": target_endpoint,
-                    "status_code": None,
-                    "latency_ms": latency_ms,
-                    "models": [],
-                    "truncated": False,
-                    "upstream_trace_headers": {},
-                    "error": {"type": "TimeoutException", "code": "APG_UPSTREAM_TIMEOUT", "message": "The upstream request timed out."},
-                }
-            except httpx.HTTPError as exc:
-                latency_ms = max(0, round((time.perf_counter() - started) * 1000))
-                result = {
-                    "ok": False,
-                    "endpoint": endpoint,
-                    "target_endpoint": target_endpoint,
-                    "status_code": None,
-                    "latency_ms": latency_ms,
-                    "models": [],
-                    "truncated": False,
-                    "upstream_trace_headers": {},
-                    "error": {"type": exc.__class__.__name__, "code": "APG_UPSTREAM_UNREACHABLE", "message": "The upstream provider could not be reached."},
-                }
+                )
+                return JSONResponse(result, headers={"Cache-Control": "no-store"})
+            catalog = await fetch_upstream_catalog()
+            cache_upstream_catalog(active_upstream_profile_id, catalog)
+            result = legacy_catalog_response(catalog, endpoint=endpoint)
             audit.log(
                 {
                     "phase": "admin_action",
@@ -1366,6 +1678,107 @@ def create_app(config: GatewayConfig | None = None, upstream_client: UpstreamCli
                 }
             )
             return JSONResponse(result, headers={"Cache-Control": "no-store"})
+
+        @app.post("/api/admin/upstream-configuration/models/preview")
+        async def preview_admin_upstream_models(request: Request) -> Response:
+            """Probe an unsaved provider without persisting or echoing its key."""
+            body = await admin_body(request)
+            allowed = {"base_url", "protocol", "api_key", "models_url", "user_agent", "strip_local_v1"}
+            if set(body) - allowed:
+                raise HTTPException(status_code=400, detail={"code": "APG_MODEL_PREVIEW_REQUEST_INVALID", "message": "Unknown model preview fields."})
+            base_url = body.get("base_url")
+            protocol = body.get("protocol", OPENAI_CHAT_COMPLETIONS)
+            api_key = body.get("api_key", "")
+            models_url = body.get("models_url", "")
+            user_agent = body.get("user_agent", "")
+            strip_local_v1 = body.get("strip_local_v1", False)
+            if not all(isinstance(value, str) for value in (base_url, protocol, api_key, models_url, user_agent)):
+                raise HTTPException(status_code=400, detail={"code": "APG_MODEL_PREVIEW_REQUEST_INVALID", "message": "Preview fields must be strings."})
+            if not isinstance(strip_local_v1, bool):
+                raise HTTPException(status_code=400, detail={"code": "APG_MODEL_PREVIEW_REQUEST_INVALID", "message": "strip_local_v1 must be boolean."})
+            normalized_preview_base_url = base_url.strip().rstrip("/")
+            if (
+                not normalized_preview_base_url
+                or len(normalized_preview_base_url) > 2048
+                or any(ord(char) < 32 or ord(char) == 127 for char in normalized_preview_base_url)
+            ):
+                raise HTTPException(status_code=400, detail={"code": "APG_MODEL_PREVIEW_URL_INVALID", "message": "Enter a complete HTTP(S) Base URL without credentials, query parameters, or fragments."})
+            try:
+                parsed = urlsplit(normalized_preview_base_url)
+                _ = parsed.port
+            except ValueError as exc:
+                raise HTTPException(status_code=400, detail={"code": "APG_MODEL_PREVIEW_URL_INVALID", "message": "Enter a complete HTTP(S) Base URL without credentials, query parameters, or fragments."}) from exc
+            if parsed.scheme not in {"http", "https"} or not parsed.netloc or not parsed.hostname or parsed.username or parsed.password or parsed.query or parsed.fragment:
+                raise HTTPException(status_code=400, detail={"code": "APG_MODEL_PREVIEW_URL_INVALID", "message": "Enter a complete HTTP(S) Base URL without credentials, query parameters, or fragments."})
+            normalized_protocol = canonical_upstream_protocol(protocol)
+            if normalized_protocol not in SUPPORTED_UPSTREAM_PROTOCOLS:
+                raise HTTPException(status_code=400, detail={"code": "APG_MODEL_PREVIEW_PROTOCOL_INVALID", "message": "Unsupported upstream protocol."})
+            if not api_key.strip() or len(api_key) > 4096 or any(ord(char) < 32 or ord(char) == 127 for char in api_key):
+                raise HTTPException(status_code=400, detail={"code": "APG_MODEL_PREVIEW_KEY_INVALID", "message": "Enter a valid upstream API key."})
+            normalized_preview_models_url = models_url.strip().rstrip("/")
+            if len(normalized_preview_models_url) > 2048 or any(ord(char) < 32 or ord(char) == 127 for char in normalized_preview_models_url):
+                raise HTTPException(status_code=400, detail={"code": "APG_MODEL_PREVIEW_URL_INVALID", "message": "models_url must be an absolute HTTP(S) URL without credentials or query parameters."})
+            if normalized_preview_models_url:
+                try:
+                    models_parsed = urlsplit(normalized_preview_models_url)
+                    _ = models_parsed.port
+                except ValueError as exc:
+                    raise HTTPException(status_code=400, detail={"code": "APG_MODEL_PREVIEW_URL_INVALID", "message": "models_url must be an absolute HTTP(S) URL without credentials or query parameters."}) from exc
+                if models_parsed.scheme not in {"http", "https"} or not models_parsed.netloc or not models_parsed.hostname or models_parsed.username or models_parsed.password or models_parsed.query or models_parsed.fragment:
+                    raise HTTPException(status_code=400, detail={"code": "APG_MODEL_PREVIEW_URL_INVALID", "message": "models_url must be an absolute HTTP(S) URL without credentials or query parameters."})
+            if len(user_agent) > 256 or any(ord(char) < 32 or ord(char) > 126 for char in user_agent):
+                raise HTTPException(status_code=400, detail={"code": "APG_MODEL_PREVIEW_USER_AGENT_INVALID", "message": "The custom User-Agent is invalid."})
+            normalized_base_url = normalized_preview_base_url
+            normalized_models_url = normalized_preview_models_url
+            active = active_upstream_config()
+            if (
+                normalized_base_url == active.base_url
+                and api_key == active.api_key
+                and normalized_protocol == active.protocol
+                and normalized_models_url == active.models_url
+                and user_agent.strip() == active.user_agent
+                and strip_local_v1 == active.strip_local_v1
+            ):
+                catalog = await fetch_upstream_catalog()
+            else:
+                temporary = UpstreamClient(
+                    UpstreamConfig(
+                        base_url=normalized_base_url,
+                        api_key=api_key,
+                        protocol=normalized_protocol,
+                        models_url=normalized_models_url,
+                        user_agent=user_agent.strip(),
+                        strip_local_v1=strip_local_v1,
+                    )
+                )
+                try:
+                    async def request_candidate(target_endpoint: str) -> tuple[int, dict[str, str], Any]:
+                        return await temporary.request_json_model_catalog(target_endpoint)
+
+                    catalog = await fetch_model_catalog(
+                        request_candidate,
+                        normalized_base_url,
+                        models_url=normalized_models_url,
+                        strip_local_v1=strip_local_v1,
+                    )
+                finally:
+                    await temporary.close()
+            response = catalog.public(include_attempts=True)
+            response["endpoint"] = "/v1/models"
+            response["target_endpoint"] = response.get("source_endpoint")
+            audit.log(
+                {
+                    "phase": "admin_action",
+                    "workspace_id": cfg.workspace_id,
+                    "action": "preview_upstream_models",
+                    "endpoint": "/v1/models",
+                    "status": response["status_code"],
+                    "latency_ms": response["latency_ms"],
+                    "model_count": len(response["models"]),
+                    "result_code": "OK" if response["ok"] else str((response.get("error") or {}).get("code") or "UPSTREAM_MODELS_FAILED"),
+                }
+            )
+            return JSONResponse(response, headers={"Cache-Control": "no-store"})
 
         @app.post("/api/admin/upstream-configuration/test")
         async def test_admin_upstream_configuration(
@@ -1484,6 +1897,9 @@ def create_app(config: GatewayConfig | None = None, upstream_client: UpstreamCli
             base_url = body.get("base_url")
             api_key = body.get("api_key", "")
             endpoint_overrides = body.get("endpoint_overrides", {})
+            provider_type = body.get("provider_type")
+            models_url = body.get("models_url")
+            user_agent = body.get("user_agent")
             if not isinstance(profile_id, str):
                 raise HTTPException(status_code=400, detail="Expected a string upstream profile id")
             if not isinstance(name, str):
@@ -1499,11 +1915,16 @@ def create_app(config: GatewayConfig | None = None, upstream_client: UpstreamCli
                 raise HTTPException(status_code=400, detail="Expected a string upstream Base URL")
             if not isinstance(api_key, str):
                 raise HTTPException(status_code=400, detail="Expected a string upstream API key")
+            if any(value is not None and not isinstance(value, str) for value in (provider_type, models_url, user_agent)):
+                raise HTTPException(status_code=400, detail="Expected provider metadata fields to be strings")
             try:
                 existing_runtime_profile = next(
                     (item for item in runtime_upstream_profiles if item["id"] == profile_id),
                     None,
                 )
+                provider_type = provider_type if provider_type is not None else str((existing_runtime_profile or {}).get("provider_type", "custom"))
+                models_url = models_url if models_url is not None else str((existing_runtime_profile or {}).get("models_url", ""))
+                user_agent = user_agent if user_agent is not None else str((existing_runtime_profile or {}).get("user_agent", ""))
                 effective_api_key = api_key.strip() or str(
                     (existing_runtime_profile or {}).get("api_key", "")
                 ).strip()
@@ -1523,6 +1944,9 @@ def create_app(config: GatewayConfig | None = None, upstream_client: UpstreamCli
                     base_url=base_url,
                     api_key=effective_api_key,
                     endpoint_overrides=endpoint_overrides,
+                    provider_type=provider_type,
+                    models_url=models_url,
+                    user_agent=user_agent,
                 )
                 profile = {**profile, "persisted": True}
                 runtime_upstream_profiles = [
@@ -1537,6 +1961,9 @@ def create_app(config: GatewayConfig | None = None, upstream_client: UpstreamCli
                     str(profile["base_url"]),
                     str(profile["api_key"]),
                     dict(profile.get("endpoint_overrides", {})),
+                    provider_type=str(profile.get("provider_type", "custom")),
+                    models_url=str(profile.get("models_url", "")),
+                    user_agent=str(profile.get("user_agent", "")),
                 )
             except LauncherConfigError as exc:
                 raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -1577,6 +2004,9 @@ def create_app(config: GatewayConfig | None = None, upstream_client: UpstreamCli
                     str(profile["base_url"]),
                     str(profile["api_key"]),
                     dict(profile.get("endpoint_overrides", {})),
+                    provider_type=str(profile.get("provider_type", "custom")),
+                    models_url=str(profile.get("models_url", "")),
+                    user_agent=str(profile.get("user_agent", "")),
                 )
             except LauncherConfigError as exc:
                 raise HTTPException(status_code=404, detail=str(exc)) from exc
@@ -1606,15 +2036,18 @@ def create_app(config: GatewayConfig | None = None, upstream_client: UpstreamCli
                 ]
                 if next_active is None:
                     active_upstream_profile_id = ""
-                    update_upstream_configuration("", "", "")
+                    update_upstream_configuration("", "", "", provider_type="custom", models_url="", user_agent="")
                 else:
                     active_upstream_profile_id = str(next_active["id"])
                     update_upstream_configuration(
                         str(next_active["protocol"]),
                         str(next_active["base_url"]),
-                        str(next_active["api_key"]),
-                        dict(next_active.get("endpoint_overrides", {})),
-                    )
+                    str(next_active["api_key"]),
+                    dict(next_active.get("endpoint_overrides", {})),
+                    provider_type=str(next_active.get("provider_type", "custom")),
+                    models_url=str(next_active.get("models_url", "")),
+                    user_agent=str(next_active.get("user_agent", "")),
+                )
             except LauncherConfigError as exc:
                 raise HTTPException(status_code=404, detail=str(exc)) from exc
             audit.log(
