@@ -28,8 +28,41 @@
 </p>
 
 <p align="center">
-  <img src="docs/privacyflow-architecture.png" width="100%" alt="PrivacyFlow 架构：敏感值在上传云端前于本地被替换，并在会话和工具调用参数中还原，让 Agent 保持正常工作">
+  <img src="docs/privacyflow-architecture.png" width="100%" alt="PrivacyFlow 支持任意 Agent，在上传云端前于本地替换敏感值，并在会话和工具调用参数中还原">
 </p>
+
+<a id="quick-start"></a>
+
+## ⚡ 快速开始
+
+需要 Python 3.11 或更高版本。
+
+```bash
+git clone https://github.com/HKUDS/PrivacyFlow.git
+cd PrivacyFlow
+python3 -m venv .venv
+. .venv/bin/activate
+python -m pip install -e .
+privacyflow
+```
+
+然后打开 [http://127.0.0.1:8765/ui/](http://127.0.0.1:8765/ui/)，依次：
+
+1. 添加并启用上游供应商；
+2. 打开 PrivacyFlow 总开关；
+3. 进入 **Agent 快速接入**；
+4. 选择 Agent 和模型，点击 **快速接入**。
+
+PrivacyFlow 会在修改用户级配置前验证 Agent 的原生协议。点击
+**恢复原配置**可将配置精确恢复到接入前的状态。内置 Connector 已覆盖
+Codex、Claude Code、DeepSeek Harness 和 nanobot；其他 Agent 可以通过
+PrivacyFlow 的标准本地端点接入。
+
+> [!NOTE]
+> PrivacyFlow 不转换协议。Agent 和上游供应商必须支持相同的格式：
+> Chat Completions、Responses 或 Anthropic Messages。
+
+手动端点、快照行为和旧 APG 状态迁移请参阅[详细接入与迁移](#detailed-setup-and-migration)。
 
 ## 为什么需要 PrivacyFlow？
 
@@ -109,44 +142,15 @@ and use key sk-example-not-a-real-key.
 
 这份契约只覆盖受支持的 JSON/SSE 文本字段。为避免破坏协议，`image_url`、`file_data`、音频、图片块等不透明多模态字段以及协议标识符会原样通过。因此 PrivacyFlow 目前不是覆盖整个请求或多模态数据的完整 DLP。
 
-<a id="quick-start"></a>
+<a id="detailed-setup-and-migration"></a>
 
-## ⚡ 快速开始
-
-> **最快路径：一键接入 Agent。** PrivacyFlow 启动并启用上游配置后，打开 WebUI 的
-> **Agent 快速接入**，选择模型并点击 **快速接入**。PrivacyFlow 会自动检测已经安装的
-> Codex、Claude Code、DeepSeek Harness 或 nanobot，预检原生协议并写入用户级配置，
-> 无需手动复制 endpoint 或 API Key；之后可随时点击 **恢复原配置** 撤销接入。
-
-### 1. 安装
-
-要求：macOS、Linux 或 Windows，以及 Python 3.11 或更高版本。
-
-```bash
-git clone https://github.com/HKUDS/PrivacyFlow.git
-cd PrivacyFlow
-
-python3 -m venv .venv
-. .venv/bin/activate
-python -m pip install -e .
-```
+## 🔧 详细接入与迁移
 
 在 Windows PowerShell 中，请使用 `.venv\Scripts\Activate.ps1` 激活环境。
+首次启动会创建 `.privacyflow/launcher.json`、随机本地 Agent API Key 和签名密钥，
+并在 `http://127.0.0.1:8765/ui/` 提供仅限 loopback 的 WebUI。
 
-### 2. 启动 PrivacyFlow
-
-```bash
-privacyflow
-```
-
-首次启动会创建 `.privacyflow/launcher.json`、随机本地 Agent API Key 和签名密钥。PrivacyFlow 会打印 loopback WebUI 地址：
-
-```text
-PrivacyFlow
-WebUI: http://127.0.0.1:8765/ui/
-```
-
-### 3. 连接上游模型
+### 连接上游模型
 
 打开 WebUI，然后：
 
@@ -158,7 +162,7 @@ WebUI: http://127.0.0.1:8765/ui/
 在支持文件权限的系统中，供应商密钥会以 `0600` 权限写入本地启动配置；管理 API 永远不会返回供应商密钥。
 每个连接默认开放 Chat Completions、Responses 和 Anthropic Messages 三种入口。PrivacyFlow 根据收到请求的本地端点选择匹配的原生上游端点，不会在格式之间转换；如果供应商不支持该格式，PrivacyFlow 会返回实际上游错误。
 
-### 4. 将 Agent 接入 PrivacyFlow
+### 将 Agent 接入 PrivacyFlow
 
 WebUI 的 **Agent 快速接入**页面可自动配置已经安装的 Codex、Claude Code、DeepSeek Harness 和 nanobot。选择模型后，PrivacyFlow 会重新读取上游模型目录，并用该 Agent 的原生协议进行真实测试；只有测试成功才会写入用户级配置。DeepSeek Harness 使用 endpoint 配置，不安装原生插件。
 

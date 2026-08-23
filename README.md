@@ -23,7 +23,7 @@
 </p>
 
 <p align="center">
-  <a href="#-quick-start">Quick Start</a> ·
+  <a href="#quick-start">Quick Start</a> ·
   <a href="#-how-it-works">How It Works</a> ·
   <a href="#-supported-api-formats">API Formats</a> ·
   <a href="#-security-boundary">Security</a> ·
@@ -31,8 +31,43 @@
 </p>
 
 <p align="center">
-  <img src="docs/privacyflow-architecture.png" width="100%" alt="PrivacyFlow architecture: sensitive values are replaced locally before cloud upload and restored in conversations and tool-use arguments so the Agent keeps working normally">
+  <img src="docs/privacyflow-architecture.png" width="100%" alt="PrivacyFlow works with any Agent, replacing sensitive values locally before cloud upload and restoring them in conversations and tool-use arguments">
 </p>
+
+<a id="quick-start"></a>
+
+## ⚡ Quick Start
+
+Requires Python 3.11 or newer.
+
+```bash
+git clone https://github.com/HKUDS/PrivacyFlow.git
+cd PrivacyFlow
+python3 -m venv .venv
+. .venv/bin/activate
+python -m pip install -e .
+privacyflow
+```
+
+Then open [http://127.0.0.1:8765/ui/](http://127.0.0.1:8765/ui/) and:
+
+1. add and enable an upstream provider;
+2. turn on the PrivacyFlow master switch;
+3. open **Agent quick connect**;
+4. choose an Agent and model, then click **Quick connect**.
+
+PrivacyFlow validates the Agent's native protocol before changing its user-level
+configuration. **Restore previous configuration** returns the configuration to
+its exact pre-connection state. The built-in connectors cover Codex, Claude Code,
+DeepSeek Harness, and nanobot; other Agents can connect through PrivacyFlow's
+standard local endpoints.
+
+> [!NOTE]
+> PrivacyFlow does not convert protocols. The Agent and upstream provider must
+> support the same format: Chat Completions, Responses, or Anthropic Messages.
+
+See [detailed setup and migration](#detailed-setup-and-migration) for manual
+endpoints, snapshot behavior, and legacy APG migration.
 
 ## Why PrivacyFlow?
 
@@ -171,46 +206,16 @@ image blocks are deliberately passed through unchanged to avoid corrupting the
 wire format. PrivacyFlow therefore does not claim complete request-wide or multimodal
 data-loss prevention.
 
-## ⚡ Quick Start
+<a id="detailed-setup-and-migration"></a>
 
-> **Fast path: connect your Agent in one click.** Once PrivacyFlow is running and an
-> upstream is enabled, open **Agent quick connect**, choose a model, and click
-> **Quick connect**. PrivacyFlow detects your installed Codex, Claude Code, DeepSeek
-> Harness, or nanobot, validates its native protocol, and writes the user-level
-> configuration for you—no manual endpoint or key copying. The change can be
-> undone at any time with **Restore previous configuration**.
-
-### 1. Install
-
-Requirements: Python 3.11 or newer on macOS, Linux, or Windows.
-
-```bash
-git clone https://github.com/HKUDS/PrivacyFlow.git
-cd PrivacyFlow
-
-python3 -m venv .venv
-. .venv/bin/activate
-python -m pip install -e .
-```
+## 🔧 Detailed setup and migration
 
 On Windows PowerShell, activate the environment with
-`.venv\Scripts\Activate.ps1`.
+`.venv\Scripts\Activate.ps1`. The first start creates
+`.privacyflow/launcher.json`, a random local Agent API key, and a signing secret.
+PrivacyFlow then serves its loopback WebUI at `http://127.0.0.1:8765/ui/`.
 
-### 2. Start PrivacyFlow
-
-```bash
-privacyflow
-```
-
-The first start creates `.privacyflow/launcher.json`, a random local Agent API key, and
-a signing secret. PrivacyFlow prints its loopback WebUI:
-
-```text
-PrivacyFlow
-WebUI: http://127.0.0.1:8765/ui/
-```
-
-### 3. Connect an upstream
+### Connect an upstream
 
 Open the WebUI and:
 
@@ -226,7 +231,7 @@ entrypoints by default. PrivacyFlow selects the matching native upstream route f
 incoming endpoint and never converts between formats. If the provider does not
 support that format, PrivacyFlow returns the actual upstream error.
 
-### 4. Connect an Agent to PrivacyFlow
+### Connect an Agent to PrivacyFlow
 
 The WebUI's **Agent quick connect** view configures installed Codex, Claude Code,
 DeepSeek Harness, and nanobot user-level instances. PrivacyFlow refreshes the upstream
