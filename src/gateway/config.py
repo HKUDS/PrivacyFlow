@@ -36,6 +36,9 @@ class GatewayConfig:
     bind_port: int = 8765
     database_path: str = ".privacyflow/state.sqlite3"
     audit_log_path: str = ".privacyflow/audit.jsonl"
+    audit_log_max_bytes: int = 16 * 1024 * 1024
+    audit_log_backups: int = 5
+    history_retention_seconds: int = 30 * 86_400
     signing_secret: str = "dev-only-change-me"
     local_api_keys: set[str] = field(default_factory=lambda: {"pf-local"})
     primary_local_api_key: str = ""
@@ -44,6 +47,7 @@ class GatewayConfig:
     strict_mode: bool = True
     pii_mode: str = "pseudonymize"
     gc_interval_seconds: float = 60.0
+    detectors_config: dict[str, Any] = field(default_factory=dict)
     upstream: UpstreamConfig = field(default_factory=UpstreamConfig)
 
 
@@ -105,14 +109,8 @@ def load_config(path: str | None = None) -> GatewayConfig:
     raw = _load_yaml(config_path) if config_path else {}
     strict_mode = _env_bool("STRICT", raw.get("strict_mode", True))
     raw = _expand_env_refs(raw, strict_mode)
-    if "detectors" in raw:
-        warnings.warn(
-            "The detectors configuration section is no longer supported and is ignored; "
-            "PrivacyFlow always uses its fixed built-in protection pipeline.",
-            FutureWarning,
-            stacklevel=2,
-        )
     upstream_raw = raw.get("upstream", {})
+    detectors_raw = dict(raw.get("detectors", {}))
     upstream_protocol = canonical_upstream_protocol(
         get_env("UPSTREAM_PROTOCOL", default=upstream_raw.get("protocol", OPENAI_CHAT_COMPLETIONS))
     )
@@ -178,6 +176,24 @@ def load_config(path: str | None = None) -> GatewayConfig:
         bind_port=int(get_env("PORT", default=raw.get("bind_port", 8765))),
         database_path=str(get_env("DATABASE_PATH", default=raw.get("database_path", ".privacyflow/state.sqlite3"))),
         audit_log_path=str(get_env("AUDIT_LOG_PATH", default=raw.get("audit_log_path", ".privacyflow/audit.jsonl"))),
+        audit_log_max_bytes=_bounded_int(
+            get_env("AUDIT_LOG_MAX_BYTES", default=raw.get("audit_log_max_bytes", 16 * 1024 * 1024)),
+            name="audit_log_max_bytes",
+            minimum=64 * 1024,
+            maximum=1024 * 1024 * 1024,
+        ),
+        audit_log_backups=_bounded_int(
+            get_env("AUDIT_LOG_BACKUPS", default=raw.get("audit_log_backups", 5)),
+            name="audit_log_backups",
+            minimum=1,
+            maximum=20,
+        ),
+        history_retention_seconds=_bounded_int(
+            get_env("HISTORY_RETENTION_SECONDS", default=raw.get("history_retention_seconds", 30 * 86_400)),
+            name="history_retention_seconds",
+            minimum=3600,
+            maximum=365 * 86_400,
+        ),
         signing_secret=signing_secret,
         local_api_keys=local_api_keys,
         primary_local_api_key=primary_local_api_key,
@@ -186,6 +202,7 @@ def load_config(path: str | None = None) -> GatewayConfig:
         strict_mode=strict_mode,
         pii_mode=pii_mode,
         gc_interval_seconds=float(get_env("GC_INTERVAL_SECONDS", default=raw.get("gc_interval_seconds", 60.0))),
+        detectors_config=detectors_raw,
         upstream=upstream,
     )
 
@@ -195,6 +212,18 @@ def _warn_or_raise(strict: bool, msg: str, reason_code: str) -> None:
     if strict:
         raise RuntimeError(f"{msg} ({reason_code}; legacy {legacy_code(reason_code)})")
     warnings.warn(msg, RuntimeWarning, stacklevel=2)
+
+
+def _bounded_int(value: Any, *, name: str, minimum: int, maximum: int) -> int:
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError) as exc:
+        raise RuntimeError(f"{name} must be an integer. (PF_CONFIG_VALUE_INVALID)") from exc
+    if parsed < minimum or parsed > maximum:
+        raise RuntimeError(
+            f"{name} must be between {minimum} and {maximum}. (PF_CONFIG_VALUE_INVALID)"
+        )
+    return parsed
 
 
 def _env_bool(name: str, default: bool) -> bool:

@@ -6,50 +6,55 @@ PrivacyFlow is a protocol-aware local reverse proxy for OpenAI Chat Completions,
 
 Mappings are not plain dictionaries. A placeholder may appear minutes or days after it was issued, in a different operation, or inside a tool argument. The gateway must know whether it belongs to the active session and workspace, whether it expired, whether it was tombstoned, and which recognized response-field class is being processed. SQLite gives the MVP durable local state with WAL mode, normal sync, and busy timeout. Active raw mapping values are stored as local plaintext; mode `0600` filesystem permissions, OS-account isolation, and encrypted host storage are the confidentiality boundary for the database at rest.
 
-Mapping expiry is a local administrator policy rather than a fixed detector-specific TTL. The default policy does not automatically expire active mappings. An administrator may enable idle-time clearing from the WebUI and choose a duration from one minute to 365 days; each valid sighting or materialization refreshes the idle deadline. Enabling the policy starts a fresh deadline for every active mapping, while disabling it removes pending deadlines. Already tombstoned values are never restored. The policy and revision are stored in SQLite, and background GC only clears mappings that carry an active deadline.
+Mapping expiry is a local administrator policy rather than a fixed detector-specific TTL. The default policy does not automatically expire active mappings. An administrator may enable idle-time clearing from the WebUI and choose a duration from one minute to 365 days; each valid sighting or materialization refreshes the idle deadline. Enabling the policy starts a fresh deadline for every active mapping, while disabling it removes pending deadlines. Already tombstoned values are never restored. The policy and revision are stored in SQLite; background GC tombstones active mappings only when they carry an expired deadline, then removes non-secret tombstone metadata after the configured history-retention period.
 
 ## Local Management Control Plane
 
-The WebUI and `/api/admin/*` routes form a separate local control plane with no application-layer authentication. Its security boundary is the default loopback bind, so it must not be exposed to an untrusted network. Ordinary summaries never serialize mapping values, fingerprints, internal handles, complete PF placeholders, provider credentials, or full session ids. Operation lists and request details use a stable HMAC-derived `pv_...` administration id to correlate an upstream replacement with a local materialization. Operation and detail endpoints may reconstruct the exact signed placeholder from operation metadata and, only when explicitly requested, read an original value from a mapping that is still active. They do not create an audit copy of that value; expiry or revocation makes it unavailable.
+The WebUI and `/api/admin/*` routes form a separate local control plane with no application-layer authentication. They are registered only when PrivacyFlow binds to a loopback address; every request also requires a loopback socket peer and loopback `Host`, and a supplied browser `Origin` must be loopback on the same port. This prevents a non-loopback bind or DNS rebinding from exposing the management plane. Ordinary summaries never serialize mapping values, fingerprints, internal handles, complete PF placeholders, provider credentials, or full session ids. Operation lists and request details use a stable HMAC-derived `pv_...` administration id to correlate an upstream replacement with a local materialization. Operation and detail endpoints may reconstruct the exact signed placeholder from operation metadata and, only when explicitly requested, read an original value from a mapping that is still active. They do not create an audit copy of that value; expiry or revocation makes it unavailable.
 
-Detailed operations are stored in SQLite separately from the append-only safe JSONL. Each row contains direction, mapping reference, representation metadata, detector/action or tool/sink result, and an occurrence count, but no raw value or complete signed placeholder. Identical operations within one request are merged. At most 1,000 distinct combinations are retained per request, with omitted occurrences counted separately. The JSONL and `/api/admin/audit` interface remain capability-free; temporary raw reads add a safe `view_audit_raw_values` or `view_protected_raw_values` event without the viewed content.
+Detailed operations are stored in SQLite separately from the safe JSONL. Each row contains direction, mapping reference, representation metadata, detector/action or tool/sink result, and an occurrence count, but no raw value or complete signed placeholder. Identical operations within one request are merged. At most 1,000 distinct combinations are retained per request, with omitted occurrences counted separately. JSONL files rotate at 16 MiB with five mode-`0600` backups by default; SQLite operation rows and mapping tombstones are removed after 30 days by background GC. These bounds are configurable. The JSONL and `/api/admin/audit` interface remain capability-free; temporary raw reads add a safe `view_audit_raw_values` or `view_protected_raw_values` event without the viewed content.
 
-PrivacyFlow uses one fixed built-in detection pipeline for traffic rather than a
-user-editable detector registry. The pipeline combines deterministic credential,
-personal-information, and local-path rules with the fixed placeholder-integrity
-and streaming-boundary safety layers. The WebUI and management API expose no
-detector presets, custom configurations, module editing or ordering, dry runs,
-local-model attachments, or per-detector failure-mode settings. The global
-PrivacyFlow switch controls whether this pipeline protects traffic, not its
-composition.
+Detector management uses revisioned configurations rather than editing the primary
+YAML file. Built-in and YAML deployment templates are read-only; user
+configurations contain an ordered list of typed modules and are stored in a
+mode-`0600` JSON file beside the mapping database. Every enabled module runs in
+order and findings are merged after the flow completes. Saving an active
+configuration validates and builds a replacement before persistence and an atomic
+`DetectorManager` swap, so a failed build leaves the previous runtime active.
+User-authored and deployment-authored regex modules use a timeout-capable engine
+with a bounded default match time. Matching is not delegated to an uncancellable
+executor thread; a timeout follows the module's fail-open/fail-closed policy
+without leaving a worker that can block shutdown.
 
-`detector-control.json` is retained as internal fixed-pipeline state and the
-global protection toggle. If stale or malformed legacy editor data is present at
-startup, it is ignored and the fixed built-in pipeline is used. An explicit
-`privacyflow migrate` rewrites the copied legacy detector state to the normalized
-fixed form while leaving the original `.apg/` state untouched in a read-only
-`.apg.legacy/<timestamp>/` backup.
+The explicit `privacyflow migrate` command copies valid legacy detector state,
+including custom configurations, into `.privacyflow/` and upgrades that copied
+state into the PF namespace. It also creates a separate, hash-verified read-only
+backup at `.apg.legacy/<timestamp>/`. The original `.apg/` tree remains untouched
+and available until the operator chooses to remove it; migration does not move,
+edit, or delete the original state. Malformed or unsupported state is ignored at
+startup and safely falls back to built-in defaults rather than making the gateway
+unavailable.
 
 ## Hierarchical Sensitive Information Detection
 
-The fixed detector layer is local-first and layered. Request and response walkers
+The detector layer is local-first and layered. Request and response walkers
 recursively inspect supported string values and classify them as prompt/response
 content, tool schema, or protocol metadata. Protocol identifiers and opaque
 multimodal containers or fields (`image_url`, `file_data`, audio, image, screenshot,
 and related blocks) bypass scanning to preserve the wire contract. Deterministic
-built-in rules inspect the remaining strings; Local Model Management does not add
-detectors to traffic. Per-field diagnostics are aggregated by the fixed pipeline.
+built-in rules inspect the remaining strings; verified local models can be selected
+by optional local-model modules. Per-field diagnostics are aggregated by the active pipeline.
 Normalization applies NFKC, zero-width removal, bounded URL decoding, bounded HTML
 entity decoding, and bounded escape decoding without treating normalization as a
-replacement for forensic traceability.
+replacement for forensic traceability. Expensive local-model modules are limited
+to content-bearing prompt and response fields.
 
-The fixed built-in rules cover PEM private keys, JWTs, database URLs, bearer
+The built-in rules cover PEM private keys, JWTs, database URLs, bearer
 tokens, `.env` sensitive assignments, provider-like tokens, cookies/session IDs,
 IP-hosted access links, credential-pair passwords, credit cards with Luhn
 validation, emails, phones, PF markers, and high-confidence local paths. Local
-model artifacts can still be inspected, prepared, and validated through Local
-Model Management, but users cannot attach them to or replace the fixed traffic
-pipeline through the WebUI.
+model artifacts can be inspected, prepared, validated, and selected by an optional
+local-model detector module through the WebUI.
 
 All detector outputs are normalized into `Finding` records. The aggregator merges overlapping evidence, raises risk when multiple weak signals agree, and keeps hard deterministic matches critical. Risk and detector `suggested_action` values are evidence and audit metadata. The current `PolicyEngine` replaces every detected secret, including findings marked `block`; it does not reject the complete upstream request on that action.
 
@@ -89,7 +94,7 @@ This is a defense-in-depth layer. It cannot be relied on alone — the downlink 
 
 ## Downlink Validation And Restoration
 
-`sanitize_text` and `scan_local_text` (used by `ResponseScanner` for non-streaming and `scan_local_stream` for streaming) take a `fold_apg_markers: bool = True` flag. When enabled and `scope="response"`:
+`sanitize_text` and `scan_local_text` (used by `ResponseScanner` for non-streaming and `scan_local_stream` for streaming) take a `fold_apg_markers: bool = True` flag. The name is a migration-release compatibility alias: when enabled and `scope="response"`, both PF and legacy APG markers are handled:
 
 - Exact signed placeholders that validate for the active session and `local_user` sink are protected during scanning and restored to their mapped value afterward.
 - Other `PF_MARKER` detections (forged, invalid, cross-session, expired, or revoked markers) are replaced with the fixed phrase `PrivacyFlow-managed protected value`. Legacy APG marker names are accepted during migration.
@@ -103,7 +108,7 @@ Recognized Chat `tool_calls[].function.arguments`, Anthropic `content[].tool_use
 
 Network chunks, named SSE events, model deltas, and logical content blocks are different boundaries. PrivacyFlow incrementally decodes UTF-8 and SSE framing first, then maintains independent state for each Chat choice, Responses output/content item, Anthropic content block, and tool call. A native Anthropic `/v1/messages` stream remains Anthropic SSE: PrivacyFlow scans text deltas in place, buffers `input_json_delta` fragments until they form a valid tool-input object, materializes protected values locally, and re-emits the same Anthropic event families.
 
-The default Balanced guard retains a 256-character tail and scans the complete pending text before releasing a safe prefix. It moves the release point backward when a detector finding, PF marker, known session secret, or path alias crosses the boundary. Incomplete markers, token-like values, environment assignments, and PEM blocks remain pending. A candidate exceeding 4096 characters is folded once and discarded through its terminator. If an active secret is longer than that, or the fixed detector cannot safely operate incrementally, PrivacyFlow buffers the complete text block up to 1 MiB and then fails closed.
+The default Balanced guard retains a 256-character tail and scans the complete pending text before releasing a safe prefix. It moves the release point backward when a detector finding, PF marker, known session secret, or path alias crosses the boundary. Incomplete markers, token-like values, environment assignments, and PEM blocks remain pending. A candidate exceeding 4096 characters is folded once and discarded through its terminator. If an active secret is longer than that, or the active flow cannot safely operate incrementally (`stream_safe` is false), PrivacyFlow buffers the complete text block up to 1 MiB and then fails closed.
 
 Tool arguments are not treated as visible prose. Chat and Anthropic streaming paths buffer argument fragments, validate and re-serialize the complete JSON object, and emit materialized arguments before the protocol's finish event. Responses buffers its function/custom-tool argument text and also scans output text, reasoning summaries, refusals, output-item snapshots, and the final completed response. Malformed UTF-8 or SSE JSON produces a sanitized protocol-native error; malformed tool JSON is rejected on paths that require JSON decoding. Completion audits do not record raw values or handles.
 

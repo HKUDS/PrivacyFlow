@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="assets/branding/privacyflow-icon.svg" width="128" alt="PrivacyFlow 盾牌标志">
+  <img src="assets/branding/privacyflow-icon.png" width="128" alt="PrivacyFlow 机器人盾牌标志">
 </p>
 
 <h1 align="center">PrivacyFlow</h1>
@@ -28,7 +28,7 @@
 </p>
 
 <p align="center">
-  <img src="docs/privacyflow-architecture.svg" width="100%" alt="PrivacyFlow 架构：敏感值在上传云端前于本地被替换，并在会话和工具调用参数中还原，让 Agent 保持正常工作">
+  <img src="docs/privacyflow-architecture.png" width="100%" alt="PrivacyFlow 架构：敏感值在上传云端前于本地被替换，并在会话和工具调用参数中还原，让 Agent 保持正常工作">
 </p>
 
 ## 为什么需要 PrivacyFlow？
@@ -69,14 +69,14 @@ PrivacyFlow 把检测到的原值留在本地，只向模型提供稳定的占�
 | --- | --- | --- |
 | 检测文本字段中的凭据、个人信息和本地路径 | 使用签名占位符和稳定路径别名替换检测结果 | 在客户端可见答案和识别出的结构化工具参数中还原通过验证的值 |
 
-PrivacyFlow 对经过代理的流量使用一条固定的内置检测流水线：确定性的凭据、个人信息和本地路径规则，加上固定的占位符与流式安全层。WebUI 和管理 API 不再提供检测器预设、自定义配置、模块编辑或排序、试跑，或逐个检测器的失败模式设置。本地模型管理仍可用于准备模型文件，但不会把模型挂接到这条流水线中。
+PrivacyFlow 内置安全的检测流水线，同时保留完整的本地检测器配置能力。你可以在 WebUI 中复制预设、调整模块顺序与开关、添加确定性规则或本地模型检测器、配置 fail-open/fail-close、试跑已保存配置，并在无需重启网关的情况下切换生效配置。占位符完整性和流式边界保护始终固定开启，不能被自定义检测配置关闭。
 
 ### PrivacyFlow 有什么不同
 
 - **无感保护**——模型使用稳定的占位符继续工作，本地 Agent 客户端无需手动解码即可获得通过验证的原值。
-- **本地控制平面**——供应商凭据在本地配置，只用于上游鉴权而不会返回给 Agent；受保护值映射、固定检测器状态、审计记录和可选模型保存在本机。
+- **本地控制平面**——供应商凭据在本地配置，只用于上游鉴权而不会返回给 Agent；受保护值映射、检测器配置、审计记录和可选模型保存在本机。
 - **防止伪造占位符**——还原前会验证签名、会话、工作区、映射状态、有效期、撤销状态和响应字段类别。
-- **行为可检查**——可以查看受保护映射，并在不把原值写入日志的前提下审计每次替换与还原。
+- **行为可检查**——可以试跑检测器配置、查看受保护映射，并在不把原值写入日志的前提下审计每次替换与还原。
 
 <a id="how-it-works"></a>
 
@@ -173,11 +173,11 @@ WebUI 的 **Agent 快速接入**页面可自动配置已经安装的 Codex、Cla
 | Anthropic Messages | `http://127.0.0.1:8765` |
 
 > [!NOTE]
-> PrivacyFlow 不会在 Chat Completions、Responses 和 Anthropic Messages 之间转换协议，Agent 与上游必须支持相同的请求格式。快速接入只管理模型 endpoint、模型名和本地凭据，不扩大 PrivacyFlow 的安全边界：工具权限、工具执行和本地会话日志仍由 Agent 负责。
+> PrivacyFlow 不会在 Chat Completions、Responses 和 Anthropic Messages 之间转换协议，Agent 与上游必须支持相同的请求格式。若要在不同 Agent 和模型供应商之间管理和快速切换连接配置，可配合使用 [CC Switch](https://github.com/farion1231/cc-switch)。CC Switch 管理配置，并不是 PrivacyFlow 的协议转换层。快速接入只管理模型 endpoint、模型名和本地凭据，不扩大 PrivacyFlow 的安全边界：工具权限、工具执行和本地会话日志仍由 Agent 负责。
 
 在开发检出目录中可以使用仓库根目录下的 `./privacyflow` 包装脚本。旧的 `apg` 命令在迁移版本中保留为兼容别名。
 
-已有 `.apg/` 状态的安装请显式运行 `privacyflow migrate`。该命令会把启动器、数据库、审计日志、检测器状态、本地模型状态和 Agent Connector 事务复制到 `.privacyflow/`，校验后将过时的检测器编辑器状态规范化为固定的内置流水线。原始 `.apg/` 目录（包括未改动的旧检测器文件）会保留在只读的 `.apg.legacy/<timestamp>/` 安全备份中，不会静默修改 shell 配置。迁移版本仍可读取 `APG_*`、`X-APG-*` 和 `<APG:v1:...>`，但 `PF_*`、`X-PF-*` 和 `<PF:v1:...>` 是规范写法。
+已有 `.apg/` 状态的安装请显式运行 `privacyflow migrate`。该命令会把启动器、数据库、审计日志、检测器状态、自定义检测配置、本地模型状态和 Agent Connector 事务复制到 `.privacyflow/`，校验副本后完成命名空间升级；正常配置会完整保留，损坏或不支持的检测器状态会在启动时安全回退到内置默认值。同时，迁移会在 `.apg.legacy/<timestamp>/` 创建一个与原始状态分开的、经过哈希校验并设为只读的备份。原始 `.apg/` 目录始终原地保留，不会被移动、修改或删除；请在检查迁移后的状态并自行决定后再删除它。迁移不会静默修改 shell 配置。迁移版本仍可读取 `APG_*`、`X-APG-*` 和 `<APG:v1:...>`，但 `PF_*`、`X-PF-*` 和 `<PF:v1:...>` 是规范写法。旧 APG 命令、环境变量、目录、Header、路由、错误码和占位符兼容将在下一个大版本移除。
 
 <a id="api-formats"></a>
 
@@ -197,11 +197,11 @@ PrivacyFlow 始终按请求原有的 API 格式转发，不会将其转换成另
 
 ### 保护流水线
 
-- 一条覆盖凭据、API Key、个人信息、本地路径和稳定工作区别名的固定内置流水线；
+- 覆盖凭据、API Key、个人信息、本地路径、熵值检测和可选本地模型的内置及自定义有序流水线；
 - 会话绑定的签名占位符和带生命周期的映射；
 - 对流式传输安全的替换与还原；
 - 结构化工具参数还原；
-- 对检测器和占位符失败的固定处理。
+- 模块级 fail-open/fail-close，同时保持占位符完整性保护固定开启。
 
 风险等级仅用于审计元数据，不会改变受保护数据的替换方式。实际强制执行发生在策略、映射、占位符和还原层，而不是由模型置信度决定。检测结果中的 `block` 当前仍会像其他 Secret 一样被替换，不会拒绝整个上游请求。
 
@@ -209,9 +209,10 @@ PrivacyFlow 始终按请求原有的 API 格式转发，不会将其转换成另
 
 - 一键 PrivacyFlow 总开关；
 - 多个具名上游配置；
+- 每个上游配置默认暴露全部三种原生 API 入口；
 - 随机本地 Agent API Key 生成；
 - 中英文双语 WebUI；
-- 一条带全局 PrivacyFlow 开关的固定内置保护流水线；
+- 检测器预设、排序、启停、复制、试跑和高级设置；
 - 受保护值查看、撤销和保留策略；
 - 替换与还原审计视图；
 - 支持桌面与移动端的响应式管理界面。
@@ -276,6 +277,9 @@ export PF_PORT=8765
 export PF_ADMIN_ENABLED=true
 export PF_PII_MODE='pseudonymize'  # pseudonymize、redact 或 allow
 export PF_GC_INTERVAL_SECONDS=60
+export PF_AUDIT_LOG_MAX_BYTES=16777216
+export PF_AUDIT_LOG_BACKUPS=5
+export PF_HISTORY_RETENTION_SECONDS=2592000
 ```
 
 策略配置请参考 [`config/example_policy.yaml`](config/example_policy.yaml)。
@@ -288,8 +292,9 @@ export PF_GC_INTERVAL_SECONDS=60
 | --- | --- |
 | `launcher.json` | 具名上游配置、供应商 Key、本地 Agent Key |
 | `state.sqlite3` | 受保护值映射和操作记录 |
-| `audit.jsonl` | 仅追加的脱敏审计事件 |
-| `detector-control.json` | 固定流水线的内部状态和全局保护开关；过时的旧编辑器数据会被规范化或忽略 |
+| `audit.jsonl` | 脱敏审计事件；默认达到 16 MiB 后轮转，并保留 5 份私有备份 |
+| `detector-control.json` | 带版本的检测器配置、模板模块开关和全局保护开关 |
+| `agent-connections.json` | Agent 快连快照、独立 Connector Key 和恢复事务 |
 | `local-models.json` | 本地模型目录和验证状态 |
 | `models/` | PrivacyFlow 管理的 Hugging Face 缓存 |
 | `runtimes/` | 隔离模型运行环境 |

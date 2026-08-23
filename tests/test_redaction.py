@@ -21,6 +21,18 @@ def test_api_key_redacted_before_upstream(redactor) -> None:
     assert events[0]["subtype"] == "api_key"
 
 
+def test_api_key_after_normalization_window_is_redacted_before_upstream(redactor) -> None:
+    raw = "sk-proj-abcdefghijklmnopqrstuvwxyz123456"
+    body = {"messages": [{"content": "x" * 200_001 + " " + raw}]}
+
+    sanitized, events = redactor.sanitize_json(body, "sess_long")
+
+    content = sanitized["messages"][0]["content"]
+    assert raw not in content
+    assert "<APG:v1:secret:" in content
+    assert any(event["subtype"] == "api_key" for event in events)
+
+
 def test_placeholder_is_stable_after_restart_and_request_replay(redactor) -> None:
     raw = "sk-proj-abcdefghijklmnopqrstuvwxyz123456"
     first, _ = redactor.sanitize_text(raw, "sess_stable")

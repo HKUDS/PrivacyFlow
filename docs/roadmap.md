@@ -3,8 +3,8 @@
 PrivacyFlow currently provides native Chat Completions, Responses, and Anthropic
 Messages proxying; stateful streaming; signed placeholders; path aliases;
 response-field-classified tool-argument materialization; retention and tombstones;
-a fixed built-in detection pipeline; local-model management; safe audit views; and
-a loopback-only WebUI.
+revisioned detector configurations with built-in and deployment templates;
+local-model management; safe audit views; and a loopback-only WebUI.
 
 Future work is intentionally limited to the privacy proxy boundary:
 

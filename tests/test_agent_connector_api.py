@@ -192,7 +192,7 @@ def test_connector_mutations_require_loopback_bind(tmp_path: Path, monkeypatch: 
     ) as client:
         response = client.post("/api/admin/agent-connectors/codex/connect", json={"model": "model-a"})
     assert response.status_code == 403
-    assert response.json()["detail"]["code"] == "CONNECTOR_LOCAL_ONLY"
+    assert response.json()["detail"]["code"] == "PF_ADMIN_LOCAL_ONLY"
 
 
 def test_dsh_rejects_empty_model_catalog_without_writing(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

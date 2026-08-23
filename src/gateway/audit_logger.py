@@ -13,9 +13,18 @@ if TYPE_CHECKING:
 
 
 class AuditLogger:
-    def __init__(self, path: str, operation_store: MappingStore | None = None) -> None:
+    def __init__(
+        self,
+        path: str,
+        operation_store: MappingStore | None = None,
+        *,
+        max_bytes: int = 16 * 1024 * 1024,
+        backup_count: int = 5,
+    ) -> None:
         self.path = Path(path)
         self.operation_store = operation_store
+        self.max_bytes = max(1, int(max_bytes))
+        self.backup_count = max(1, int(backup_count))
         self._lock = threading.RLock()
         self.path.parent.mkdir(parents=True, exist_ok=True)
         if self.path.exists():
@@ -44,13 +53,43 @@ class AuditLogger:
         safe = scrub_audit_value(source)
         if operation_error:
             safe["audit_operation_capture_error"] = True
+        encoded = json.dumps(safe, sort_keys=True) + "\n"
         with self._lock:
+            self._rotate_if_needed(len(encoded.encode("utf-8")))
             with self.path.open("a", encoding="utf-8") as f:
-                f.write(json.dumps(safe, sort_keys=True) + "\n")
+                f.write(encoded)
             try:
                 os.chmod(self.path, 0o600)
             except OSError:
                 pass
+
+    def _rotate_if_needed(self, incoming_bytes: int) -> None:
+        try:
+            current_size = self.path.stat().st_size
+        except FileNotFoundError:
+            return
+        except OSError:
+            return
+        if current_size == 0 or current_size + incoming_bytes <= self.max_bytes:
+            return
+        oldest = self.path.with_name(f"{self.path.name}.{self.backup_count}")
+        try:
+            if oldest.exists():
+                oldest.unlink()
+            for index in range(self.backup_count - 1, 0, -1):
+                source = self.path.with_name(f"{self.path.name}.{index}")
+                if source.exists():
+                    source.replace(self.path.with_name(f"{self.path.name}.{index + 1}"))
+            self.path.replace(self.path.with_name(f"{self.path.name}.1"))
+            for index in range(1, self.backup_count + 1):
+                try:
+                    os.chmod(self.path.with_name(f"{self.path.name}.{index}"), 0o600)
+                except OSError:
+                    pass
+        except OSError:
+            # Logging must remain best-effort; a failed rotation must not take
+            # down the proxy. The next event retries the bounded rotation.
+            return
 
 
 def scrub_audit_value(value: Any, depth: int = 0) -> Any:

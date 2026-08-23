@@ -3,6 +3,8 @@ from __future__ import annotations
 import importlib
 import time
 from concurrent.futures import ThreadPoolExecutor, TimeoutError
+from collections.abc import Iterator
+from contextvars import ContextVar
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -16,7 +18,7 @@ from gateway.detectors.heuristic.entropy import EntropyContextDetector
 from gateway.detectors.model_adapters import GLiNERDetector, HFTokenClassificationDetector
 from gateway.detectors.normalizer import normalize_with_mapping
 from gateway.detectors.paths import PathDetector
-from gateway.detectors.rules import RuleBasedDetector, builtin_rules
+from gateway.detectors.rules import RuleBasedDetector, builtin_rules, rules_are_trusted_builtins
 from gateway.detectors.scoring import FindingAggregator
 from gateway.placeholder_parser import span_is_within_placeholder_format_example
 
@@ -29,6 +31,22 @@ BUILTIN_EXTERNALS: dict[str, type[Detector]] = {
 
 NON_CONTENT_SOURCE_KINDS = {"tool_schema", "protocol_metadata"}
 MODEL_MODULE_TYPES = {"local_model", "hf_token_classification", "gliner", "model_injected"}
+
+# Normalization keeps a per-character source mapping.  Keep each mapping
+# bounded while giving detectors enough context to match values that straddle
+# a window boundary.  The overlap is deliberately fixed rather than growing
+# with the input, so a large source block cannot make normalization unbounded.
+NORMALIZATION_CHUNK_SIZE = 200_000
+NORMALIZATION_CHUNK_OVERLAP = 4_096
+
+_DIAGNOSTIC_STATUS_PRIORITY = {
+    "disabled": 0,
+    "skipped": 1,
+    "ok": 2,
+    "unavailable": 3,
+    "timeout": 4,
+    "error": 5,
+}
 
 
 @dataclass(frozen=True)
@@ -86,10 +104,19 @@ class DetectorFlow:
         self.preset = preset
         self.flow_timeout_ms = flow_timeout_ms
         self.aggregator = aggregator or FindingAggregator()
-        self.last_diagnostics: list[dict[str, Any]] = []
+        self._diagnostics: ContextVar[tuple[dict[str, Any], ...]] = ContextVar(
+            f"pf_flow_diagnostics_{id(self)}",
+            default=(),
+        )
+        # One worker per module bounds timed-out background work. A Python
+        # thread cannot be force-cancelled, so reusing a single worker prevents
+        # repeated timeouts from creating an unbounded number of threads.
+        self._module_executors = {
+            module.id: ThreadPoolExecutor(max_workers=1, thread_name_prefix=f"pf-detector-{module.id}")
+            for module in modules
+        }
 
     def scan_block(self, block: SourceBlock) -> FlowScanResult:
-        normalized = normalize_with_mapping(block.text)
         start = time.perf_counter()
         findings: list[Finding] = []
         diagnostics: list[ModuleDiagnostic] = []
@@ -98,16 +125,104 @@ class DetectorFlow:
             if self.flow_timeout_ms is not None and elapsed_total_ms >= self.flow_timeout_ms:
                 diagnostics.append(ModuleDiagnostic(module.id, module.type, module.enabled, status="timeout", error="flow_timeout"))
                 break
-            module_findings, diagnostic = self._run_module(module, block, normalized)
-            diagnostics.append(diagnostic)
-            findings.extend(module_findings)
+
+            module_diagnostic: ModuleDiagnostic | None = None
+            flow_timed_out = False
+            module_started = time.perf_counter()
+            chunked = len(block.text) > NORMALIZATION_CHUNK_SIZE
+            for chunk_start, chunk_end in _chunk_ranges(len(block.text)):
+                elapsed_total_ms = (time.perf_counter() - start) * 1000
+                if self.flow_timeout_ms is not None and elapsed_total_ms >= self.flow_timeout_ms:
+                    timeout_diagnostic = ModuleDiagnostic(
+                        module.id,
+                        module.type,
+                        module.enabled,
+                        status="timeout",
+                        error="flow_timeout",
+                    )
+                    module_diagnostic = _merge_module_diagnostics(module_diagnostic, timeout_diagnostic)
+                    flow_timed_out = True
+                    break
+                elapsed_module_ms = (time.perf_counter() - module_started) * 1000
+                if module.timeout_ms is not None and elapsed_module_ms >= module.timeout_ms:
+                    module_diagnostic = _merge_module_diagnostics(
+                        module_diagnostic,
+                        ModuleDiagnostic(
+                            module.id,
+                            module.type,
+                            module.enabled,
+                            status="timeout",
+                            error="module_timeout",
+                        ),
+                    )
+                    break
+
+                chunk_block = _source_chunk(block, chunk_start, chunk_end)
+                normalized = normalize_with_mapping(
+                    chunk_block.text,
+                    max_len=len(chunk_block.text),
+                )
+                elapsed_total_ms = (time.perf_counter() - start) * 1000
+                elapsed_module_ms = (time.perf_counter() - module_started) * 1000
+                remaining_flow_ms = (
+                    max(0.0, self.flow_timeout_ms - elapsed_total_ms)
+                    if self.flow_timeout_ms is not None
+                    else None
+                )
+                remaining_module_ms = (
+                    max(0.0, module.timeout_ms - elapsed_module_ms)
+                    if module.timeout_ms is not None
+                    else None
+                )
+                if remaining_flow_ms is not None and (
+                    remaining_module_ms is None or remaining_flow_ms < remaining_module_ms
+                ):
+                    effective_timeout_ms = remaining_flow_ms
+                    timeout_error = "flow_timeout"
+                else:
+                    effective_timeout_ms = remaining_module_ms
+                    timeout_error = "module_timeout"
+                module_findings, diagnostic = self._run_module(
+                    module,
+                    chunk_block,
+                    normalized,
+                    timeout_ms=effective_timeout_ms,
+                    timeout_error=timeout_error,
+                )
+                findings.extend(_rebase_findings(module_findings, chunk_start, chunked=chunked))
+                module_diagnostic = _merge_module_diagnostics(module_diagnostic, diagnostic)
+
+                # Configuration, availability, detector, and timeout failures
+                # are module-level outcomes.  Retrying them for every overlap
+                # window only wastes work and can repeat side effects.
+                if diagnostic.status != "ok":
+                    if diagnostic.error == "flow_timeout":
+                        flow_timed_out = True
+                    break
+
+            if module_diagnostic is not None:
+                diagnostics.append(module_diagnostic)
+            if flow_timed_out:
+                break
         merged = self.aggregator.aggregate(findings)
         elapsed_ms = (time.perf_counter() - start) * 1000
         result = FlowScanResult(merged, diagnostics, elapsed_ms, self.preset)
-        self.last_diagnostics = [diagnostic.to_dict() for diagnostic in diagnostics]
+        self._diagnostics.set(tuple(diagnostic.to_dict() for diagnostic in diagnostics))
         return result
 
-    def _run_module(self, module: FlowModule, block: SourceBlock, normalized: Any) -> tuple[list[Finding], ModuleDiagnostic]:
+    @property
+    def last_diagnostics(self) -> list[dict[str, Any]]:
+        return [dict(item) for item in self._diagnostics.get()]
+
+    def _run_module(
+        self,
+        module: FlowModule,
+        block: SourceBlock,
+        normalized: Any,
+        *,
+        timeout_ms: float | None,
+        timeout_error: str,
+    ) -> tuple[list[Finding], ModuleDiagnostic]:
         start = time.perf_counter()
         if not module.enabled:
             return [], ModuleDiagnostic(module.id, module.type, False, status="disabled")
@@ -121,20 +236,19 @@ class DetectorFlow:
         if module.detector is None:
             return [], ModuleDiagnostic(module.id, module.type, True, status="unavailable", error="module_not_available")
         try:
-            if module.timeout_ms is None:
+            if timeout_ms is None:
                 findings = list(module.detector.detect(block, normalized))
             else:
-                executor = ThreadPoolExecutor(max_workers=1)
+                executor = self._module_executors[module.id]
                 future = executor.submit(lambda: list(module.detector.detect(block, normalized)))
                 try:
-                    findings = future.result(timeout=module.timeout_ms / 1000)
+                    findings = future.result(timeout=max(0.0, timeout_ms) / 1000)
                 except TimeoutError:
-                    executor.shutdown(wait=False, cancel_futures=True)
+                    future.cancel()
+                    if not module.fail_open:
+                        raise
                     elapsed_ms = (time.perf_counter() - start) * 1000
-                    return [], ModuleDiagnostic(module.id, module.type, True, elapsed_ms, status="timeout", error="module_timeout")
-                finally:
-                    if future.done():
-                        executor.shutdown(wait=False)
+                    return [], ModuleDiagnostic(module.id, module.type, True, elapsed_ms, status="timeout", error=timeout_error)
             findings = [
                 finding
                 for finding in findings
@@ -146,6 +260,11 @@ class DetectorFlow:
             ]
             elapsed_ms = (time.perf_counter() - start) * 1000
             return findings, ModuleDiagnostic(module.id, module.type, True, elapsed_ms, len(findings))
+        except TimeoutError:
+            if not module.fail_open:
+                raise
+            elapsed_ms = (time.perf_counter() - start) * 1000
+            return [], ModuleDiagnostic(module.id, module.type, True, elapsed_ms, status="timeout", error="module_timeout")
         except Exception as exc:
             if not module.fail_open:
                 raise
@@ -153,6 +272,105 @@ class DetectorFlow:
             if module.type in {"local_model", "hf_token_classification", "gliner"} and isinstance(exc, (ImportError, OSError)):
                 return [], ModuleDiagnostic(module.id, module.type, True, elapsed_ms, status="unavailable", error="model_unavailable")
             return [], ModuleDiagnostic(module.id, module.type, True, elapsed_ms, status="error", error=exc.__class__.__name__)
+
+
+def _chunk_ranges(length: int) -> Iterator[tuple[int, int]]:
+    """Return bounded, overlapping source windows for a block.
+
+    The first and last window have one-sided overlap.  Every source position
+    is therefore in a non-overlapping core window, while a detector can still
+    see a bounded amount of context on either side of a core boundary.
+    """
+    if length <= NORMALIZATION_CHUNK_SIZE:
+        yield 0, length
+        return
+    core_start = 0
+    while core_start < length:
+        core_end = min(length, core_start + NORMALIZATION_CHUNK_SIZE)
+        yield (
+            max(0, core_start - NORMALIZATION_CHUNK_OVERLAP),
+            min(length, core_end + NORMALIZATION_CHUNK_OVERLAP),
+        )
+        core_start = core_end
+
+
+def _source_chunk(block: SourceBlock, start: int, end: int) -> SourceBlock:
+    """Create a detector view with local text while retaining source identity."""
+    return SourceBlock(
+        id=block.id,
+        text=block.text[start:end],
+        kind=block.kind,
+        source_path=block.source_path,
+        json_pointer=block.json_pointer,
+        metadata=block.metadata,
+    )
+
+
+def _rebase_findings(findings: list[Finding], source_offset: int, *, chunked: bool) -> list[Finding]:
+    """Move detector-local spans back to the original block.
+
+    For chunked scans, normalized offsets use original-source coordinates as a
+    stable ordering/deduplication space.  A normalized string is local to each
+    window and may have a different length after decoding, so adding the
+    source offset alone would allow duplicate overlap-window findings to evade
+    the existing normalized-span aggregator.
+    """
+    if source_offset == 0 and not chunked:
+        return findings
+    rebased: list[Finding] = []
+    for finding in findings:
+        original_start = source_offset + finding.original_start
+        original_end = source_offset + finding.original_end
+        if chunked:
+            normalized_start = original_start
+            normalized_end = original_end
+        else:
+            normalized_start = source_offset + finding.normalized_start
+            normalized_end = source_offset + finding.normalized_end
+        rebased.append(
+            Finding(
+                id=finding.id,
+                source_block_id=finding.source_block_id,
+                original_start=original_start,
+                original_end=original_end,
+                normalized_start=normalized_start,
+                normalized_end=normalized_end,
+                type=finding.type,
+                subtype=finding.subtype,
+                risk=finding.risk,
+                detectors=finding.detectors,
+                validators=finding.validators,
+                suggested_action=finding.suggested_action,
+                safe_preview=finding.safe_preview,
+                metadata=finding.metadata,
+            )
+        )
+    return rebased
+
+
+def _merge_module_diagnostics(
+    current: ModuleDiagnostic | None,
+    incoming: ModuleDiagnostic,
+) -> ModuleDiagnostic:
+    if current is None:
+        return incoming
+    current_priority = _DIAGNOSTIC_STATUS_PRIORITY.get(current.status, 5)
+    incoming_priority = _DIAGNOSTIC_STATUS_PRIORITY.get(incoming.status, 5)
+    if incoming_priority > current_priority:
+        status = incoming.status
+        error = incoming.error
+    else:
+        status = current.status
+        error = current.error
+    return ModuleDiagnostic(
+        id=current.id,
+        type=current.type,
+        enabled=current.enabled,
+        elapsed_ms=current.elapsed_ms + incoming.elapsed_ms,
+        findings=current.findings + incoming.findings,
+        status=status,
+        error=error,
+    )
 
 
 def build_detector_flow(
@@ -248,14 +466,18 @@ def _module_from_config(module: dict[str, Any], root_config: dict[str, Any]) -> 
     stream_safe = bool(module.get("stream_safe", module_id in {"builtin_rules", "paths", "entropy"}))
     try:
         detector = _detector_from_config(module_id, module_type, module, root_config)
-        return FlowModule(module_id, module_type, detector, enabled, timeout_ms, fail_open, stream_safe=stream_safe)
+        executor_timeout_ms = None if module_type in {"regex_rules", "rule_validator"} else timeout_ms
+        return FlowModule(module_id, module_type, detector, enabled, executor_timeout_ms, fail_open, stream_safe=stream_safe)
     except Exception as exc:
         return FlowModule(module_id, module_type, None, enabled, timeout_ms, fail_open, f"{exc.__class__.__name__}: {exc}", stream_safe)
 
 
 def _detector_from_config(module_id: str, module_type: str, module: dict[str, Any], root_config: dict[str, Any]) -> Detector:
     if module_type in {"regex_rules", "rule_validator"}:
-        return RuleBasedDetector(module.get("rules", []), name=f"rules.{module_id}")
+        rules = module.get("rules", [])
+        configured_timeout = module.get("regex_timeout_ms", module.get("timeout_ms"))
+        match_timeout_ms = None if rules_are_trusted_builtins(rules) else int(configured_timeout or 100)
+        return RuleBasedDetector(rules, name=f"rules.{module_id}", match_timeout_ms=match_timeout_ms)
     if module_type == "path_detector":
         return PathDetector(
             detect_unix_home=bool(module.get("detect_unix_home", True)),

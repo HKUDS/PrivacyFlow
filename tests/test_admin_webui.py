@@ -4,6 +4,7 @@ import json
 import os
 import re
 import sqlite3
+from dataclasses import replace
 
 import httpx
 from fastapi.testclient import TestClient
@@ -97,17 +98,23 @@ def test_webui_assets_and_admin_api_require_no_authentication(tmp_path) -> None:
         assert i18n_js.status_code == 200
         lucide_js = client.get("/ui/assets/lucide.min.js")
         assert lucide_js.status_code == 200
-        brand_icon = client.get("/ui/assets/privacyflow-icon.svg")
+        brand_icon = client.get("/ui/assets/privacyflow-icon.png")
         assert brand_icon.status_code == 200
-        assert brand_icon.headers["content-type"] == "image/svg+xml"
-        assert brand_icon.content.lstrip().startswith(b"<svg")
+        assert brand_icon.headers["content-type"] == "image/png"
+        assert brand_icon.content.startswith(b"\x89PNG\r\n\x1a\n")
         for removed_agent_icon in ("claude-code.svg", "opencode.svg", "codex.svg"):
             assert client.get(f"/ui/assets/{removed_agent_icon}").status_code == 404
         assert "@license lucide v1.27.0 - ISC" in lucide_js.text
         assert "Privacy operations overview" in i18n_js.text
-        assert "Detectors" not in i18n_js.text
+        assert "Detectors" in i18n_js.text
         assert "pf:localechange" in i18n_js.text
-        assert "The built-in protection rules are unavailable" in i18n_js.text
+        assert "Local module pipeline organized by detection scope" in i18n_js.text
+        assert 'connector.detection === "not_found_on_pf_path"' in app_js.text
+        assert 'data-rule-source-name=' in app_js.text
+        assert 'submittedName === uiText(sourceName)' in app_js.text
+        assert 'if (await activateDetectorConfiguration(data.id))' in app_js.text
+        assert "Detector module enabled" in i18n_js.text
+        assert "Detector module: " in i18n_js.text
         assert "ANTHROPIC_BASE_URL" not in app_js.text
         assert client.get("/ui/assets/unknown.js").status_code == 404
 
@@ -224,7 +231,7 @@ def test_webui_assets_and_admin_api_require_no_authentication(tmp_path) -> None:
         assert app_js.text.index('<option value="__manual__">') < app_js.text.index('${models.map((model)')
         assert '$("#fetch-upstream-models").disabled = !selected?.active;' in app_js.text
         assert '$("#test-upstream-connection").disabled = !selected?.active;' in app_js.text
-        assert 'resetUpstreamTestResult("请先启用所选配置后再测试。")' in app_js.text
+        assert 'resetUpstreamTestResult("请先启用所选配置后再测试。", "is-error")' in app_js.text
         assert "Activate the selected configuration before testing it." in i18n_js.text
         assert "Fetch models" in i18n_js.text
         assert "Fetching the model list from the active upstream" in i18n_js.text
@@ -241,9 +248,9 @@ def test_webui_assets_and_admin_api_require_no_authentication(tmp_path) -> None:
         assert 'data-lucide="shield-check"' in page.text
         assert '<button class="nav-item" type="button" data-view="protected">' in page.text
         assert '<i class="nav-icon" data-lucide="lock"></i><span>受保护值</span>' in page.text
-        assert 'data-lucide="sliders-horizontal"' not in page.text
-        assert 'data-view="detectors"' not in page.text
-        assert 'id="view-detectors"' not in page.text
+        assert 'data-lucide="sliders-horizontal"' in page.text
+        assert 'data-view="detectors"' in page.text
+        assert 'id="view-detectors"' in page.text
         assert '<button class="nav-item" type="button" data-view="local-models">' in page.text
         assert 'data-lucide="hard-drive-download"' in page.text
         assert 'id="view-local-models"' in page.text
@@ -278,30 +285,32 @@ def test_webui_assets_and_admin_api_require_no_authentication(tmp_path) -> None:
         assert "function renderLocalModels()" in app_js.text
         assert "function availableLocalModels()" in app_js.text
         assert 'model.status === "ready"' in app_js.text
-        assert 'id="model-selection"' not in app_js.text
+        assert 'id="model-selection"' in app_js.text
         assert 'id="model-name"' not in app_js.text
         assert 'id="model-adapter"' not in app_js.text
         assert 'id="model-device"' not in app_js.text
-        assert "请先准备并选择一个可用的本地模型" not in app_js.text
-        assert "Only models successfully prepared and verified" not in i18n_js.text
-        assert 'data-local-model-target=' not in app_js.text
+        assert "请先准备并选择一个可用的本地模型" in app_js.text
+        assert "Only models successfully prepared and verified" in i18n_js.text
+        assert 'data-local-model-target=' in app_js.text
         assert "scrollIntoView" in app_js.text
         assert "Local model management" in i18n_js.text
+        assert '["owner/model 或 /path/to/model", "owner/model or /path/to/model"]' in i18n_js.text
+        assert "PrivacyFlow automatically prepares, downloads, and verifies added models" in i18n_js.text
         assert ".local-model-card {" in styles.text
-        assert '<span class="brand-mark" aria-hidden="true"><img src="/ui/assets/privacyflow-icon.svg" alt=""></span>' in page.text
+        assert '<span class="brand-mark" aria-hidden="true"><img src="/ui/assets/privacyflow-icon.png" alt=""></span>' in page.text
         assert '<span class="brand-mark" aria-hidden="true">A</span>' not in page.text
         assert ".brand-mark { width: 34px; height: 34px; flex: 0 0 34px; display: grid; place-items: center; border: 0; background: transparent;" in styles.text
         assert ".brand-mark" not in "\n".join(
             line for line in styles.text.splitlines() if "border: 1px solid #4d7863" in line
         )
         assert ".brand-mark img { display: block; width: 34px; height: 34px; object-fit: contain; }" in styles.text
-        assert ".module-symbol" not in styles.text
-        assert ".module-row" not in styles.text
-        assert ".module-drag-handle" not in styles.text
+        assert ".module-symbol .lucide" in styles.text
+        assert ".module-row > .toggle" in styles.text
+        assert ".module-drag-handle" in styles.text
         assert ".toggle span { position: absolute; inset: 0; margin: 0; border-radius: 12px; background: #cbd3cf; overflow: hidden;" in styles.text
         assert "transform: translateY(-50%);" in styles.text
         assert ".toggle input:checked + span::after { transform: translate(16px, -50%); }" in styles.text
-        assert "transform: translate(1px, 1px);" not in styles.text
+        assert styles.text.count("transform: translate(1px, 1px);") == 1
         assert "configuration-core-guard" not in page.text
         assert "core-guard-warning" not in page.text
         assert "updateCoreGuard" not in app_js.text
@@ -336,7 +345,11 @@ def test_webui_assets_and_admin_api_require_no_authentication(tmp_path) -> None:
         assert "activate-upstream-profile" not in page.text
         assert "activate-configuration" not in page.text
         assert 'switchUpstreamProfile(event.target.value)' in app_js.text
-        assert 'activateDetectorConfiguration(configurationId)' not in app_js.text
+        assert 'activateDetectorConfiguration(configurationId)' in app_js.text
+        assert "const activeId = state.detectorCatalog.active_configuration_id;" in app_js.text
+        assert "const alreadyShowing = configurationId === state.detectorConfiguration?.id;" in app_js.text
+        assert "if (alreadyShowing && alreadyActive) return;" in app_js.text
+        assert "event.target.value ? Number(event.target.value) : 1500" in app_js.text
         assert ".icon-action-button {\n  width: 36px;\n  min-width: 36px;\n  height: 36px;\n  min-height: 36px;\n  padding: 0;\n}" in styles.text
         assert ".row-action.icon-row-button { width: 30px; min-width: 30px; height: 30px; min-height: 30px; padding: 0; }" in styles.text
         assert "#upstream-status { width: max-content; max-width: 100%; justify-self: end; justify-content: center; flex-wrap: nowrap; white-space: nowrap;" in styles.text
@@ -1262,22 +1275,148 @@ def test_request_audit_pairs_replacement_and_materialization_without_persisting_
     assert "<APG:v1:" not in serialized_operations
 
 
-def test_custom_detector_configuration_api_is_removed(tmp_path) -> None:
+def test_detector_control_hot_reload_and_persistence(tmp_path) -> None:
+    cfg = _config(tmp_path)
+    rule = {
+        "id": "custom.partner_token",
+        "pattern": r"\bpartner_live_[A-Za-z0-9_-]{8,}\b",
+        "subtype": "partner_token",
+        "type": "MACHINE_SECRET",
+        "risk": "high",
+        "suggested_action": "redact",
+        "flags": [],
+        "validators": [],
+        "require_validators": [],
+        "reject_validators": [],
+        "preview_keep": 0,
+        "enabled": True,
+    }
+    with TestClient(create_app(cfg, AdminFakeUpstream())) as client:
+        catalog_response = client.get("/api/admin/detector-configurations", headers=_admin_headers())
+        assert catalog_response.status_code == 200
+        catalog = catalog_response.json()
+        assert catalog["active_configuration_id"] == "builtin.comprehensive"
+        assert catalog["pf_enabled"] is True
+        assert [item["name"] for item in catalog["templates"][:4]] == ["凭据与密钥", "个人信息", "本地开发环境", "全面保护"]
+
+        toggled = client.put(
+            "/api/admin/detector-configurations/builtin.comprehensive/modules/entropy/enabled",
+            headers=_admin_headers(),
+            json={"enabled": True},
+        )
+        assert toggled.status_code == 200
+        assert next(module for module in toggled.json()["modules"] if module["id"] == "entropy")["enabled"] is True
+
+        created = client.post(
+            "/api/admin/detector-configurations",
+            headers=_admin_headers(),
+            json={"name": "Partner credentials", "source_id": "builtin.credentials"},
+        )
+        assert created.status_code == 201
+        configuration = created.json()
+        configuration["modules"].insert(0, {
+            "id": "custom_rules",
+            "name": "Partner rules",
+            "type": "regex",
+            "enabled": True,
+            "timeout_ms": 100,
+            "failure_mode": "closed",
+            "editable": True,
+            "config": {"rules": [rule]},
+        })
+        saved = client.put(
+            f"/api/admin/detector-configurations/{configuration['id']}",
+            headers=_admin_headers(),
+            json=configuration,
+        )
+        assert saved.status_code == 200
+        configuration = saved.json()
+
+        dry_run = client.post(
+            f"/api/admin/detector-configurations/{configuration['id']}/test",
+            headers=_admin_headers(),
+            json={"text": "local-context-never-log credential=partner_live_abcdefghijkl"},
+        )
+        assert dry_run.status_code == 200
+        assert any("rules.custom_rules" in finding["detectors"] for finding in dry_run.json()["findings"])
+        assert [item["id"] for item in dry_run.json()["diagnostics"][:2]] == ["pf_core", "custom_rules"]
+        assert "local-context-never-log" not in (tmp_path / "audit.jsonl").read_text(encoding="utf-8")
+
+        activated = client.post(
+            f"/api/admin/detector-configurations/{configuration['id']}/activate",
+            headers=_admin_headers(),
+        )
+        assert activated.status_code == 200
+        assert client.delete(
+            f"/api/admin/detector-configurations/{configuration['id']}",
+            headers=_admin_headers(),
+        ).status_code == 409
+
+    state_path = tmp_path / "detector-control.json"
+    assert state_path.exists()
+    assert os.stat(state_path).st_mode & 0o777 == 0o600
+    state_text = state_path.read_text(encoding="utf-8")
+    assert '"version": 3' in state_text
+    assert '"pf_enabled": true' in state_text
+
+    with TestClient(create_app(cfg, AdminFakeUpstream())) as client:
+        persisted = client.get("/api/admin/detector-configurations", headers=_admin_headers()).json()
+        assert persisted["active_configuration_id"] == configuration["id"]
+        assert client.post(
+            "/api/admin/detector-configurations/builtin.comprehensive/activate",
+            headers=_admin_headers(),
+        ).status_code == 200
+        assert client.delete(
+            f"/api/admin/detector-configurations/{configuration['id']}",
+            headers=_admin_headers(),
+        ).status_code == 200
+
+
+def test_detector_api_rejects_unknown_kind_and_deployment_template_toggle(tmp_path) -> None:
+    cfg = replace(_config(tmp_path), detectors_config={"preset": "strict"})
+    with TestClient(create_app(cfg, AdminFakeUpstream())) as client:
+        invalid_kind = client.post(
+            "/api/admin/detector-configurations/deployment.current/test",
+            headers=_admin_headers(),
+            json={"text": "safe", "kind": "invented_kind"},
+        )
+        assert invalid_kind.status_code == 400
+        deployment = client.get(
+            "/api/admin/detector-configurations/deployment.current",
+            headers=_admin_headers(),
+        ).json()
+        toggled = client.put(
+            f"/api/admin/detector-configurations/deployment.current/modules/{deployment['modules'][0]['id']}/enabled",
+            headers=_admin_headers(),
+            json={"enabled": False},
+        )
+        assert toggled.status_code == 400
+        assert "built-in templates" in toggled.text
+
+
+def test_detector_api_defaults_null_timeout_and_hides_invalid_deployment_configs(tmp_path) -> None:
     cfg = _config(tmp_path)
     with TestClient(create_app(cfg, AdminFakeUpstream())) as client:
-        for method, path in (
-            ("GET", "/api/admin/detector-configurations"),
-            ("POST", "/api/admin/detector-configurations"),
-            ("GET", "/api/admin/detector-configurations/builtin.comprehensive"),
-            ("PUT", "/api/admin/detector-configurations/builtin.comprehensive"),
-            ("DELETE", "/api/admin/detector-configurations/builtin.comprehensive"),
-            ("POST", "/api/admin/detector-configurations/builtin.comprehensive/activate"),
-            ("POST", "/api/admin/detector-configurations/builtin.comprehensive/test"),
-            ("PUT", "/api/admin/detector-configurations/builtin.comprehensive/modules/entropy/enabled"),
-        ):
-            response = client.request(method, path, headers=_admin_headers(), json={})
-            assert response.status_code == 404
-        assert not any(route.path.startswith("/api/admin/detector-configurations") for route in client.app.routes)
+        created = client.post(
+            "/api/admin/detector-configurations",
+            headers=_admin_headers(),
+            json={"name": "Timeout"},
+        )
+        assert created.status_code == 201
+        payload = created.json()
+        payload["flow_timeout_ms"] = None
+        saved = client.put(
+            f"/api/admin/detector-configurations/{payload['id']}",
+            headers=_admin_headers(),
+            json=payload,
+        )
+        assert saved.status_code == 200
+        assert saved.json()["flow_timeout_ms"] == 1500
+        missing = client.post(
+            "/api/admin/detector-configurations/dcfg_aaaaaaaaaaaa/activate",
+            headers=_admin_headers(),
+        )
+        assert missing.status_code == 404
 
 
 def test_audit_logger_scrubs_apg_handles_before_they_reach_webui(tmp_path) -> None:

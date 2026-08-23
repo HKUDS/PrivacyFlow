@@ -5,6 +5,7 @@ const PAGE_META = {
   overview: ["LOCAL CONTROL PLANE", "概览", "最近 24 小时的网关活动"],
   audit: ["SAFE AUDIT TRAIL", "审计记录", "上行替换与本地还原"],
   protected: ["LOCAL MAPPING REGISTRY", "受保护值", "本地映射生命周期与撤销"],
+  detectors: ["DETECTION PIPELINE", "检测器配置", "按检测内容组织的本地模块流水线"],
   "local-models": ["LOCAL MODEL RUNTIME", "本地模型管理", "添加模型后由 PrivacyFlow 自动准备、下载并验证"],
   "agent-connectors": ["LOCAL AGENT CONFIGURATION", "Agent 快速接入", "一键接入 PrivacyFlow，并可完整恢复原配置"],
 };
@@ -12,6 +13,101 @@ const UPSTREAM_PROTOCOL_LABELS = {
   openai_chat_completions: "OpenAI Chat Completions",
   openai_responses: "OpenAI Responses",
   anthropic_messages: "Anthropic Messages",
+};
+// Backend errors are deliberately keyed by their stable error code.  The
+// backend message is useful detail in English, but is not guaranteed to be
+// localized (and may contain implementation-specific wording).  Keeping the
+// user-facing fallbacks here gives Chinese pages one consistent safe fallback
+// instead of leaking arbitrary English exceptions from individual handlers.
+const BACKEND_ERROR_MESSAGES = {
+  LOCAL_MODEL_SETUP_LOCAL_ONLY: "安装和下载只能从 PrivacyFlow 服务本机执行。",
+  INVALID_MODEL_SOURCE: "请输入有效的 Hugging Face 仓库 ID 或本地模型目录。",
+  INVALID_SOURCE_TYPE: "请选择有效的模型来源。",
+  INVALID_ADAPTER: "请选择受支持的模型运行方式。",
+  INVALID_DEVICE: "请选择受支持的计算设备。",
+  DEVICE_SELECTION_REQUIRED: "请选择计算设备后再继续。",
+  MODEL_TYPE_REQUIRED: "无法可靠识别模型类型，请在高级设置中明确选择。",
+  MODEL_TYPE_INCOMPATIBLE: "选择的模型类型与模型元数据不匹配。",
+  MODEL_INSPECTION_FAILED: "无法读取 Hugging Face 模型元数据，请检查地址与网络。",
+  MODEL_CONFIG_MISSING: "模型目录缺少 config.json。",
+  MODEL_CONFIG_INVALID: "模型目录中的 config.json 无效。",
+  MODEL_WEIGHTS_MISSING: "模型目录中没有可用的权重文件。",
+  REMOTE_CODE_UNSUPPORTED: "该模型需要执行远程自定义代码，PrivacyFlow 不支持。",
+  DEVICE_UNAVAILABLE: "明确选择的计算设备当前不可用。",
+  RUNTIME_MISSING: "模型运行环境尚未准备。",
+  RUNTIME_CREATE_FAILED: "无法创建受管模型运行环境。",
+  RUNTIME_UPDATE_FAILED: "更新受管模型运行环境失败，原有 Runtime 未受影响。",
+  MODEL_VERIFICATION_FAILED: "模型加载或最小推理验证失败。",
+  MODEL_NOT_READY: "模型尚未准备完成。",
+  MODEL_NOT_FOUND: "找不到指定的本地模型，请刷新页面后重试。",
+  LOCAL_MODEL_MISSING: "指定的本地模型目录不存在。",
+  LOCAL_PATH_NOT_MANAGED: "PrivacyFlow 不会删除用户自己的本地模型目录。",
+  MODEL_IN_ACTIVE_USE: "当前启用配置正在使用该模型，不能清理缓存。",
+  MODEL_NOT_DOWNLOADED: "请先下载或定位模型，再执行验证。",
+  DEPENDENCIES_MISSING: "请先安装该模型所需的运行依赖。",
+  DISK_SPACE_LOW: "模型缓存至少需要 512 MiB 可用磁盘空间。",
+  CUDA_NOT_DETECTED: "未检测到可用的 NVIDIA CUDA 驱动。",
+  CUDA_VERSION_UNSUPPORTED: "当前 CUDA 驱动不在 PrivacyFlow 自动安装支持范围内。",
+  CUDA_UNSUPPORTED_PLATFORM: "macOS 不支持 NVIDIA CUDA，请选择 CPU 或 Apple MPS。",
+  JOB_IN_PROGRESS: "已有本地模型任务正在运行，请等待它完成。",
+  JOB_NOT_FOUND: "找不到本地模型任务，请刷新页面后重试。",
+  SERVICE_STOPPED: "PrivacyFlow 已停止本地模型任务。",
+  NO_MODELS: "当前没有可准备的本地模型。",
+  INVALID_STAGES: "本地模型准备阶段无效，请刷新页面后重试。",
+  INVALID_MODEL_IDS: "本地模型 ID 列表无效，请刷新页面后重试。",
+  INVALID_FORCE: "本地模型准备选项无效，请刷新页面后重试。",
+  COMMAND_TIMEOUT: "本地模型操作超时。",
+  COMMAND_START_FAILED: "无法启动本地模型操作。",
+  COMMAND_FAILED: "依赖安装、模型下载或验证失败。",
+  DOWNLOAD_RESULT_INVALID: "模型下载结果无效。",
+  DOWNLOAD_PATH_INVALID: "下载结果不在 PrivacyFlow 管理的模型缓存中。",
+  CACHE_PATH_INVALID: "模型缓存路径无效，未删除任何文件。",
+  MODEL_STATE_READ_FAILED: "无法读取本地模型状态。",
+  MODEL_STATE_INVALID: "本地模型状态无效。",
+  MODEL_STATE_VERSION_UNSUPPORTED: "本地模型状态版本不受支持，请刷新页面后重试。",
+  MODEL_INFERENCE_FAILED: "本地模型推理失败。",
+  WORKER_EXITED: "本地模型运行进程意外停止。",
+  WORKER_PROTOCOL_ERROR: "本地模型运行进程返回了无效结果。",
+  WORKER_TIMEOUT: "本地模型运行进程响应超时。",
+  WORKER_OPERATION_INVALID: "本地模型运行操作无效。",
+  CONNECTOR_LOCAL_ONLY: "Agent 配置变更需要绑定 loopback 的 PrivacyFlow，并由 loopback 客户端发起。",
+  CONNECTOR_NOT_INSTALLED: "该 Agent 未安装，或命令不在 PATH 中。",
+  CONNECTOR_TRANSACTION_INCOMPLETE: "上一次 Agent 接入未完成，请恢复或重新接入。",
+  CONNECTOR_ALREADY_ACTIVE: "该 Agent 已接入 PrivacyFlow。",
+  CONNECTOR_CONFIG_CONFLICT: "检测到已有 Agent 配置。确认迁移后，PrivacyFlow 会先保存完整快照再替换；取消则不改动。",
+  CONNECTOR_CONCURRENT_CHANGE: "配置在接入前发生了变化，请重新打开快速接入并确认迁移。",
+  CONNECTOR_EXTERNAL_CHANGES: "接入后的配置已被外部修改，请先恢复原配置。",
+  CONNECTOR_PROTOCOL_PROBE_FAILED: "所选模型未通过该 Agent 所需的协议测试。",
+  CONNECTOR_PROTOCOL_MISMATCH: "上游响应不符合该 Agent 所需的协议。",
+  CONNECTOR_UPSTREAM_REQUIRED: "请先配置并启用上游连接。",
+  CONNECTOR_MODEL_LIST_FAILED: "无法获取上游模型列表，请检查上游配置。",
+  CONNECTOR_MODEL_LIST_EMPTY: "DeepSeek Harness 需要非空的上游模型目录。",
+  CONNECTOR_MODEL_NOT_FOUND: "所选模型已不在上游模型目录中，请重新选择。",
+  CONNECTOR_MODEL_INVALID: "模型 ID 无效。",
+  CONNECTOR_REQUEST_INVALID: "Agent 接入请求无效，请检查模型字段。",
+  CONNECTOR_CONFIG_INVALID: "Agent 配置无效，请检查配置文件后重试。",
+  CONNECTOR_PATH_UNSAFE: "Agent 配置路径不安全，未修改任何文件。",
+  CONNECTOR_SNAPSHOT_MISSING: "找不到 Agent 配置快照，无法恢复原配置。",
+  CONNECTOR_STATE_INVALID: "Agent 接入状态无效，请重新启动 PrivacyFlow。",
+  CONNECTOR_NOT_FOUND: "找不到指定的 Agent Connector。",
+  PF_MIGRATION_CONFIG_CONFLICT: "检测到多个 Agent 配置来源，无法安全迁移。",
+  PF_MIGRATION_UNKNOWN_CONFIG: "无法识别现有 Agent 配置，未修改任何文件。",
+  PF_MIGRATION_CONCURRENT_CHANGE: "迁移前配置发生了变化，请重新打开快速接入。",
+  PF_UPSTREAM_MODEL_CATALOG_EMPTY: "上游未返回可用模型。",
+  PF_UPSTREAM_NOT_CONFIGURED: "请先配置并启用上游连接。",
+  PF_UPSTREAM_PROTOCOL_MISMATCH: "上游响应结构与所选 API 格式不匹配。",
+  PF_UPSTREAM_TIMEOUT: "上游请求超时，请稍后重试。",
+  PF_UPSTREAM_UNREACHABLE: "无法连接上游，请检查地址和网络。",
+  UPSTREAM_MODELS_FAILED: "获取上游模型列表失败。",
+  UPSTREAM_TEST_FAILED: "上游连接测试失败。",
+  PF_ADMIN_LOCAL_ONLY: "PrivacyFlow 管理面板只能通过 loopback 连接访问。",
+};
+const ERROR_FALLBACK_MESSAGES = {
+  request: "请求失败",
+  localModel: "本地模型操作失败",
+  connector: "接入失败。",
+  upstream: "上游请求失败。",
+  detector: "检测器配置操作失败。",
 };
 const state = {
   view: location.hash.replace("#", "") || "overview",
@@ -31,6 +127,16 @@ const state = {
   protected: null,
   protectedShowRaw: false,
   protectedLoadVersion: 0,
+  detectorCatalog: null,
+  detectorConfiguration: null,
+  detectorDraft: null,
+  editingModuleIndex: null,
+  moduleDraft: null,
+  moduleDraftSourceName: "",
+  moduleDrag: null,
+  detectionTooltip: null,
+  detectionTooltipMark: null,
+  detectionTooltipPinned: false,
   localModels: null,
   capabilities: [],
   buildId: "",
@@ -47,7 +153,7 @@ const state = {
 const $ = (selector, root = document) => root.querySelector(selector);
 const $$ = (selector, root = document) => [...root.querySelectorAll(selector)];
 const escapeHtml = (value) => String(value ?? "").replace(/[&<>'"]/g, (char) => ({"&":"&amp;","<":"&lt;",">":"&gt;","'":"&#39;",'"':"&quot;"}[char]));
-const DYNAMIC_ICONS = new Set(["arrow-right", "ban", "brain-circuit", "check-circle-2", "circle-x", "copy", "download", "eye", "eye-off", "folder-tree", "gauge", "grip-vertical", "hard-drive", "package-check", "pencil", "plug-zap", "plus", "power", "rotate-cw", "search", "server-cog", "trash-2", "triangle-alert", "undo-2", "wrench"]);
+const DYNAMIC_ICONS = new Set(["arrow-right", "ban", "brain-circuit", "check-circle-2", "circle-x", "copy", "download", "eye", "eye-off", "folder-tree", "gauge", "grip-vertical", "hard-drive", "package-check", "pencil", "plug-zap", "plus", "power", "regex-reference", "rotate-cw", "search", "server-cog", "trash-2", "triangle-alert", "undo-2", "wrench"]);
 
 document.addEventListener("DOMContentLoaded", init);
 
@@ -64,10 +170,21 @@ function init() {
     state.loaded.clear();
     loadView(state.view, true);
   });
+  document.addEventListener("click", (event) => {
+    if (state.detectionTooltip && !event.target.closest(".text-highlight")) closeDetectionTooltip();
+  });
+  document.addEventListener("keydown", (event) => {
+    if (event.key === "Escape") closeDetectionTooltip();
+  });
+  window.addEventListener("resize", closeDetectionTooltip);
+  window.addEventListener("scroll", closeDetectionTooltip, true);
 }
 
 function iconMarkup(name) {
   if (!DYNAMIC_ICONS.has(name)) throw new Error(`Unsupported dynamic icon: ${name}`);
+  if (name === "regex-reference") {
+    return `<svg class="lucide detector-regex-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M7 3C4.4 5.2 3 8.3 3 12s1.4 6.8 4 9"></path><path d="M17 3c2.6 2.2 4 5.3 4 9s-1.4 6.8-4 9"></path><circle cx="9" cy="13" r="1.15" fill="currentColor" stroke="none"></circle><path d="M14 7v6M11.4 8.5l5.2 3M16.6 8.5l-5.2 3"></path></svg>`;
+  }
   return `<i data-lucide="${name}"></i>`;
 }
 
@@ -82,8 +199,9 @@ function renderIcons(root = document) {
 
 function setIconButton(button, name, label) {
   button.innerHTML = iconMarkup(name);
-  button.setAttribute("aria-label", label);
-  button.title = label;
+  const localizedLabel = uiText(label);
+  button.setAttribute("aria-label", localizedLabel);
+  button.title = localizedLabel;
   renderIcons(button);
 }
 
@@ -159,6 +277,32 @@ function bindActions() {
   $("#mapping-retention-duration").addEventListener("input", syncMappingRetentionControls);
   $("#mapping-retention-unit").addEventListener("change", syncMappingRetentionControls);
   $("#save-mapping-retention").addEventListener("click", () => saveMappingRetention().catch(handleError));
+  $("#configuration-select").addEventListener("change", (event) => selectDetectorConfiguration(event.target.value));
+  $("#new-configuration").addEventListener("click", openConfigurationCreator);
+  $("#duplicate-configuration").addEventListener("click", duplicateDetectorConfiguration);
+  $("#save-configuration").addEventListener("click", saveDetectorConfiguration);
+  $("#delete-configuration").addEventListener("click", deleteDetectorConfiguration);
+  $("#add-module").addEventListener("click", () => openModuleEditor(null));
+  $("#configuration-form").addEventListener("submit", createDetectorConfiguration);
+  $("#module-form").addEventListener("submit", applyModuleDraft);
+  $("#module-type").addEventListener("change", async (event) => {
+    state.moduleDraft.type = event.target.value;
+    state.moduleDraft.config = defaultModuleConfig(event.target.value);
+    if (event.target.value === "local_model") {
+      $("#module-error").textContent = "";
+      try {
+        await refreshLocalModelCatalog();
+      } catch (error) {
+        state.localModels = {models: []};
+        $("#module-error").textContent = localizedBackendError(error, "localModel");
+      }
+    }
+    renderModuleSpecificFields();
+  });
+  for (const id of ["configuration-name", "configuration-description", "configuration-timeout"]) {
+    $("#" + id).addEventListener("input", updateConfigurationFields);
+  }
+  $("#run-detection").addEventListener("click", runDetection);
   $("#manual-model-form").addEventListener("submit", addManualLocalModel);
   $("#prepare-all-models").addEventListener("click", () => prepareLocalModels([], ["inspect", "runtime", "download", "verify"]));
   $("#local-model-list").addEventListener("click", handleLocalModelAction);
@@ -191,7 +335,7 @@ async function connect() {
 
 function setConnected(connected) {
   $("#connection-dot").classList.toggle("is-online", connected);
-  $("#connection-label").textContent = connected ? "本地网关已连接" : "连接已断开";
+  $("#connection-label").textContent = uiText(connected ? "本地网关已连接" : "连接已断开");
 }
 
 function showView(view, updateHash = true) {
@@ -211,11 +355,11 @@ function showView(view, updateHash = true) {
 }
 
 async function loadView(view, force = false) {
-  const loaders = {overview: loadOverview, audit: loadAudit, protected: loadProtected, "local-models": loadLocalModels, "agent-connectors": loadAgentConnectors};
+  const loaders = {overview: loadOverview, audit: loadAudit, protected: loadProtected, detectors: loadDetectors, "local-models": loadLocalModels, "agent-connectors": loadAgentConnectors};
   if (!force && state.loaded.has(view)) return;
   $("#refresh-button").classList.add("is-loading");
   try { await loaders[view](); state.loaded.add(view); }
-  catch (error) { handleError(error); }
+  catch (error) { handleError(error, view === "local-models" ? "localModel" : view === "agent-connectors" ? "connector" : undefined); }
   finally { $("#refresh-button").classList.remove("is-loading"); }
 }
 
@@ -226,10 +370,10 @@ async function api(path, options = {}) {
   let body = null;
   try { body = await response.json(); } catch (_) { body = {}; }
   if (!response.ok) {
-    const detail = body.detail;
+    const detail = body.detail ?? body.error ?? body;
     const error = new Error(typeof detail === "string" ? detail : detail?.message || "请求失败");
     error.status = response.status;
-    error.code = detail?.code;
+    error.code = typeof detail === "object" ? detail?.code : body.code;
     error.paths = Array.isArray(detail?.paths) ? detail.paths : [];
     error.requiresConfirmation = detail?.requires_confirmation === true;
     throw error;
@@ -479,7 +623,7 @@ async function confirmConnectorRestore(event) {
   try {
     await restoreAgent(state.connectorRestoreTarget, true);
   } catch (error) {
-    $("#connector-restore-error").textContent = error.message;
+    $("#connector-restore-error").textContent = connectorErrorMessage(error);
   } finally {
     submit.disabled = false;
   }
@@ -621,7 +765,7 @@ function renderLocalModelCard(model) {
         ${runtimeFault ? `<button class="secondary-button labeled-icon-button" type="button" data-local-model-action="runtime" data-model-id="${escapeHtml(model.id)}" ${disabled ? "disabled" : ""}>${iconMarkup("wrench")}<span>${escapeHtml(uiText("修复运行环境"))}</span></button>` : ""}
         ${model.status === "ready" && model.source_type !== "local" ? `<button class="secondary-button icon-action-button" type="button" data-local-model-action="download" data-model-id="${escapeHtml(model.id)}" aria-label="${escapeHtml(uiText("重新下载模型"))}" title="${escapeHtml(uiText("重新下载模型"))}" ${disabled ? "disabled" : ""}>${iconMarkup("download")}</button>` : ""}
         ${model.status === "ready" || model.last_error?.code === "MODEL_VERIFICATION_FAILED" ? `<button class="secondary-button icon-action-button" type="button" data-local-model-action="verify" data-model-id="${escapeHtml(model.id)}" aria-label="${escapeHtml(uiText("重新验证模型"))}" title="${escapeHtml(uiText("重新验证模型"))}" ${disabled ? "disabled" : ""}>${iconMarkup("rotate-cw")}</button>` : ""}
-        ${model.cache_managed ? `<button class="secondary-button danger-text icon-action-button" type="button" data-local-model-action="cache" data-model-id="${escapeHtml(model.id)}" aria-label="${escapeHtml(uiText("清理模型缓存"))}" title="${escapeHtml(uiText(model.active_in_use ? "内置保护流程正在使用该模型" : "清理模型缓存"))}" ${cacheDisabled ? "disabled" : ""}>${iconMarkup("trash-2")}</button>` : ""}
+        ${model.cache_managed ? `<button class="secondary-button danger-text icon-action-button" type="button" data-local-model-action="cache" data-model-id="${escapeHtml(model.id)}" aria-label="${escapeHtml(uiText("清理模型缓存"))}" title="${escapeHtml(uiText(model.active_in_use ? "当前启用配置正在使用该模型" : "清理模型缓存"))}" ${cacheDisabled ? "disabled" : ""}>${iconMarkup("trash-2")}</button>` : ""}
         ${model.manual ? `<button class="secondary-button danger-text icon-action-button" type="button" data-local-model-action="delete" data-model-id="${escapeHtml(model.id)}" aria-label="${escapeHtml(uiText("移除手动模型"))}" title="${escapeHtml(uiText("移除手动模型"))}" ${disabled ? "disabled" : ""}>${iconMarkup("ban")}</button>` : ""}
       </div>
     </article>
@@ -667,43 +811,7 @@ function localDeviceReason(value) {
 }
 
 function localModelErrorMessage(code, fallback) {
-  const message = ({
-    LOCAL_MODEL_SETUP_LOCAL_ONLY: "安装和下载只能从 PrivacyFlow 服务本机执行。",
-    INVALID_MODEL_SOURCE: "请输入有效的 Hugging Face 仓库 ID 或本地模型目录。",
-    INVALID_SOURCE_TYPE: "请选择有效的模型来源。",
-    INVALID_ADAPTER: "请选择受支持的模型运行方式。",
-    INVALID_DEVICE: "请选择受支持的计算设备。",
-    MODEL_TYPE_REQUIRED: "无法可靠识别模型类型，请在高级设置中明确选择。",
-    MODEL_TYPE_INCOMPATIBLE: "选择的模型类型与模型元数据不匹配。",
-    MODEL_INSPECTION_FAILED: "无法读取 Hugging Face 模型元数据，请检查地址与网络。",
-    MODEL_CONFIG_MISSING: "模型目录缺少 config.json。",
-    MODEL_CONFIG_INVALID: "模型目录中的 config.json 无效。",
-    MODEL_WEIGHTS_MISSING: "模型目录中没有可用的权重文件。",
-    REMOTE_CODE_UNSUPPORTED: "该模型需要执行远程自定义代码，PrivacyFlow 不支持。",
-    DEVICE_UNAVAILABLE: "明确选择的计算设备当前不可用。",
-    RUNTIME_MISSING: "模型运行环境尚未准备。",
-    RUNTIME_CREATE_FAILED: "无法创建受管模型运行环境。",
-    RUNTIME_UPDATE_FAILED: "更新受管模型运行环境失败，原有 Runtime 未受影响。",
-    MODEL_VERIFICATION_FAILED: "模型加载或最小推理验证失败。",
-    MODEL_NOT_READY: "模型尚未准备完成。",
-    LOCAL_MODEL_MISSING: "指定的本地模型目录不存在。",
-    LOCAL_PATH_NOT_MANAGED: "PrivacyFlow 不会删除用户自己的本地模型目录。",
-    MODEL_IN_ACTIVE_USE: "内置保护流程正在使用该模型，不能清理缓存。",
-    MODEL_NOT_DOWNLOADED: "请先下载或定位模型，再执行验证。",
-    DEPENDENCIES_MISSING: "请先安装该模型所需的运行依赖。",
-    DISK_SPACE_LOW: "模型缓存至少需要 512 MiB 可用磁盘空间。",
-    CUDA_NOT_DETECTED: "未检测到可用的 NVIDIA CUDA 驱动。",
-    CUDA_VERSION_UNSUPPORTED: "当前 CUDA 驱动不在 PrivacyFlow 自动安装支持范围内。",
-    CUDA_UNSUPPORTED_PLATFORM: "macOS 不支持 NVIDIA CUDA，请选择 CPU 或 Apple MPS。",
-    JOB_IN_PROGRESS: "已有本地模型任务正在运行，请等待它完成。",
-    NO_MODELS: "当前没有可准备的本地模型。",
-    COMMAND_TIMEOUT: "本地模型操作超时。",
-    COMMAND_START_FAILED: "无法启动本地模型操作。",
-    COMMAND_FAILED: "依赖安装、模型下载或验证失败。",
-    DOWNLOAD_RESULT_INVALID: "模型下载结果无效。",
-    DOWNLOAD_PATH_INVALID: "下载结果不在 PrivacyFlow 管理的模型缓存中。",
-  })[code] || fallback || "本地模型操作失败";
-  return uiText(message);
+  return localizedBackendError({code, message: fallback}, "localModel");
 }
 
 function formatBytes(value) {
@@ -765,7 +873,7 @@ async function handleLocalModelAction(event) {
   }
   if (action === "save-preferences") return saveLocalModelPreferences(modelId, button.closest(".local-model-card"));
   if (action === "cache") {
-    return confirmAction("清理模型缓存", "将删除 PrivacyFlow 管理的模型文件，但不会删除用户自己的本地模型目录。", () => deleteLocalModelCache(modelId));
+    return confirmAction("清理模型缓存", "将删除 PrivacyFlow 管理的模型文件，但不会删除检测器配置。", () => deleteLocalModelCache(modelId));
   }
   if (action === "delete") {
     return confirmAction("移除手动模型", "该模型将从管理清单中移除，已下载的共享缓存不会自动删除。", () => deleteManualLocalModel(modelId));
@@ -861,8 +969,9 @@ function renderLocalModelJob(job) {
   const transfer = downloaded
     ? `${formatBytes(downloaded)}${total ? ` / ${formatBytes(total)}` : ""}${job.speed_bps ? ` · ${formatBytes(job.speed_bps)}/s` : ""}`
     : "";
+  const message = job.message ? localizedBackendError({code: job.error_code, message: job.message}, "localModel") : transfer || `${job.progress || 0}%`;
   target.innerHTML = `
-    <div><strong>${escapeHtml(stages[job.stage] || job.stage)}</strong><span>${escapeHtml(job.message || transfer || `${job.progress || 0}%`)}</span></div>
+    <div><strong>${escapeHtml(stages[job.stage] || job.stage)}</strong><span>${escapeHtml(message)}</span></div>
     <progress max="100" value="${Number(job.progress || 0)}">${Number(job.progress || 0)}%</progress>
   `;
 }
@@ -888,15 +997,15 @@ async function loadOverview() {
     ["本地还原", data.metrics.materializations_24h, "仅结构化工具参数", "accent-green"],
     ["活跃受保护值", data.metrics.active_protected_values, "本地保存", "accent-amber"],
   ];
-  $("#overview-metrics").innerHTML = metrics.map(([label, value, foot, accent]) => `<article class="metric-card ${accent}"><span class="metric-label">${escapeHtml(label)}</span><strong>${formatNumber(value)}</strong><span class="metric-foot">${escapeHtml(foot)}</span></article>`).join("");
+  $("#overview-metrics").innerHTML = metrics.map(([label, value, foot, accent]) => `<article class="metric-card ${accent}"><span class="metric-label">${escapeHtml(uiText(label))}</span><strong>${formatNumber(value)}</strong><span class="metric-foot">${escapeHtml(uiText(foot))}</span></article>`).join("");
   renderTrend(data.trend);
   renderRisk(data.risk);
   renderEventRows($("#overview-events"), data.recent, true);
   const system = data.system;
   $("#system-strip").innerHTML = [
-    ["工作区", system.workspace], ["上游", system.upstream], ["保护规则", system.detector_configuration],
+    ["工作区", system.workspace], ["上游", system.upstream], ["检测配置", system.detector_configuration],
     ["PII", system.pii_mode], ["严格模式", system.strict_mode ? "开启" : "关闭"], ["管理面板", system.local_only ? "仅本机" : "远程绑定"],
-  ].map(([label, value]) => `<span class="system-item">${escapeHtml(label)}<strong>${escapeHtml(value)}</strong></span>`).join("");
+  ].map(([label, value]) => `<span class="system-item">${escapeHtml(uiText(label))}<strong>${escapeHtml(uiText(value))}</strong></span>`).join("");
   state.loaded.add("overview");
 }
 
@@ -912,15 +1021,15 @@ function renderPrivacyControl() {
   container.classList.toggle("is-enabled", effective);
   container.classList.toggle("is-bypass", available && !effective);
   container.classList.toggle("is-unavailable", !available);
-  $("#privacy-control-status").textContent = !available ? "不可用" : effective ? "保护已开启" : "旁路模式";
-  $("#privacy-control-description").textContent = !available
+  $("#privacy-control-status").textContent = uiText(!available ? "不可用" : effective ? "保护已开启" : "旁路模式");
+  $("#privacy-control-description").textContent = uiText(!available
     ? control.unavailable_reason === "no_detector_configuration"
-      ? "内置保护规则不可用，PrivacyFlow 全局保护暂时无法启用。"
+      ? "没有可用的检测配置，PrivacyFlow 全局保护暂时无法启用。"
       : "请先选择并启用可用的上游配置。"
-    : "一键开启或关闭 PrivacyFlow 保护。";
-  $("#privacy-control-configuration").textContent = control.active_detector_configuration_name
-    ? `内置保护规则：${control.active_detector_configuration_name}`
-    : "内置保护规则不可用";
+    : "一键开启或关闭 PrivacyFlow 保护。");
+  $("#privacy-control-configuration").textContent = uiText(control.active_detector_configuration_name
+    ? `当前检测配置：${control.active_detector_configuration_name}`
+    : "未选择检测配置");
 }
 
 async function refreshPrivacyControl() {
@@ -960,20 +1069,20 @@ function renderUpstreamConfiguration() {
   setup.classList.remove("is-hidden");
   setup.classList.toggle("needs-setup", !configured);
   setup.classList.toggle("is-editing", editing);
-  $("#upstream-status").textContent = configured ? "已配置" : "需要配置";
+  $("#upstream-status").textContent = uiText(configured ? "已配置" : "需要配置");
   $("#upstream-status").classList.toggle("is-active", configured);
-  $("#upstream-description").textContent = configured
+  $("#upstream-description").textContent = uiText(configured
     ? "配置已在本机保存，密钥不会回显。"
-    : "填写 Base URL 和 API Key。";
-  $("#upstream-base-url").textContent = state.upstream.base_url || "待填写";
+    : "填写 Base URL 和 API Key。");
+  $("#upstream-base-url").textContent = uiText(state.upstream.base_url || "待填写");
   $("#upstream-profile-select").innerHTML = profiles.length
     ? profiles.map((profile) => `<option value="${escapeHtml(profile.id)}"${profile.id === state.upstreamSelectedProfileId ? " selected" : ""}>${escapeHtml(uiText(`${profile.name}${profile.active ? "（当前）" : ""}`))}</option>`).join("")
-    : '<option value="">暂无配置</option>';
+    : `<option value="">${escapeHtml(uiText("暂无配置"))}</option>`;
   $("#delete-upstream-profile").disabled = !selected || !selected.persisted;
   $("#fetch-upstream-models").disabled = !selected?.active;
   $("#test-upstream-connection").disabled = !selected?.active;
   if (selected && !selected.active) {
-    resetUpstreamTestResult("请先启用所选配置后再测试。");
+    resetUpstreamTestResult(uiText("请先启用所选配置后再测试。"));
   }
   const editingProfile = state.upstreamEditingProfileId
     ? profiles.find((profile) => profile.id === state.upstreamEditingProfileId)
@@ -982,7 +1091,7 @@ function renderUpstreamConfiguration() {
   const nameInput = $("#upstream-profile-name");
   const baseUrlInput = $("#upstream-base-url-input");
   nameInput.value = editing && !showingDefaults ? (editingProfile?.name || "") : "";
-  nameInput.placeholder = showingDefaults ? (editingProfile.name || "例如：Anthropic 生产环境") : "例如：Anthropic 生产环境";
+  nameInput.placeholder = showingDefaults ? uiText(editingProfile.name || "例如：Anthropic 生产环境") : uiText("例如：Anthropic 生产环境");
   baseUrlInput.value = editing && !showingDefaults ? (editingProfile?.base_url || "") : "";
   baseUrlInput.placeholder = showingDefaults ? (editingProfile.base_url || "https://api.example.com/v1") : "https://api.example.com/v1";
   const endpointOverrides = editing && !showingDefaults ? (editingProfile?.endpoint_overrides || {}) : {};
@@ -1005,20 +1114,20 @@ async function saveUpstreamApiKey(event) {
   const baseUrl = baseUrlInput.value.trim().replace(/\/+$/, "");
   const apiKey = input.value.trim();
   if (!name) {
-    $("#upstream-key-error").textContent = "请输入配置名称。";
+    $("#upstream-key-error").textContent = uiText("请输入配置名称。");
     $("#upstream-profile-name").focus();
     return;
   }
   let parsedBaseUrl = null;
   try { parsedBaseUrl = new URL(baseUrl); } catch (_) {}
   if (!parsedBaseUrl || !["http:", "https:"].includes(parsedBaseUrl.protocol) || parsedBaseUrl.username || parsedBaseUrl.password || parsedBaseUrl.search || parsedBaseUrl.hash) {
-    $("#upstream-key-error").textContent = "请输入不含凭据、查询参数或片段的完整 HTTP(S) Base URL。";
+    $("#upstream-key-error").textContent = uiText("请输入不含凭据、查询参数或片段的完整 HTTP(S) Base URL。");
     baseUrlInput.focus();
     return;
   }
   const editingProfile = (state.upstream?.profiles || []).find((profile) => profile.id === state.upstreamEditingProfileId);
   if (!apiKey && !editingProfile?.has_api_key) {
-    $("#upstream-key-error").textContent = "请输入上游 API Key。";
+    $("#upstream-key-error").textContent = uiText("请输入上游 API Key。");
     return;
   }
   const button = $("#save-upstream-key");
@@ -1054,7 +1163,7 @@ async function saveUpstreamApiKey(event) {
     await refreshPrivacyControl();
     toast(state.upstream.persistent ? "上游连接配置已安全保存并启用" : "上游连接配置已在当前进程中启用");
   } catch (error) {
-    $("#upstream-key-error").textContent = error.message || "保存失败。";
+    $("#upstream-key-error").textContent = localizedBackendError(error, "upstream");
   } finally {
     button.disabled = false;
   }
@@ -1092,13 +1201,13 @@ async function fetchUpstreamModels() {
     } else {
       const error = result.error || {};
       const status = result.status_code ? `HTTP ${result.status_code}` : uiText("未收到 HTTP 响应");
-      const reason = [error.code, error.type, error.message].filter(Boolean).join(" · ");
+      const reason = [error.code, error.type, error.message ? localizedBackendError(error, "upstream") : ""].filter(Boolean).join(" · ");
       resultNode.className = "upstream-test-result is-error";
       resultNode.textContent = `${uiText("获取模型列表失败")} · ${status} · ${result.latency_ms} ms · ${target}${reason ? ` · ${reason}` : ""}${trace ? ` · ${trace}` : ""}`;
     }
   } catch (error) {
     resultNode.className = "upstream-test-result is-error";
-    resultNode.textContent = error.message || uiText("获取模型列表失败");
+    resultNode.textContent = localizedBackendError(error, "upstream");
   } finally {
     const active = Boolean(selectedUpstreamProfile()?.active);
     fetchButton.disabled = !active;
@@ -1133,7 +1242,7 @@ async function testUpstreamConnection() {
     renderUpstreamProtocolResults(test.results || []);
   } catch (error) {
     resultNode.className = "upstream-test-result is-error";
-    resultNode.textContent = error.message || uiText("测试失败。");
+    resultNode.textContent = localizedBackendError(error, "upstream");
   } finally {
     button.disabled = false;
   }
@@ -1150,7 +1259,7 @@ function renderUpstreamProtocolResults(results) {
     const mismatch = error.code === "PF_UPSTREAM_PROTOCOL_MISMATCH"
       ? uiText("HTTP 成功，但响应结构不符合该 API 格式。")
       : "";
-    const reason = mismatch || [error.code, error.type, error.message].filter(Boolean).join(" · ");
+    const reason = mismatch || [error.code, error.type, error.message ? localizedBackendError(error, "upstream") : ""].filter(Boolean).join(" · ");
     return `<div class="upstream-protocol-result ${result.ok ? "is-success" : "is-error"}">
       <div class="upstream-protocol-result-heading">
         <span>${iconMarkup(result.ok ? "check-circle-2" : "circle-x")}<strong>${escapeHtml(UPSTREAM_PROTOCOL_LABELS[result.protocol] || result.protocol)}</strong></span>
@@ -1236,7 +1345,7 @@ async function activateSelectedUpstreamProfile() {
     resetUpstreamTestResult();
     renderUpstreamConfiguration();
     await refreshPrivacyControl();
-    toast(`${uiText("已切换上游配置")}：${profile.name}`);
+    toast(`${uiText("已切换上游配置")}：${uiText(profile.name)}`);
   } catch (error) {
     state.upstreamSelectedProfileId = state.upstream?.active_profile_id || "";
     renderUpstreamConfiguration();
@@ -1271,7 +1380,7 @@ function renderConnection() {
   $("#agent-openai-base-url").value = location.origin + (state.connection.protocols.openai?.base_path || "");
   $("#agent-anthropic-base-url").value = location.origin + (state.connection.protocols.anthropic?.base_path || "");
   $("#agent-api-key").value = state.connection.api_key || "";
-  $("#agent-api-key").placeholder = state.connection.api_key ? "" : "未配置本地 API Key";
+  $("#agent-api-key").placeholder = state.connection.api_key ? "" : uiText("未配置本地 API Key");
   $$('[data-copy-connection]').forEach((button) => {
     const targets = {
       "api-key": $("#agent-api-key"),
@@ -1300,7 +1409,7 @@ async function regenerateAgentApiKey() {
 
 function setVisibilityButton(button, revealed, showLabel, hideLabel) {
   if (!button) return;
-  const actionLabel = revealed ? hideLabel : showLabel;
+  const actionLabel = uiText(revealed ? hideLabel : showLabel);
   button.innerHTML = iconMarkup(revealed ? "eye-off" : "eye");
   button.classList.toggle("is-active", revealed);
   button.setAttribute("aria-pressed", String(revealed));
@@ -1395,10 +1504,10 @@ async function loadAudit() {
   renderAuditOperationRows($("#audit-events"), data.operations, direction);
   const label = direction === "replacement" ? "替换" : "还原";
   const occurrenceNote = data.occurrence_count !== data.count ? ` · ${formatNumber(data.occurrence_count)} 次出现` : "";
-  $("#audit-count").textContent = `${formatNumber(data.count)} 条${label}记录${occurrenceNote}`;
-  $("#audit-window-note").textContent = data.truncated ? `当前显示最近 ${formatNumber(data.operations.length)} 条` : "";
-  $("#audit-map-heading").textContent = direction === "replacement" ? "替换内容" : "还原内容";
-  $("#audit-result-heading").textContent = direction === "replacement" ? "检测与动作" : "工具与结果";
+  $("#audit-count").textContent = uiText(`${formatNumber(data.count)} 条${label}记录${occurrenceNote}`);
+  $("#audit-window-note").textContent = uiText(data.truncated ? `当前显示最近 ${formatNumber(data.operations.length)} 条` : "");
+  $("#audit-map-heading").textContent = uiText(direction === "replacement" ? "替换内容" : "还原内容");
+  $("#audit-result-heading").textContent = uiText(direction === "replacement" ? "检测与动作" : "工具与结果");
   $("#audit-empty").classList.toggle("is-hidden", data.count !== 0);
   $(".audit-table-wrap").classList.toggle("is-hidden", data.count === 0);
   state.loaded.add("audit");
@@ -1421,21 +1530,21 @@ function setAuditDirection(direction) {
 
 function renderAuditOperationRows(target, operations, direction) {
   if (!operations.length) {
-    target.innerHTML = `<tr><td colspan="6" class="muted">暂无${direction === "replacement" ? "替换" : "还原"}记录</td></tr>`;
+    target.innerHTML = `<tr><td colspan="6" class="muted">${escapeHtml(uiText(`暂无${direction === "replacement" ? "替换" : "还原"}记录`))}</td></tr>`;
     return;
   }
   target.innerHTML = operations.map((operation) => {
     const original = operation.original === null
-      ? `<span class="operation-value-cleared">原文已清除</span>`
+      ? `<span class="operation-value-cleared">${escapeHtml(uiText("原文已清除"))}</span>`
       : `<code class="operation-value ${operation.original === "***" ? "is-masked" : ""}">${escapeHtml(operation.original)}</code>`;
     const representation = `<code class="operation-value representation">${escapeHtml(operation.representation)}</code>`;
     const mapping = direction === "replacement"
-      ? `${original}<span class="operation-arrow" aria-label="替换为">${iconMarkup("arrow-right")}</span>${representation}`
-      : `${representation}<span class="operation-arrow" aria-label="还原为">${iconMarkup("arrow-right")}</span>${original}`;
+      ? `${original}<span class="operation-arrow" aria-label="${escapeHtml(uiText("替换为"))}">${iconMarkup("arrow-right")}</span>${representation}`
+      : `${representation}<span class="operation-arrow" aria-label="${escapeHtml(uiText("还原为"))}">${iconMarkup("arrow-right")}</span>${original}`;
     const failed = operation.direction === "materialization_failed";
     const handling = direction === "replacement"
-      ? `<strong>${escapeHtml(operation.action || "替换")}</strong>${operation.detector ? `<span class="muted">${escapeHtml(operation.detector)}</span>` : ""}`
-      : `<strong>${escapeHtml(operation.tool_name || "本地工具")}</strong><span class="muted">${escapeHtml(operation.sink || "-")}</span><span class="badge ${failed ? "red" : "green"}">${escapeHtml(failed ? "未还原" : "已还原")}</span><code class="audit-result-code">${escapeHtml(operation.result_code || "-")}</code>`;
+      ? `<strong>${escapeHtml(uiText(operation.action || "替换"))}</strong>${operation.detector ? `<span class="muted">${escapeHtml(uiText(operation.detector))}</span>` : ""}`
+      : `<strong>${escapeHtml(uiText(operation.tool_name || "本地工具"))}</strong><span class="muted">${escapeHtml(uiText(operation.sink || "-"))}</span><span class="badge ${failed ? "red" : "green"}">${escapeHtml(uiText(failed ? "未还原" : "已还原"))}</span><code class="audit-result-code">${escapeHtml(operation.result_code || "-")}</code>`;
     const labels = {
       time: uiText("时间"),
       mapping: uiText(direction === "replacement" ? "替换内容" : "还原内容"),
@@ -1451,23 +1560,23 @@ function renderAuditOperationRows(target, operations, direction) {
 
 function renderAuditRequestRows(target, requests) {
   if (!requests.length) {
-    target.innerHTML = `<tr><td colspan="7" class="muted">暂无匹配请求</td></tr>`;
+    target.innerHTML = `<tr><td colspan="7" class="muted">${escapeHtml(uiText("暂无匹配请求"))}</td></tr>`;
     return;
   }
   target.innerHTML = requests.map((request) => {
     const replacement = formatOperationCount(request.replacement_count, request.replacement_unique_count);
     const materialization = formatOperationCount(request.materialization_count, request.materialization_unique_count);
-    const failure = request.materialization_failed_count ? `<span class="operation-failure">${formatNumber(request.materialization_failed_count)} 未还原</span>` : "";
-    return `<tr><td>${formatDateTime(request.timestamp)}</td><td>${replacement}</td><td>${materialization}${failure}</td><td><span class="badge ${statusClass(request.status)}">${escapeHtml(auditStatusLabel(request.status))}</span></td><td class="mono">${escapeHtml(request.endpoint || "-")}</td><td>${escapeHtml(request.session || "-")}</td><td><button class="row-action icon-row-button" type="button" data-audit-request-id="${escapeHtml(request.request_id)}" aria-label="查看请求详情" title="查看请求详情">${iconMarkup("search")}</button></td></tr>`;
+    const failure = request.materialization_failed_count ? `<span class="operation-failure">${escapeHtml(uiText(`${formatNumber(request.materialization_failed_count)} 未还原`))}</span>` : "";
+    return `<tr><td>${formatDateTime(request.timestamp)}</td><td>${replacement}</td><td>${materialization}${failure}</td><td><span class="badge ${statusClass(request.status)}">${escapeHtml(auditStatusLabel(request.status))}</span></td><td class="mono">${escapeHtml(request.endpoint || "-")}</td><td>${escapeHtml(request.session || "-")}</td><td><button class="row-action icon-row-button" type="button" data-audit-request-id="${escapeHtml(request.request_id)}" aria-label="${escapeHtml(uiText("查看请求详情"))}" title="${escapeHtml(uiText("查看请求详情"))}">${iconMarkup("search")}</button></td></tr>`;
   }).join("");
   renderIcons(target);
   $$('[data-audit-request-id]', target).forEach((button) => button.addEventListener("click", () => openAuditRequestDetail(button.dataset.auditRequestId).catch(handleError)));
 }
 
 function formatOperationCount(count, uniqueCount) {
-  if (!count) return `<span class="muted">无</span>`;
+  if (!count) return `<span class="muted">${escapeHtml(uiText("无"))}</span>`;
   const unique = Number(uniqueCount || 0);
-  return `<strong class="operation-count">${formatNumber(count)} 次</strong>${unique ? `<span class="muted">${formatNumber(unique)} 项</span>` : ""}`;
+  return `<strong class="operation-count">${escapeHtml(uiText(`${formatNumber(count)} 次`))}</strong>${unique ? `<span class="muted">${escapeHtml(uiText(`${formatNumber(unique)} 项`))}</span>` : ""}`;
 }
 
 async function openAuditRequestDetail(requestId) {
@@ -1475,7 +1584,7 @@ async function openAuditRequestDetail(requestId) {
   state.auditDetailRequestId = requestId;
   $("#modal-kicker").textContent = "AGENT REQUEST";
   $("#modal-title").textContent = requestId;
-  $("#modal-body").innerHTML = `<div class="detail-loading">正在读取安全审计详情…</div>`;
+  $("#modal-body").innerHTML = `<div class="detail-loading">${escapeHtml(uiText("正在读取安全审计详情…"))}</div>`;
   if (!$("#detail-modal").open) $("#detail-modal").showModal();
   const detail = await api(`/audit/requests/${encodeURIComponent(requestId)}?include_raw=${includeRaw}`);
   if (!$("#detail-modal").open || state.auditDetailRequestId !== requestId || state.auditShowRaw !== includeRaw) return;
@@ -1497,14 +1606,14 @@ function renderAuditRequestDetail(detail) {
   }
   if (detail.upstream_error_event) fields.push(["上游事件", detail.upstream_error_event]);
   if (upstreamTrace) fields.push(["上游请求标识", upstreamTrace]);
-  let content = `<dl class="detail-grid">${fields.map(([key, value]) => `<dt>${escapeHtml(key)}</dt><dd>${escapeHtml(value)}</dd>`).join("")}</dl>`;
+  let content = `<dl class="detail-grid">${fields.map(([key, value]) => `<dt>${escapeHtml(uiText(key))}</dt><dd>${escapeHtml(uiText(value))}</dd>`).join("")}</dl>`;
   content += renderOperationSection("上行替换", "UPSTREAM REPLACEMENTS", detail.replacements, "replacement");
   content += renderOperationSection("本地还原", "LOCAL MATERIALIZATIONS", detail.materializations, "materialization");
   if (detail.materialization_failures.length || Object.keys(detail.failure_reasons || {}).length || detail.parse_errors) {
     content += renderAuditFailureSection(detail);
   }
   if (detail.details_truncated) {
-    content += `<div class="audit-truncated-note">另有 ${formatNumber(detail.omitted_count)} 项操作仅计入总数。</div>`;
+    content += `<div class="audit-truncated-note">${escapeHtml(uiText(`另有 ${formatNumber(detail.omitted_count)} 项操作仅计入总数。`))}</div>`;
   }
   $("#modal-body").innerHTML = content;
   renderIcons($("#modal-body"));
@@ -1513,18 +1622,18 @@ function renderAuditRequestDetail(detail) {
 function renderOperationSection(title, kicker, operations, direction) {
   const rows = operations.length
     ? operations.map((operation) => renderAuditOperation(operation, direction)).join("")
-    : `<div class="audit-operation-empty">本次请求没有${escapeHtml(title)}。</div>`;
-  return `<section class="audit-operation-section"><div class="audit-operation-heading"><div><p class="section-kicker">${escapeHtml(kicker)}</p><h3>${escapeHtml(title)}</h3></div><span>${formatNumber(operations.length)} 项</span></div><div class="audit-operation-list">${rows}</div></section>`;
+    : `<div class="audit-operation-empty">${escapeHtml(uiText(`本次请求没有${title}。`))}</div>`;
+  return `<section class="audit-operation-section"><div class="audit-operation-heading"><div><p class="section-kicker">${escapeHtml(kicker)}</p><h3>${escapeHtml(uiText(title))}</h3></div><span>${escapeHtml(uiText(`${formatNumber(operations.length)} 项`))}</span></div><div class="audit-operation-list">${rows}</div></section>`;
 }
 
 function renderAuditOperation(operation, direction) {
   const original = operation.original === null
-    ? `<span class="operation-value-cleared">原文已清除</span>`
+    ? `<span class="operation-value-cleared">${escapeHtml(uiText("原文已清除"))}</span>`
     : `<code class="operation-value ${operation.original === "***" ? "is-masked" : ""}">${escapeHtml(operation.original)}</code>`;
   const representation = `<code class="operation-value representation">${escapeHtml(operation.representation)}</code>`;
   const mapping = direction === "replacement"
-    ? `${original}<span class="operation-arrow" aria-label="替换为">${iconMarkup("arrow-right")}</span>${representation}`
-    : `${representation}<span class="operation-arrow" aria-label="还原为">${iconMarkup("arrow-right")}</span>${original}`;
+    ? `${original}<span class="operation-arrow" aria-label="${escapeHtml(uiText("替换为"))}">${iconMarkup("arrow-right")}</span>${representation}`
+    : `${representation}<span class="operation-arrow" aria-label="${escapeHtml(uiText("还原为"))}">${iconMarkup("arrow-right")}</span>${original}`;
   const metadata = [
     operation.protected_value_id,
     operation.subtype || operation.kind,
@@ -1535,14 +1644,14 @@ function renderAuditOperation(operation, direction) {
     operation.result_code,
     `${formatNumber(operation.occurrence_count)} 次`,
   ].filter(Boolean);
-  return `<article class="audit-operation"><div class="operation-map">${mapping}</div><div class="operation-metadata">${metadata.map((item, index) => `<span class="${index === 0 ? "mapping-id" : ""}">${escapeHtml(item)}</span>`).join("")}</div>${operation.value_state !== "active" ? `<span class="operation-state">${escapeHtml(valueStateLabel(operation.value_state))}</span>` : ""}</article>`;
+  return `<article class="audit-operation"><div class="operation-map">${mapping}</div><div class="operation-metadata">${metadata.map((item, index) => `<span class="${index === 0 ? "mapping-id" : ""}">${escapeHtml(uiText(item))}</span>`).join("")}</div>${operation.value_state !== "active" ? `<span class="operation-state">${escapeHtml(valueStateLabel(operation.value_state))}</span>` : ""}</article>`;
 }
 
 function renderAuditFailureSection(detail) {
   const failures = detail.materialization_failures.map((operation) => renderAuditOperation(operation, "materialization"));
-  const reasons = Object.entries(detail.failure_reasons || {}).map(([code, count]) => `<div class="failure-reason"><code>${escapeHtml(code)}</code><strong>${formatNumber(count)} 次</strong></div>`);
-  if (detail.parse_errors) reasons.push(`<div class="failure-reason"><code>STREAM_PARSE_ERROR</code><strong>${formatNumber(detail.parse_errors)} 次</strong></div>`);
-  return `<section class="audit-operation-section failure-section"><div class="audit-operation-heading"><div><p class="section-kicker">NOT MATERIALIZED</p><h3>未还原与协议错误</h3></div></div><div class="audit-operation-list">${failures.join("")}${reasons.join("")}</div></section>`;
+  const reasons = Object.entries(detail.failure_reasons || {}).map(([code, count]) => `<div class="failure-reason"><code>${escapeHtml(code)}</code><strong>${escapeHtml(uiText(`${formatNumber(count)} 次`))}</strong></div>`);
+  if (detail.parse_errors) reasons.push(`<div class="failure-reason"><code>STREAM_PARSE_ERROR</code><strong>${escapeHtml(uiText(`${formatNumber(detail.parse_errors)} 次`))}</strong></div>`);
+  return `<section class="audit-operation-section failure-section"><div class="audit-operation-heading"><div><p class="section-kicker">NOT MATERIALIZED</p><h3>${escapeHtml(uiText("未还原与协议错误"))}</h3></div></div><div class="audit-operation-list">${failures.join("")}${reasons.join("")}</div></section>`;
 }
 
 function handleRawVisibilityChange() {
@@ -1603,17 +1712,17 @@ function clearAuditDetail(clearBody = true, clearRequest = true) {
 
 function renderEventRows(target, events, compact) {
   if (!events.length) {
-    target.innerHTML = `<tr><td colspan="7" class="muted">暂无记录</td></tr>`;
+    target.innerHTML = `<tr><td colspan="7" class="muted">${escapeHtml(uiText("暂无记录"))}</td></tr>`;
     return;
   }
   target.innerHTML = events.map((event) => {
     const primary = event.detections?.[0] || {};
     const risk = highestRisk(event.detections || []);
-    const type = primary.subtype || primary.type || event.action || event.phase || "event";
-    const action = primary.action || event.action || event.termination || "recorded";
+    const type = findingSubtypeLabel(primary.subtype || primary.type || event.action || event.phase || "event");
+    const action = uiText(primary.action || event.action || event.termination || "recorded");
     const status = event.parse_errors ? "error" : event.termination || (event.status ? String(event.status) : "safe");
-    if (compact) return `<tr><td>${formatTime(event.timestamp)}</td><td><span class="badge ${risk}">${escapeHtml(type)}</span></td><td>${escapeHtml(action)}</td><td class="mono">${escapeHtml(event.endpoint || "-")}</td><td><span class="badge ${statusClass(status)}">${escapeHtml(status)}</span></td></tr>`;
-    return `<tr><td>${formatDateTime(event.timestamp)}</td><td>${escapeHtml(event.phase)}</td><td><span class="badge ${risk}">${escapeHtml(type)}</span>${event.detection_count > 1 ? `<span class="muted"> +${event.detection_count - 1}</span>` : ""}</td><td>${escapeHtml(action)}</td><td class="mono">${escapeHtml(event.endpoint || "-")}</td><td>${escapeHtml(event.session || "-")}</td><td><button class="row-action icon-row-button" type="button" data-event-id="${escapeHtml(event.id)}" aria-label="查看事件详情" title="查看事件详情">${iconMarkup("search")}</button></td></tr>`;
+    if (compact) return `<tr><td>${formatTime(event.timestamp)}</td><td><span class="badge ${risk}">${escapeHtml(type)}</span></td><td>${escapeHtml(action)}</td><td class="mono">${escapeHtml(event.endpoint || "-")}</td><td><span class="badge ${statusClass(status)}">${escapeHtml(auditStatusLabel(status))}</span></td></tr>`;
+    return `<tr><td>${formatDateTime(event.timestamp)}</td><td>${escapeHtml(uiText(event.phase))}</td><td><span class="badge ${risk}">${escapeHtml(type)}</span>${event.detection_count > 1 ? `<span class="muted"> +${event.detection_count - 1}</span>` : ""}</td><td>${escapeHtml(action)}</td><td class="mono">${escapeHtml(event.endpoint || "-")}</td><td>${escapeHtml(event.session || "-")}</td><td><button class="row-action icon-row-button" type="button" data-event-id="${escapeHtml(event.id)}" aria-label="${escapeHtml(uiText("查看事件详情"))}" title="${escapeHtml(uiText("查看事件详情"))}">${iconMarkup("search")}</button></td></tr>`;
   }).join("");
   if (!compact) renderIcons(target);
   if (!compact) $$('[data-event-id]', target).forEach((button) => button.addEventListener("click", () => openEventDetail(events.find((event) => event.id === button.dataset.eventId))));
@@ -1623,11 +1732,11 @@ function openEventDetail(event) {
   $("#modal-kicker").textContent = "AUDIT EVENT";
   $("#modal-title").textContent = event.id;
   const upstreamTrace = Object.entries(event.upstream_trace_headers || {}).map(([key, value]) => `${key}: ${value}`).join(" · ");
-  const fields = [["时间", formatDateTime(event.timestamp)],["阶段", event.phase],["端点", event.endpoint || "-"],["请求", event.request_id || "-"],["会话", event.session],["状态", event.termination || event.status || "recorded"]];
+  const fields = [["时间", formatDateTime(event.timestamp)],["阶段", uiText(event.phase)],["端点", event.endpoint || "-"],["请求", event.request_id || "-"],["会话", event.session],["状态", auditStatusLabel(event.termination || event.status || "recorded")]];
   if (event.upstream_error_code || event.upstream_error_type) fields.push(["上游错误", event.upstream_error_code || event.upstream_error_type]);
   if (event.upstream_error_event) fields.push(["上游事件", event.upstream_error_event]);
   if (upstreamTrace) fields.push(["上游请求标识", upstreamTrace]);
-  $("#modal-body").innerHTML = `<dl class="detail-grid">${fields.map(([key, value]) => `<dt>${escapeHtml(key)}</dt><dd>${escapeHtml(value)}</dd>`).join("")}</dl><div class="detail-detections"><p class="section-kicker">SAFE DETECTIONS</p>${event.detections.length ? `<div class="finding-list">${event.detections.map((item) => `<div class="finding-row"><span>${escapeHtml(item.subtype || item.type)}</span><strong>${escapeHtml(item.action || item.result_code || "recorded")}</strong></div>`).join("")}</div>` : `<span class="muted">该事件没有检测项。</span>`}</div>`;
+  $("#modal-body").innerHTML = `<dl class="detail-grid">${fields.map(([key, value]) => `<dt>${escapeHtml(uiText(key))}</dt><dd>${escapeHtml(uiText(value))}</dd>`).join("")}</dl><div class="detail-detections"><p class="section-kicker">SAFE DETECTIONS</p>${event.detections.length ? `<div class="finding-list">${event.detections.map((item) => `<div class="finding-row"><span>${escapeHtml(findingSubtypeLabel(item.subtype || item.type))}</span><strong>${escapeHtml(uiText(item.action || item.result_code || "recorded"))}</strong></div>`).join("")}</div>` : `<span class="muted">${escapeHtml(uiText("该事件没有检测项。"))}</span>`}</div>`;
   $("#detail-modal").showModal();
 }
 
@@ -1643,15 +1752,15 @@ async function loadProtected() {
   state.protected = data;
   renderMappingRetention(data.retention_policy);
   const summaries = [["当前清单",data.counts.total],["活跃",data.counts.active],["Secret",data.kinds.secret || 0],["PII / Path",(data.kinds.pii || 0) + (data.kinds.path || 0)]];
-  $("#protected-summary").innerHTML = summaries.map(([label, value]) => `<div class="summary-cell"><span>${escapeHtml(label)}</span><strong>${formatNumber(value)}</strong></div>`).join("");
+  $("#protected-summary").innerHTML = summaries.map(([label, value]) => `<div class="summary-cell"><span>${escapeHtml(uiText(label))}</span><strong>${formatNumber(value)}</strong></div>`).join("");
   const target = $("#protected-values");
   target.innerHTML = data.records.length ? data.records.map((record) => {
     const original = record.original === null
-      ? `<span class="protected-original-cleared">原文已清除</span>`
+      ? `<span class="protected-original-cleared">${escapeHtml(uiText("原文已清除"))}</span>`
       : `<code class="protected-original ${record.original === "***" ? "is-masked" : ""}">${escapeHtml(record.original)}</code>`;
     const labels = ["标识", "原文", "分类", "作用域", "状态", "最后使用", "到期时间", "操作"].map(uiText);
-    return `<tr><td data-label="${escapeHtml(labels[0])}"><span class="protected-cell-stack"><strong>${escapeHtml(record.label)}</strong><span class="muted mono">${escapeHtml(record.id.slice(-6))}</span></span></td><td class="protected-original-cell" data-label="${escapeHtml(labels[1])}">${original}</td><td data-label="${escapeHtml(labels[2])}"><span class="protected-cell-stack">${escapeHtml(record.subtype)}<span class="muted">${escapeHtml(record.kind)}</span></span></td><td data-label="${escapeHtml(labels[3])}"><span class="protected-cell-stack">${escapeHtml(record.scope)}<span class="muted">${escapeHtml(record.session)}</span></span></td><td data-label="${escapeHtml(labels[4])}"><span class="badge ${record.display_state}">${stateLabel(record.display_state)}</span></td><td data-label="${escapeHtml(labels[5])}">${formatRelative(record.last_seen_at)}</td><td data-label="${escapeHtml(labels[6])}">${record.auto_expires ? formatRelative(record.expires_at) : "不自动过期"}</td><td data-label="${escapeHtml(labels[7])}">${record.display_state === "active" ? `<button class="row-action danger icon-row-button" type="button" data-revoke="${escapeHtml(record.id)}" aria-label="撤销受保护值 ${escapeHtml(record.label)}" title="撤销受保护值">${iconMarkup("ban")}</button>` : ""}</td></tr>`;
-  }).join("") : `<tr><td colspan="8" class="muted">没有受保护值记录</td></tr>`;
+    return `<tr><td data-label="${escapeHtml(labels[0])}"><span class="protected-cell-stack"><strong>${escapeHtml(record.label)}</strong><span class="muted mono">${escapeHtml(record.id.slice(-6))}</span></span></td><td class="protected-original-cell" data-label="${escapeHtml(labels[1])}">${original}</td><td data-label="${escapeHtml(labels[2])}"><span class="protected-cell-stack">${escapeHtml(findingSubtypeLabel(record.subtype))}<span class="muted">${escapeHtml(uiText(record.kind))}</span></span></td><td data-label="${escapeHtml(labels[3])}"><span class="protected-cell-stack">${escapeHtml(uiText(record.scope))}<span class="muted">${escapeHtml(uiText(record.session))}</span></span></td><td data-label="${escapeHtml(labels[4])}"><span class="badge ${record.display_state}">${stateLabel(record.display_state)}</span></td><td data-label="${escapeHtml(labels[5])}">${formatRelative(record.last_seen_at)}</td><td data-label="${escapeHtml(labels[6])}">${record.auto_expires ? formatRelative(record.expires_at) : escapeHtml(uiText("不自动过期"))}</td><td data-label="${escapeHtml(labels[7])}">${record.display_state === "active" ? `<button class="row-action danger icon-row-button" type="button" data-revoke="${escapeHtml(record.id)}" aria-label="${escapeHtml(uiText(`撤销受保护值 ${record.label}`))}" title="${escapeHtml(uiText("撤销受保护值"))}">${iconMarkup("ban")}</button>` : ""}</td></tr>`;
+  }).join("") : `<tr><td colspan="8" class="muted">${escapeHtml(uiText("没有受保护值记录"))}</td></tr>`;
   renderIcons(target);
   $$('[data-revoke]', target).forEach((button) => button.addEventListener("click", () => {
     const record = data.records.find((item) => item.id === button.dataset.revoke);
@@ -1698,8 +1807,8 @@ function syncMappingRetentionControls() {
   const unit = Number($("#mapping-retention-unit").value || 60);
   $("#mapping-retention-duration").disabled = !enabled;
   $("#mapping-retention-unit").disabled = !enabled;
-  $("#retention-enabled-label").textContent = enabled ? "开启" : "关闭";
-  $("#retention-status").textContent = enabled && duration > 0 ? `空闲 ${formatRetentionDuration(duration * unit)}后清除` : "永久保留";
+  $("#retention-enabled-label").textContent = uiText(enabled ? "开启" : "关闭");
+  $("#retention-status").textContent = uiText(enabled && duration > 0 ? `空闲 ${formatRetentionDuration(duration * unit)}后清除` : "永久保留");
   $("#retention-status").className = `badge ${enabled ? "amber" : "neutral"}`;
 }
 
@@ -1729,7 +1838,7 @@ function retentionDurationParts(seconds) {
 
 function formatRetentionDuration(seconds) {
   const [duration, unit] = retentionDurationParts(seconds);
-  return `${formatNumber(duration)} ${unit === 86400 ? "天" : unit === 3600 ? "小时" : "分钟"}`;
+  return `${formatNumber(duration)} ${uiText(unit === 86400 ? "天" : unit === 3600 ? "小时" : "分钟")}`;
 }
 
 async function revokeProtected(id) {
@@ -1745,20 +1854,764 @@ async function purgeExpired() {
   await loadProtected();
 }
 
+async function loadDetectors() {
+  state.detectorCatalog = await api("/detector-configurations");
+  renderConfigurationOptions();
+  const activeId = state.detectorCatalog.active_configuration_id;
+  await loadDetectorConfiguration(activeId);
+  state.loaded.add("detectors");
+}
+
+function renderConfigurationOptions() {
+  const select = $("#configuration-select");
+  const options = (items) => items.map((item) => `<option value="${escapeHtml(item.id)}">${escapeHtml(uiText(item.name))}${item.is_active ? ` · ${escapeHtml(uiText("当前启用"))}` : ""}</option>`).join("");
+  select.innerHTML = `<optgroup label="${escapeHtml(uiText("内置与部署模板"))}">${options(state.detectorCatalog.templates)}</optgroup><optgroup label="${escapeHtml(uiText("用户配置"))}">${options(state.detectorCatalog.configurations)}</optgroup>`;
+  if (state.detectorConfiguration) select.value = state.detectorConfiguration.id;
+}
+
+async function loadDetectorConfiguration(configurationId) {
+  const data = await api(`/detector-configurations/${encodeURIComponent(configurationId)}`);
+  state.detectorConfiguration = data;
+  state.detectorDraft = structuredClone(data);
+  $("#configuration-select").value = data.id;
+  renderDetectorConfiguration();
+}
+
+function selectDetectorConfiguration(configurationId) {
+  if (!configurationId) return;
+  const alreadyShowing = configurationId === state.detectorConfiguration?.id;
+  const alreadyActive = configurationId === state.detectorCatalog?.active_configuration_id;
+  if (alreadyShowing && alreadyActive) return;
+  if (detectorConfigurationDirty()) {
+    $("#configuration-select").value = state.detectorConfiguration.id;
+    return confirmAction(uiText("放弃未保存更改"), uiText("切换配置将丢弃当前草稿并立即启用所选配置。"), () => activateDetectorConfiguration(configurationId));
+  }
+  activateDetectorConfiguration(configurationId);
+}
+
+function renderDetectorConfiguration() {
+  const configuration = state.detectorDraft;
+  if (!configuration) return;
+  const readonly = configuration.readonly;
+  $("#configuration-name").value = uiText(configuration.name);
+  $("#configuration-description").value = uiText(configuration.description || "");
+  $("#configuration-name").dataset.sourceValue = configuration.name;
+  $("#configuration-description").dataset.sourceValue = configuration.description || "";
+  $("#configuration-timeout").value = configuration.flow_timeout_ms ?? 1500;
+  for (const id of ["configuration-name", "configuration-description", "configuration-timeout"]) $("#" + id).disabled = readonly;
+  const readonlyNote = configuration.readonly
+    ? configuration.id.startsWith("builtin.")
+      ? "默认预设不可编辑，请复制或新建自定义配置。模块开关仍可直接调整。"
+      : "部署模板由 YAML 管理，不能在 WebUI 中编辑或切换模块。"
+    : "";
+  $("#configuration-status").innerHTML = `${configuration.is_active ? `<span class="badge green">${escapeHtml(uiText("当前启用"))}</span>` : ""}${readonlyNote ? `<span class="configuration-readonly-note">${escapeHtml(uiText(readonlyNote))}</span>` : ""}`;
+  setIconButton($("#duplicate-configuration"), "copy", readonly ? "复制并编辑检测器配置" : "复制检测器配置");
+  $("#save-configuration").disabled = readonly || !detectorConfigurationDirty();
+  $("#delete-configuration").disabled = readonly;
+  $("#add-module").disabled = readonly;
+  renderDetectorModules();
+  $("#detection-output").innerHTML = `<span class="muted">${escapeHtml(uiText("等待测试"))}</span>`;
+  $("#detection-diagnostics").innerHTML = "";
+}
+
+function renderDetectorModules() {
+  const configuration = state.detectorDraft;
+  const readonly = configuration.readonly;
+  const modules = configuration.modules || [];
+  const target = $("#detector-modules");
+  if (!modules.length) {
+    target.innerHTML = `<div class="empty-pipeline"><strong>${escapeHtml(uiText("配置中还没有检测模块"))}</strong><span>${escapeHtml(uiText("新增模块后，它们会按这里的顺序依次执行。"))}</span></div>`;
+    return;
+  }
+  target.innerHTML = modules.map((module, index) => {
+    const type = moduleTypeLabel(module.type);
+    const typeIcon = moduleTypeIcon(module.type);
+    const unavailable = module.type === "local_model" && module.enabled && module.runtime_available === false;
+    const status = !module.enabled ? "disabled" : unavailable ? "unavailable" : module.editable === false ? "managed" : "activated";
+    const statusClass = status === "activated" ? "green" : status === "unavailable" ? "red" : "neutral";
+    const moduleName = uiText(module.name);
+    const dragLabel = uiText(`拖动排序 ${module.name}`);
+    const editLabel = uiText(`编辑 ${module.name}`);
+    const copyLabel = uiText(`复制 ${module.name}`);
+    const deleteLabel = uiText(`删除 ${module.name}`);
+    const enableLabel = uiText(`启用 ${module.name}`);
+    const statusMarkup = status === "unavailable"
+      ? `<button class="badge ${statusClass} module-status-link" type="button" data-view="local-models" data-local-model-target="${escapeHtml(module.local_model_id || "")}" title="${escapeHtml(uiText("打开本地模型管理"))}">${escapeHtml(moduleStatusLabel(status))}</button>`
+      : `<span class="badge ${statusClass}">${escapeHtml(moduleStatusLabel(status))}</span>`;
+    const editable = !readonly && module.editable !== false;
+    const dragControl = editable ? `<button class="module-drag-handle" type="button" title="${escapeHtml(uiText("拖动排序"))}" aria-label="${escapeHtml(dragLabel)}" aria-keyshortcuts="Alt+ArrowUp Alt+ArrowDown" aria-grabbed="false" data-module-drag="${index}">${iconMarkup("grip-vertical")}</button>` : `<span class="module-drag-spacer" aria-hidden="true"></span>`;
+    const controls = editable ? `<div class="module-actions"><button type="button" title="${escapeHtml(uiText("编辑模块"))}" aria-label="${escapeHtml(editLabel)}" data-module-edit="${index}">${iconMarkup("pencil")}</button><button type="button" title="${escapeHtml(uiText("复制模块"))}" aria-label="${escapeHtml(copyLabel)}" data-module-copy="${index}">${iconMarkup("copy")}</button><button type="button" class="danger" title="${escapeHtml(uiText("删除模块"))}" aria-label="${escapeHtml(deleteLabel)}" data-module-delete="${index}">${iconMarkup("trash-2")}</button></div>` : "";
+    const toggleDisabled = module.editable === false || (readonly && !configuration.id.startsWith("builtin."));
+    return `<div class="module-row" data-module-row="${index}">${dragControl}<span class="module-order">${index + 1}</span><div class="module-name"><span class="module-symbol module-symbol-${escapeHtml(module.type)}" aria-hidden="true" title="${escapeHtml(type)}">${iconMarkup(typeIcon)}</span><div><strong>${escapeHtml(moduleName)}</strong><span>${escapeHtml(type)}</span></div></div>${statusMarkup}${controls}<label class="toggle"><input type="checkbox" data-module-toggle="${index}" ${module.enabled ? "checked" : ""} ${toggleDisabled ? "disabled" : ""} aria-label="${escapeHtml(enableLabel)}"><span></span></label></div>`;
+  }).join("");
+  renderIcons(target);
+  $$('[data-module-toggle]', target).forEach((input) => input.addEventListener("change", () => updateModuleEnabled(Number(input.dataset.moduleToggle), input.checked)));
+  $$('[data-module-drag]', target).forEach((button) => {
+    button.addEventListener("pointerdown", beginModuleDrag);
+    button.addEventListener("keydown", handleModuleDragKeydown);
+  });
+  $$('[data-module-edit]', target).forEach((button) => button.addEventListener("click", () => openModuleEditor(Number(button.dataset.moduleEdit))));
+  $$('[data-module-copy]', target).forEach((button) => button.addEventListener("click", () => duplicateModule(Number(button.dataset.moduleCopy))));
+  $$('[data-module-delete]', target).forEach((button) => button.addEventListener("click", () => removeModule(Number(button.dataset.moduleDelete))));
+}
+
+function updateConfigurationFields(event) {
+  if (!state.detectorDraft || state.detectorDraft.readonly) return;
+  const sourceValue = event.target.dataset.sourceValue;
+  const persistedValue = sourceValue !== undefined && event.target.value === uiText(sourceValue) ? sourceValue : event.target.value;
+  if (event.target.id === "configuration-name") state.detectorDraft.name = persistedValue;
+  else if (event.target.id === "configuration-description") state.detectorDraft.description = persistedValue;
+  else if (event.target.id === "configuration-timeout") state.detectorDraft.flow_timeout_ms = event.target.value ? Number(event.target.value) : 1500;
+  renderDetectorSaveState();
+}
+
+function renderDetectorSaveState() {
+  $("#save-configuration").disabled = state.detectorDraft.readonly || !detectorConfigurationDirty();
+}
+
+function detectorConfigurationPayload(configuration) {
+  return {
+    revision: configuration.revision,
+    name: configuration.name,
+    description: configuration.description || "",
+    flow_timeout_ms: configuration.flow_timeout_ms || 1500,
+    content_tags: configuration.content_tags || [],
+    modules: configuration.modules,
+  };
+}
+
+function detectorConfigurationDirty() {
+  if (!state.detectorConfiguration || !state.detectorDraft || state.detectorDraft.readonly) return false;
+  return JSON.stringify(detectorConfigurationPayload(state.detectorConfiguration)) !== JSON.stringify(detectorConfigurationPayload(state.detectorDraft));
+}
+
+async function saveDetectorConfiguration() {
+  if (!detectorConfigurationDirty()) return;
+  try {
+    const data = await api(`/detector-configurations/${encodeURIComponent(state.detectorDraft.id)}`, {method: "PUT", body: JSON.stringify(detectorConfigurationPayload(state.detectorDraft))});
+    state.detectorConfiguration = data;
+    state.detectorDraft = structuredClone(data);
+    await refreshDetectorCatalog(data.id);
+    renderDetectorConfiguration();
+    toast("检测器配置已保存并校验");
+  } catch (error) { handleError(error); }
+}
+
+async function activateDetectorConfiguration(configurationId) {
+  const previousId = state.detectorConfiguration?.id || state.detectorCatalog?.active_configuration_id || "";
+  const select = $("#configuration-select");
+  select.disabled = true;
+  try {
+    const data = await api(`/detector-configurations/${encodeURIComponent(configurationId)}/activate`, {method: "POST"});
+    await refreshDetectorCatalog(data.id);
+    await loadDetectorConfiguration(data.id);
+    state.loaded.delete("overview");
+    toast(`${uiText("已切换检测器配置")}：${uiText(data.name)}`);
+    return true;
+  } catch (error) {
+    if (previousId) select.value = previousId;
+    handleError(error);
+    return false;
+  } finally {
+    select.disabled = false;
+  }
+}
+
+function deleteDetectorConfiguration() {
+  const configuration = state.detectorDraft;
+  if (configuration.readonly) return;
+  confirmAction("删除检测器配置", `${configuration.name} 将被永久删除。`, async () => {
+    if (configuration.is_active) {
+      const fallback = state.detectorCatalog.templates?.find((item) => item.id !== configuration.id);
+      if (!fallback) throw new Error(uiText("没有可用于接替的默认检测器配置。"));
+      await api(`/detector-configurations/${encodeURIComponent(fallback.id)}/activate`, {method: "POST"});
+    }
+    const catalog = await api(`/detector-configurations/${encodeURIComponent(configuration.id)}`, {method: "DELETE"});
+    state.detectorCatalog = catalog;
+    renderConfigurationOptions();
+    await loadDetectorConfiguration(catalog.active_configuration_id);
+    toast("检测器配置已删除");
+  });
+}
+
+function openConfigurationCreator() {
+  $("#configuration-form").reset();
+  $("#configuration-error").textContent = "";
+  const all = [...state.detectorCatalog.templates, ...state.detectorCatalog.configurations];
+  $("#configuration-source").innerHTML = `<option value="">${escapeHtml(uiText("空白配置"))}</option>${all.map((item) => `<option value="${escapeHtml(item.id)}">${escapeHtml(uiText(item.name))}</option>`).join("")}`;
+  $("#configuration-source").value = state.detectorConfiguration?.id || "builtin.comprehensive";
+  $("#configuration-form [name=name]").value = uiText("新检测配置");
+  $("#configuration-modal").showModal();
+}
+
+async function createDetectorConfiguration(event) {
+  event.preventDefault();
+  const form = new FormData(event.target);
+  $("#configuration-error").textContent = "";
+  try {
+    const data = await api("/detector-configurations", {method: "POST", body: JSON.stringify({name: form.get("name"), source_id: form.get("source_id")})});
+    $("#configuration-modal").close();
+    if (await activateDetectorConfiguration(data.id)) toast(uiText("检测器配置已创建并启用"));
+  } catch (error) { $("#configuration-error").textContent = localizedBackendError(error, "detector"); }
+}
+
+async function duplicateDetectorConfiguration() {
+  try {
+    const data = await api("/detector-configurations", {method: "POST", body: JSON.stringify({source_id: state.detectorDraft.id})});
+    if (await activateDetectorConfiguration(data.id)) toast(uiText("已创建并启用可编辑副本"));
+  } catch (error) { handleError(error); }
+}
+
+async function refreshDetectorCatalog(selectedId) {
+  state.detectorCatalog = await api("/detector-configurations");
+  renderConfigurationOptions();
+  if (selectedId) $("#configuration-select").value = selectedId;
+}
+
+async function updateModuleEnabled(index, enabled) {
+  if (state.detectorDraft.readonly) {
+    const configurationId = state.detectorDraft.id;
+    const moduleId = state.detectorDraft.modules[index].id;
+    try {
+      const data = await api(`/detector-configurations/${encodeURIComponent(configurationId)}/modules/${encodeURIComponent(moduleId)}/enabled`, {
+        method: "PUT",
+        body: JSON.stringify({enabled}),
+      });
+      state.detectorConfiguration = data;
+      state.detectorDraft = structuredClone(data);
+      state.loaded.delete("overview");
+      renderDetectorConfiguration();
+      toast(enabled ? "检测模块已启用" : "检测模块已停用");
+    } catch (error) {
+      await loadDetectorConfiguration(configurationId);
+      handleError(error);
+    }
+    return;
+  }
+  state.detectorDraft.modules[index].enabled = enabled;
+  renderDetectorConfiguration();
+}
+
+function moveModule(index, direction) {
+  const target = index + direction;
+  if (target < 0 || target >= state.detectorDraft.modules.length) return false;
+  const modules = state.detectorDraft.modules;
+  [modules[index], modules[target]] = [modules[target], modules[index]];
+  renderDetectorConfiguration();
+  return true;
+}
+
+function beginModuleDrag(event) {
+  if (event.pointerType === "mouse" && event.button !== 0) return;
+  const handle = event.currentTarget;
+  state.moduleDrag = {
+    handle,
+    pointerId: event.pointerId,
+    sourceIndex: Number(handle.dataset.moduleDrag),
+    targetIndex: null,
+    placement: null,
+    startX: event.clientX,
+    startY: event.clientY,
+    active: false,
+  };
+  handle.setPointerCapture?.(event.pointerId);
+  handle.addEventListener("pointermove", updateModuleDrag);
+  handle.addEventListener("pointerup", finishModuleDrag);
+  handle.addEventListener("pointercancel", cancelModuleDrag);
+}
+
+function updateModuleDrag(event) {
+  const drag = state.moduleDrag;
+  if (!drag || drag.pointerId !== event.pointerId) return;
+  if (!drag.active && Math.hypot(event.clientX - drag.startX, event.clientY - drag.startY) < 5) return;
+  drag.active = true;
+  event.preventDefault();
+  drag.handle.setAttribute("aria-grabbed", "true");
+  drag.handle.closest(".module-row")?.classList.add("is-dragging");
+  document.body.classList.add("is-module-dragging");
+  clearModuleDropTarget();
+  const row = document.elementFromPoint(event.clientX, event.clientY)?.closest("[data-module-row]");
+  if (!row || !$("#detector-modules").contains(row)) {
+    drag.targetIndex = null;
+    drag.placement = null;
+    return;
+  }
+  const targetIndex = Number(row.dataset.moduleRow);
+  if (targetIndex === drag.sourceIndex) {
+    drag.targetIndex = null;
+    drag.placement = null;
+    return;
+  }
+  const bounds = row.getBoundingClientRect();
+  drag.targetIndex = targetIndex;
+  drag.placement = event.clientY < bounds.top + bounds.height / 2 ? "before" : "after";
+  row.classList.add(drag.placement === "before" ? "is-drop-before" : "is-drop-after");
+}
+
+function finishModuleDrag(event, cancelled = false) {
+  const drag = state.moduleDrag;
+  if (!drag || drag.pointerId !== event.pointerId) return;
+  drag.handle.removeEventListener("pointermove", updateModuleDrag);
+  drag.handle.removeEventListener("pointerup", finishModuleDrag);
+  drag.handle.removeEventListener("pointercancel", cancelModuleDrag);
+  if (drag.handle.hasPointerCapture?.(event.pointerId)) drag.handle.releasePointerCapture(event.pointerId);
+  drag.handle.setAttribute("aria-grabbed", "false");
+  drag.handle.closest(".module-row")?.classList.remove("is-dragging");
+  document.body.classList.remove("is-module-dragging");
+  clearModuleDropTarget();
+  state.moduleDrag = null;
+  if (!cancelled && drag.active && drag.targetIndex !== null) {
+    reorderModule(drag.sourceIndex, drag.targetIndex, drag.placement);
+  }
+}
+
+function cancelModuleDrag(event) {
+  finishModuleDrag(event, true);
+}
+
+function clearModuleDropTarget() {
+  $$(".module-row.is-drop-before, .module-row.is-drop-after", $("#detector-modules")).forEach((row) => {
+    row.classList.remove("is-drop-before", "is-drop-after");
+  });
+}
+
+function reorderModule(sourceIndex, targetIndex, placement) {
+  const modules = state.detectorDraft.modules;
+  let insertionIndex = targetIndex + (placement === "after" ? 1 : 0);
+  const [module] = modules.splice(sourceIndex, 1);
+  if (sourceIndex < insertionIndex) insertionIndex -= 1;
+  modules.splice(insertionIndex, 0, module);
+  renderDetectorConfiguration();
+  requestAnimationFrame(() => $(`[data-module-drag="${insertionIndex}"]`)?.focus());
+}
+
+function handleModuleDragKeydown(event) {
+  if (!event.altKey || !["ArrowUp", "ArrowDown"].includes(event.key)) return;
+  event.preventDefault();
+  const index = Number(event.currentTarget.dataset.moduleDrag);
+  const direction = event.key === "ArrowUp" ? -1 : 1;
+  const target = index + direction;
+  if (moveModule(index, direction)) requestAnimationFrame(() => $(`[data-module-drag="${target}"]`)?.focus());
+}
+
+function duplicateModule(index) {
+  const module = structuredClone(state.detectorDraft.modules[index]);
+  module.id = randomId("mod");
+  module.name += " 副本";
+  module.editable = true;
+  state.detectorDraft.modules.splice(index + 1, 0, module);
+  renderDetectorConfiguration();
+}
+
+function removeModule(index) {
+  const module = state.detectorDraft.modules[index];
+  confirmAction("删除检测模块", `${module.name} 将从配置草稿中移除。`, () => {
+    state.detectorDraft.modules.splice(index, 1);
+    renderDetectorConfiguration();
+  });
+}
+
+async function openModuleEditor(index) {
+  const editing = index !== null;
+  state.editingModuleIndex = index;
+  state.moduleDraft = index === null ? {
+    id: randomId("mod"), name: "新检测模块", type: "regex", enabled: true,
+    timeout_ms: null, failure_mode: "open", editable: true, config: defaultModuleConfig("regex"),
+  } : structuredClone(state.detectorDraft.modules[index]);
+  state.moduleDraftSourceName = state.moduleDraft.name;
+  $("#module-form").reset();
+  $("#module-error").textContent = "";
+  $("#module-modal-title").textContent = uiText(index === null ? "新增检测模块" : "编辑检测模块");
+  $("#module-form [name=name]").value = uiText(state.moduleDraft.name);
+  $("#module-type").value = state.moduleDraft.type;
+  $("#module-type").disabled = editing;
+  $("#module-type-field").hidden = editing;
+  $("#module-name-field").classList.toggle("full-row", editing);
+  $("#module-form [name=timeout_ms]").value = state.moduleDraft.timeout_ms ?? "";
+  $("#module-form [name=failure_mode]").value = state.moduleDraft.failure_mode || "open";
+  if (state.moduleDraft.type === "local_model") {
+    try {
+      await refreshLocalModelCatalog();
+    } catch (error) {
+      state.localModels = {models: []};
+      $("#module-error").textContent = localizedBackendError(error, "localModel");
+    }
+  }
+  renderModuleSpecificFields();
+  $("#module-modal").showModal();
+}
+
+function defaultModuleConfig(type) {
+  if (type === "regex") return {rules: []};
+  if (type === "entropy") return {min_length: 20, min_entropy: 3.5, risk: "medium"};
+  if (type === "path") return {detect_unix_home: true, detect_macos_private: true, detect_shell_config: true, detect_windows_user: true, exclude_patterns: [], path_risk: "medium"};
+  return {adapter: "transformers_token_classification", model_name: "", threshold: 0.75, device: "cpu", aggregation_strategy: "simple", labels: ["email", "phone_number", "user_name"]};
+}
+
+function renderModuleSpecificFields() {
+  const module = state.moduleDraft;
+  const target = $("#module-specific-fields");
+  if (module.type === "regex") {
+    target.innerHTML = `<div class="specific-heading"><div><p class="section-kicker">REGEX RULES</p><strong>${escapeHtml(uiText(`${module.config.rules.length} 条规则`))}</strong></div><button class="secondary-button icon-action-button" type="button" id="add-regex-rule" aria-label="${escapeHtml(uiText("添加正则规则"))}" title="${escapeHtml(uiText("添加正则规则"))}">${iconMarkup("plus")}</button></div><div class="rule-editor-list">${module.config.rules.map(renderRegexRule).join("")}</div>`;
+    renderIcons(target);
+    $("#add-regex-rule").addEventListener("click", () => {
+      syncModuleSpecificFields();
+      state.moduleDraft.config.rules.push({id: `custom.rule_${randomHex(8)}`, pattern: "", type: "MACHINE_SECRET", subtype: "custom_secret", risk: "high", flags: [], validators: [], require_validators: [], reject_validators: [], preview_keep: 0, enabled: true, metadata: {source: "webui"}});
+      renderModuleSpecificFields();
+    });
+    $$('[data-remove-rule]', target).forEach((button) => button.addEventListener("click", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      syncModuleSpecificFields();
+      state.moduleDraft.config.rules.splice(Number(button.dataset.removeRule), 1);
+      renderModuleSpecificFields();
+    }));
+  } else if (module.type === "entropy") {
+    const config = module.config;
+    target.innerHTML = `<div class="form-grid specific-grid"><label><span>${escapeHtml(uiText("最小 Token 长度"))}</span><input id="entropy-min-length" type="number" min="8" max="512" value="${config.min_length}"></label><label><span>${escapeHtml(uiText("熵阈值"))}</span><input id="entropy-threshold" type="number" min="0" max="8" step="0.1" value="${config.min_entropy}"></label>${riskField("entropy", "模块", config.risk || "medium")}</div>`;
+  } else if (module.type === "path") {
+    const config = module.config;
+    target.innerHTML = `<div class="check-grid"><label><input id="path-unix" type="checkbox" ${config.detect_unix_home ? "checked" : ""}> Unix / macOS Home</label><label><input id="path-private" type="checkbox" ${config.detect_macos_private ? "checked" : ""}> macOS /private</label><label><input id="path-shell" type="checkbox" ${config.detect_shell_config ? "checked" : ""}> ${escapeHtml(uiText("Shell 配置目录"))}</label><label><input id="path-windows" type="checkbox" ${config.detect_windows_user ? "checked" : ""}> ${escapeHtml(uiText("Windows User 路径"))}</label></div><div class="form-grid specific-grid"><label class="full-row"><span>${escapeHtml(uiText("排除模式（逗号分隔 glob）"))}</span><input id="path-excludes" value="${escapeHtml(config.exclude_patterns.join(", "))}"></label>${riskField("path", "模块", config.path_risk)}</div>`;
+  } else {
+    const config = module.config;
+    const models = availableLocalModels();
+    const selected = models.find((model) => model.source === config.model_name);
+    const unavailable = Boolean(config.model_name) && !selected;
+    const placeholder = uiText(unavailable
+      ? `当前配置的模型不可用：${config.model_name}`
+      : models.length ? "请选择可用模型" : "没有可用模型");
+    const options = models.map((model) => {
+      const device = String(model.resolved_device || "").toUpperCase();
+      const label = `${model.display_name || model.source}${device ? ` · ${device}` : ""}`;
+      return `<option value="${escapeHtml(model.id)}" ${model.id === selected?.id ? "selected" : ""}>${escapeHtml(label)}</option>`;
+    }).join("");
+    target.innerHTML = `<div class="form-grid specific-grid"><label class="full-row"><span>${escapeHtml(uiText("使用的本地模型"))}</span><select id="model-selection" required ${models.length ? "" : "disabled"}><option value="" ${selected ? "" : "selected"} disabled>${escapeHtml(placeholder)}</option>${options}</select></label><label><span>${escapeHtml(uiText("模型分数阈值"))}</span><input id="model-threshold" type="number" min="0" max="1" step="0.01" value="${config.threshold}"></label>${config.adapter === "gliner" ? `<label class="full-row"><span>${escapeHtml(uiText("实体标签（逗号分隔）"))}</span><input id="model-labels" value="${escapeHtml(config.labels.join(", "))}"></label>` : `<label><span>${escapeHtml(uiText("聚合方式"))}</span><select id="model-aggregation"><option value="simple">Simple</option><option value="first">First</option><option value="average">Average</option><option value="max">Max</option></select></label>`}<div class="model-policy-note full-row"><span>${escapeHtml(uiText(models.length ? "只能选择已在本地模型管理中准备并验证成功的模型。" : "请先在本地模型管理中完成模型准备，然后返回选择。"))}</span><button class="secondary-button" type="button" data-view="local-models" data-close-modal>${escapeHtml(uiText("前往本地模型管理"))}</button></div></div>`;
+    if ($("#model-aggregation")) $("#model-aggregation").value = config.aggregation_strategy;
+    $("#model-selection").addEventListener("change", (event) => {
+      const model = models.find((item) => item.id === event.target.value);
+      if (!model) return;
+      state.moduleDraft.config = {
+        ...state.moduleDraft.config,
+        model_name: model.source,
+        adapter: model.resolved_adapter,
+        device: model.resolved_device,
+      };
+      renderModuleSpecificFields();
+    });
+  }
+}
+
+function renderRegexRule(rule, index) {
+  const sourceName = String(rule.metadata?.display_name || rule.id);
+  const name = uiText(sourceName);
+  const removeLabel = uiText(`删除正则规则 ${sourceName}`);
+  return `<details class="rule-editor" data-rule-card="${index}" data-rule-source-name="${escapeHtml(sourceName)}" ${rule.pattern ? "" : "open"}><summary class="rule-editor-heading"><strong>${escapeHtml(name)}</strong><label class="inline-check"><input data-rule-field="enabled" type="checkbox" ${rule.enabled !== false ? "checked" : ""}>${escapeHtml(uiText("启用"))}</label><button class="row-action danger icon-row-button" type="button" data-remove-rule="${index}" aria-label="${escapeHtml(removeLabel)}" title="${escapeHtml(uiText("删除正则规则"))}">${iconMarkup("trash-2")}</button></summary><div class="form-grid"><label><span>${escapeHtml(uiText("规则名称"))}</span><input data-rule-field="name" value="${escapeHtml(name)}"></label><label class="full-row"><span>${escapeHtml(uiText("正则表达式"))}</span><textarea data-rule-field="pattern" rows="3">${escapeHtml(rule.pattern)}</textarea></label><label><span>${escapeHtml(uiText("数据类型"))}</span><select data-rule-field="type">${selectOptions(["MACHINE_SECRET", "PII", "LOCAL_CONTEXT", "CREDENTIAL_FILE", "UNKNOWN_SECRET_CANDIDATE"], rule.type)}</select></label><label><span>${escapeHtml(uiText("风险等级（仅用于审计）"))}</span><select data-rule-field="risk">${selectOptions(["critical", "high", "medium", "low"], rule.risk)}</select></label><details class="rule-advanced full-row"><summary>${escapeHtml(uiText("高级选项（选填）"))}</summary><div class="form-grid"><label><span>${escapeHtml(uiText("Flags（逗号分隔）"))}</span><input data-rule-field="flags" value="${escapeHtml((rule.flags || []).join(", "))}"></label><label><span>${escapeHtml(uiText("Validators（选填）"))}</span><input data-rule-field="validators" value="${escapeHtml((rule.validators || []).join(", "))}"></label><label><span>${escapeHtml(uiText("必须通过的 Validators（选填）"))}</span><input data-rule-field="require_validators" value="${escapeHtml((rule.require_validators || []).join(", "))}"></label><label><span>${escapeHtml(uiText("拒绝的 Validators（选填）"))}</span><input data-rule-field="reject_validators" value="${escapeHtml((rule.reject_validators || []).join(", "))}"></label></div></details></div></details>`;
+}
+
+function riskField(prefix, label, risk) {
+  return `<label><span>${escapeHtml(uiText(`${label}风险等级（仅用于审计）`))}</span><select id="${prefix}-risk">${selectOptions(["critical", "high", "medium", "low"], risk)}</select></label>`;
+}
+
+function syncModuleSpecificFields() {
+  const module = state.moduleDraft;
+  if (module.type === "regex") {
+    module.config.rules = $$('[data-rule-card]').map((card) => {
+      const field = (name) => card.querySelector(`[data-rule-field="${name}"]`);
+      const previous = module.config.rules[Number(card.dataset.ruleCard)] || {};
+      const submittedName = field("name").value.trim();
+      const sourceName = card.dataset.ruleSourceName || String(previous.metadata?.display_name || previous.id);
+      const displayName = (submittedName === uiText(sourceName) ? sourceName : submittedName) || previous.id;
+      return {...previous, metadata: {...(previous.metadata || {}), display_name: displayName}, pattern: field("pattern").value, type: field("type").value, risk: field("risk").value, flags: commaList(field("flags").value), validators: commaList(field("validators").value), require_validators: commaList(field("require_validators").value), reject_validators: commaList(field("reject_validators").value), enabled: field("enabled").checked};
+    });
+  } else if (module.type === "entropy") {
+    module.config = {...module.config, min_length: Number($("#entropy-min-length").value), min_entropy: Number($("#entropy-threshold").value), risk: $("#entropy-risk").value};
+  } else if (module.type === "path") {
+    module.config = {...module.config, detect_unix_home: $("#path-unix").checked, detect_macos_private: $("#path-private").checked, detect_shell_config: $("#path-shell").checked, detect_windows_user: $("#path-windows").checked, exclude_patterns: commaList($("#path-excludes").value), path_risk: $("#path-risk").value};
+  } else {
+    const model = availableLocalModels().find((item) => item.id === $("#model-selection").value);
+    if (!model) throw new Error("请先准备并选择一个可用的本地模型");
+    module.config = {...module.config, adapter: model.resolved_adapter, model_name: model.source, threshold: Number($("#model-threshold").value), device: model.resolved_device, aggregation_strategy: $("#model-aggregation")?.value || module.config.aggregation_strategy, labels: $("#model-labels") ? commaList($("#model-labels").value) : module.config.labels};
+  }
+}
+
+function applyModuleDraft(event) {
+  event.preventDefault();
+  const form = new FormData(event.target);
+  $("#module-error").textContent = "";
+  try {
+    syncModuleSpecificFields();
+    const submittedName = String(form.get("name") || "").trim();
+    state.moduleDraft.name = submittedName === uiText(state.moduleDraftSourceName)
+      ? state.moduleDraftSourceName
+      : submittedName;
+    state.moduleDraft.timeout_ms = form.get("timeout_ms") ? Number(form.get("timeout_ms")) : null;
+    state.moduleDraft.failure_mode = form.get("failure_mode") || "open";
+    if (!state.moduleDraft.name) throw new Error("请输入模块名称");
+    if (state.editingModuleIndex === null) state.detectorDraft.modules.push(state.moduleDraft);
+    else state.detectorDraft.modules[state.editingModuleIndex] = state.moduleDraft;
+    $("#module-modal").close();
+    renderDetectorConfiguration();
+  } catch (error) { $("#module-error").textContent = localizedBackendError(error, "detector"); }
+}
+
+function renderDetectionDiagnostics(diagnostics) {
+  const visibleDiagnostics = diagnostics.filter((item) => item.id !== "pf_core");
+  $("#detection-diagnostics").innerHTML = visibleDiagnostics.length ? `<div class="diagnostic-heading"><p class="section-kicker">EXECUTION TRACE</p><span>${escapeHtml(uiText(`${visibleDiagnostics.length} 个步骤`))}</span></div>${visibleDiagnostics.map((item, index) => `<div class="diagnostic-row"><span class="diagnostic-order">${index + 1}</span><strong>${escapeHtml(item.id)}</strong><span>${escapeHtml(uiText(item.type))}</span><span>${escapeHtml(uiText(`${item.findings} 命中`))}</span><span>${Number(item.elapsed_ms).toFixed(2)} ms</span><b class="badge ${item.status === "ok" ? "green" : ["disabled", "unavailable"].includes(item.status) ? "neutral" : "red"}">${escapeHtml(uiText(item.status))}</b></div>`).join("")}` : "";
+}
+
+function moduleTypeLabel(type) {
+  return uiText(({regex: "正则检测", entropy: "熵值检测", path: "路径检测", local_model: "本地小模型", deployment: "部署模块"})[type] || type);
+}
+
+function moduleTypeIcon(type) {
+  return ({regex: "regex-reference", entropy: "gauge", path: "folder-tree", local_model: "brain-circuit", deployment: "server-cog"})[type] || "search";
+}
+
+function selectOptions(values, selected) {
+  return values.map((value) => `<option value="${escapeHtml(value)}" ${value === selected ? "selected" : ""}>${escapeHtml(value)}</option>`).join("");
+}
+
+function commaList(value) {
+  return String(value || "").split(",").map((item) => item.trim()).filter(Boolean);
+}
+
+function randomHex(length) {
+  const bytes = crypto.getRandomValues(new Uint8Array(Math.ceil(length / 2)));
+  return [...bytes].map((value) => value.toString(16).padStart(2, "0")).join("").slice(0, length);
+}
+
+function randomId(prefix) {
+  return `${prefix}_${randomHex(12)}`;
+}
+
+async function runDetection() {
+  const text = $("#detection-input").value;
+  if (!text.trim()) return toast("请输入测试文本", true);
+  if (detectorConfigurationDirty()) return toast("请先保存配置草稿再试跑", true);
+  const output = $("#detection-output");
+  output.innerHTML = `<span class="muted">${escapeHtml(uiText("正在检测…"))}</span>`;
+  $("#detection-diagnostics").innerHTML = "";
+  try {
+    const data = await api(`/detector-configurations/${encodeURIComponent(state.detectorDraft.id)}/test`, {method: "POST", body: JSON.stringify({text})});
+    renderHighlightedDetection(output, text, data.findings);
+    renderDetectionDiagnostics(data.diagnostics);
+  } catch (error) {
+    const message = localizedBackendError(error, "detector");
+    output.innerHTML = `<span class="form-error">${escapeHtml(message)}</span>`;
+    handleError(error, "detector");
+  }
+}
+
+function renderHighlightedDetection(output, text, findings) {
+  closeDetectionTooltip();
+  output.replaceChildren();
+  if (!findings.length) {
+    const empty = document.createElement("span");
+    empty.className = "muted";
+    empty.textContent = uiText("未发现敏感内容");
+    output.append(empty);
+    return;
+  }
+
+  const characters = Array.from(text);
+  const groups = mergeFindingRanges(characters.length, findings);
+  const summary = document.createElement("div");
+  summary.className = "highlight-summary";
+  const summaryText = document.createElement("strong");
+  summaryText.textContent = uiText(`发现 ${groups.length} 处敏感内容`);
+  const localOnly = document.createElement("span");
+  localOnly.textContent = uiText("本地检测 · 悬停或点击高亮查看模块");
+  summary.append(summaryText, localOnly);
+
+  const source = document.createElement("pre");
+  source.className = "highlighted-source";
+  let cursor = 0;
+  groups.forEach((group, index) => {
+    if (group.start > cursor) source.append(document.createTextNode(characters.slice(cursor, group.start).join("")));
+    const mark = document.createElement("mark");
+    mark.className = `text-highlight risk-${group.risk}`;
+    const moduleNames = findingGroupModuleNames(group);
+    mark.tabIndex = 0;
+    mark.setAttribute("role", "button");
+    mark.setAttribute("aria-expanded", "false");
+    mark.setAttribute("aria-label", uiText(`检测模块：${moduleNames.join("、")}`));
+    mark.append(document.createTextNode(characters.slice(group.start, group.end).join("")));
+    const marker = document.createElement("sup");
+    marker.className = "highlight-index";
+    marker.textContent = String(index + 1);
+    mark.append(marker);
+    mark.addEventListener("pointerenter", () => {
+      if (!state.detectionTooltipPinned) showDetectionTooltip(mark, group, false);
+    });
+    mark.addEventListener("pointerleave", () => {
+      if (!state.detectionTooltipPinned) closeDetectionTooltip();
+    });
+    mark.addEventListener("focus", () => {
+      if (!state.detectionTooltipPinned) showDetectionTooltip(mark, group, false);
+    });
+    mark.addEventListener("blur", () => {
+      if (!state.detectionTooltipPinned) closeDetectionTooltip();
+    });
+    mark.addEventListener("click", (event) => {
+      event.stopPropagation();
+      if (state.detectionTooltipMark === mark && state.detectionTooltipPinned) closeDetectionTooltip();
+      else showDetectionTooltip(mark, group, true);
+    });
+    source.append(mark);
+    cursor = group.end;
+  });
+  if (cursor < characters.length) source.append(document.createTextNode(characters.slice(cursor).join("")));
+
+  const legend = document.createElement("div");
+  legend.className = "highlight-legend";
+  groups.forEach((group, index) => {
+    const row = document.createElement("div");
+    row.className = "highlight-detail";
+    const number = document.createElement("span");
+    number.className = `detail-index risk-${group.risk}`;
+    number.textContent = String(index + 1);
+    const content = document.createElement("div");
+    const title = document.createElement("strong");
+    title.textContent = unique(group.findings.map((finding) => findingSubtypeLabel(finding.subtype))).join(" + ");
+    const detectors = document.createElement("span");
+    detectors.textContent = findingGroupModuleNames(group).join(" + ");
+    content.append(title, detectors);
+    const risk = document.createElement("b");
+    risk.textContent = riskLabel(group.risk);
+    row.append(number, content, risk);
+    legend.append(row);
+  });
+
+  output.append(summary, source, legend);
+}
+
+function findingGroupModuleNames(group) {
+  return unique(group.findings.flatMap(findingModuleNames));
+}
+
+function findingModuleNames(finding) {
+  const modules = state.detectorDraft?.modules || [];
+  const ruleId = String(finding.metadata?.rule_id || "");
+  const names = [];
+  for (const detector of finding.detectors || []) {
+    if (detector === "rules.pf_markers" || ruleId.startsWith("pf.")) {
+      names.push(uiText("PrivacyFlow 内置安全防线"));
+      continue;
+    }
+    const matched = modules.filter((module) => {
+      if (detector === `rules.${module.id}` || detector === `models.${module.id}`) return true;
+      if (module.type === "regex" && ruleId) {
+        return (module.config?.rules || []).some((rule) => rule.id === ruleId);
+      }
+      if (module.type === "path" && detector === "paths") return true;
+      if (module.type === "entropy" && detector === "heuristic.entropy_context") return true;
+      return false;
+    });
+    if (matched.length) names.push(...matched.map((module) => uiText(module.name)));
+    else names.push(detector);
+  }
+  return unique(names);
+}
+
+function showDetectionTooltip(mark, group, pinned) {
+  closeDetectionTooltip();
+  const tooltip = document.createElement("div");
+  tooltip.className = "detection-tooltip";
+  tooltip.id = "detection-highlight-tooltip";
+  tooltip.setAttribute("role", "tooltip");
+  const label = document.createElement("span");
+  label.textContent = uiText("检测模块");
+  const modules = document.createElement("strong");
+  modules.textContent = findingGroupModuleNames(group).join(" + ");
+  const details = document.createElement("small");
+  details.textContent = `${unique(group.findings.map((finding) => findingSubtypeLabel(finding.subtype))).join(" + ")} · ${riskLabel(group.risk)}`;
+  tooltip.append(label, modules, details);
+  document.body.append(tooltip);
+
+  const markBounds = mark.getBoundingClientRect();
+  const tooltipBounds = tooltip.getBoundingClientRect();
+  const margin = 12;
+  const centered = markBounds.left + markBounds.width / 2 - tooltipBounds.width / 2;
+  const left = Math.max(margin, Math.min(window.innerWidth - tooltipBounds.width - margin, centered));
+  let top = markBounds.bottom + 8;
+  if (top + tooltipBounds.height > window.innerHeight - margin) top = markBounds.top - tooltipBounds.height - 8;
+  tooltip.style.left = `${left}px`;
+  tooltip.style.top = `${Math.max(margin, top)}px`;
+
+  mark.setAttribute("aria-expanded", "true");
+  mark.setAttribute("aria-describedby", tooltip.id);
+  state.detectionTooltip = tooltip;
+  state.detectionTooltipMark = mark;
+  state.detectionTooltipPinned = pinned;
+}
+
+function closeDetectionTooltip() {
+  if (state.detectionTooltipMark) {
+    state.detectionTooltipMark.setAttribute("aria-expanded", "false");
+    state.detectionTooltipMark.removeAttribute("aria-describedby");
+  }
+  state.detectionTooltip?.remove();
+  state.detectionTooltip = null;
+  state.detectionTooltipMark = null;
+  state.detectionTooltipPinned = false;
+}
+
+function mergeFindingRanges(textLength, findings) {
+  const riskOrder = {critical: 4, high: 3, medium: 2, low: 1};
+  const ranges = findings
+    .map((finding) => ({
+      start: Math.max(0, Math.min(textLength, Number(finding.original_start))),
+      end: Math.max(0, Math.min(textLength, Number(finding.original_end))),
+      findings: [finding],
+      risk: finding.risk || "low",
+    }))
+    .filter((range) => Number.isFinite(range.start) && Number.isFinite(range.end) && range.end > range.start)
+    .sort((left, right) => left.start - right.start || left.end - right.end);
+  const merged = [];
+  ranges.forEach((range) => {
+    const previous = merged[merged.length - 1];
+    if (previous && range.start < previous.end) {
+      previous.end = Math.max(previous.end, range.end);
+      previous.findings.push(...range.findings);
+      if ((riskOrder[range.risk] || 0) > (riskOrder[previous.risk] || 0)) previous.risk = range.risk;
+    } else {
+      merged.push(range);
+    }
+  });
+  return merged;
+}
+
 function unique(values) {
   return [...new Set(values)];
 }
 
+function findingSubtypeLabel(value) {
+  const labels = {
+    api_key: "API 密钥",
+    access_url_token: "访问链接令牌",
+    credential_username: "登录账号",
+    credential_password: "登录密码",
+    local_path: "本地路径",
+    email: "电子邮箱",
+    phone: "电话号码",
+    private_key: "私钥",
+    bearer_token: "Bearer Token",
+    database_url: "数据库连接",
+    high_entropy_token: "高熵 Token",
+  };
+  return uiText(labels[value] || value);
+}
+
 function confirmAction(title, message, action) {
-  $("#confirm-title").textContent = title;
-  $("#confirm-message").textContent = message;
+  $("#confirm-title").textContent = uiText(title);
+  $("#confirm-message").textContent = uiText(message);
   state.confirmAction = action;
   $("#confirm-modal").showModal();
 }
 
 function populateSelect(select, options, placeholder) {
   const current = select.value;
-  select.innerHTML = `<option value="">${escapeHtml(placeholder)}</option>` + options.map((value) => `<option value="${escapeHtml(value)}">${escapeHtml(value)}</option>`).join("");
+  select.innerHTML = `<option value="">${escapeHtml(uiText(placeholder))}</option>` + options.map((value) => `<option value="${escapeHtml(value)}">${escapeHtml(uiText(value))}</option>`).join("");
   if (options.includes(current)) select.value = current;
 }
 
@@ -1774,15 +2627,18 @@ function statusClass(status) {
 }
 
 function auditStatusLabel(value) {
-  return ({completed: "已完成", in_progress: "进行中", recorded: "已记录", error: "异常", failed: "上游失败", protocol_error: "协议错误", client_disconnected: "客户端连接中断", upstream_disconnected: "上游连接中断"})[value] || value || "已记录";
+  return uiText(({completed: "已完成", in_progress: "进行中", recorded: "已记录", error: "异常", failed: "上游失败", protocol_error: "协议错误", client_disconnected: "客户端连接中断", upstream_disconnected: "上游连接中断"})[value] || value || "已记录");
 }
 
 function valueStateLabel(value) {
-  return ({active: "映射有效", expired: "原文已过期清除", revoked: "原文已撤销清除", unavailable: "原文不可用"})[value] || value;
+  return uiText(({active: "映射有效", expired: "原文已过期清除", revoked: "原文已撤销清除", unavailable: "原文不可用"})[value] || value);
 }
 
-function stateLabel(value) { return ({active: "活跃", expired: "已过期", revoked: "已撤销"})[value] || value; }
-function riskLabel(value) { return ({critical: "严重", high: "高", medium: "中", low: "低"})[value] || value; }
+function stateLabel(value) { return uiText(({active: "活跃", expired: "已过期", revoked: "已撤销"})[value] || value); }
+function riskLabel(value) { return uiText(({critical: "严重", high: "高", medium: "中", low: "低"})[value] || value); }
+function moduleStatusLabel(value) {
+  return uiText(({activated: "已启用", disabled: "已停用", managed: "内置", unavailable: "不可用"})[value] || value);
+}
 function uiText(value) { return window.PF_I18N?.translate(String(value ?? "")) ?? String(value ?? ""); }
 function displayLocale() { return window.PF_I18N?.locale === "en" ? "en-US" : "zh-CN"; }
 function formatNumber(value) { return new Intl.NumberFormat(displayLocale()).format(Number(value || 0)); }
@@ -1798,25 +2654,39 @@ function formatRelative(timestamp) {
 
 function toast(message, error = false) {
   const element = $("#toast");
-  element.textContent = message;
+  element.textContent = uiText(message);
   element.classList.toggle("is-error", error);
   element.classList.add("is-visible");
   clearTimeout(toast.timer);
   toast.timer = setTimeout(() => element.classList.remove("is-visible"), 2800);
 }
 
-function handleError(error) {
-  toast(localModelErrorMessage(error.code, error.message || "请求失败"), true);
+function inferErrorContext(error) {
+  const code = String(error?.code || "").toUpperCase();
+  if (code.startsWith("CONNECTOR_") || code.startsWith("PF_MIGRATION_")) return "connector";
+  if (code.startsWith("LOCAL_") || code.startsWith("MODEL_") || code.startsWith("RUNTIME_") || code.startsWith("WORKER_") || code.startsWith("DOWNLOAD_") || code.startsWith("COMMAND_") || code.startsWith("CUDA_") || code.startsWith("DEVICE_") || code.startsWith("JOB_") || code === "NO_MODELS" || code === "DEPENDENCIES_MISSING" || code === "CACHE_PATH_INVALID") return "localModel";
+  if (code.startsWith("PF_UPSTREAM_") || code.startsWith("UPSTREAM_")) return "upstream";
+  return "request";
+}
+
+function localizedBackendError(error, context = inferErrorContext(error)) {
+  const code = String(error?.code || "").trim().toUpperCase();
+  const fallback = String(error?.message || "").trim();
+  const known = BACKEND_ERROR_MESSAGES[code];
+  if (known) return uiText(known);
+  // Locally-created validation errors are already Chinese source strings;
+  // translate them for English without ever exposing Chinese backend text.
+  if (/[㐀-鿿]/.test(fallback)) return uiText(fallback);
+  if (displayLocale() === "en-US" && fallback) return fallback;
+  return uiText(ERROR_FALLBACK_MESSAGES[context] || ERROR_FALLBACK_MESSAGES.request);
+}
+
+function handleError(error, context) {
+  toast(localizedBackendError(error, context), true);
 }
 
 function connectorErrorMessage(error) {
-  const message = ({
-    CONNECTOR_CONFIG_CONFLICT: "检测到已有 Agent 配置。确认迁移后，PrivacyFlow 会先保存完整快照再替换；取消则不改动。",
-    CONNECTOR_CONCURRENT_CHANGE: "配置在接入前发生了变化，请重新打开快速接入并确认迁移。",
-    CONNECTOR_EXTERNAL_CHANGES: "接入后的配置已被外部修改，请先恢复原配置。",
-    CONNECTOR_PROTOCOL_PROBE_FAILED: "所选模型未通过该 Agent 所需的协议测试。",
-  })[error.code];
-  return uiText(message || error.message || "接入失败。");
+  return localizedBackendError(error, "connector");
 }
 
 function debounce(fn, wait) {

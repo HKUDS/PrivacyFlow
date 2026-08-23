@@ -1,10 +1,13 @@
+# Runnable template: export DEEPSEEK_API_KEY, PF_LOCAL_API_KEYS, and
+# PF_SIGNING_SECRET before starting in strict mode.
 bind_host: 127.0.0.1
 bind_port: 8765
 database_path: .privacyflow/deepseek-state.sqlite3
 audit_log_path: .privacyflow/deepseek-audit.jsonl
-signing_secret: change-this-local-secret
-local_api_keys:
-  - pf-local
+audit_log_max_bytes: 16777216
+audit_log_backups: 5
+history_retention_seconds: 2592000
+signing_secret: ${PF_SIGNING_SECRET}
 workspace_id: default
 strict_mode: true
 pii_mode: pseudonymize

@@ -33,6 +33,9 @@ from gateway.cli.launcher import (
 from gateway.config import GatewayConfig, UpstreamConfig, load_config
 from gateway.compat import get_env, translate_value
 from gateway.detector_control import (
+    DetectorConfigurationConflict,
+    DetectorConfigurationNotFound,
+    DetectorControlError,
     DetectorControlPlane,
 )
 from gateway.detector_manager import DetectorManager
@@ -66,6 +69,11 @@ from gateway.upstream_protocol import (
 
 PF_BUILD_ID = str(get_env("BUILD_ID", default=f"pf-{__version__}"))
 PF_CAPABILITIES = ["local_models_v2", "agent_connectors_v1"]
+_NAMESPACE_JSON_TRANSLATION_LIMIT = 2 * 1024 * 1024
+DETECTOR_SOURCE_KINDS = {
+    "prompt", "file", "tool_result", "model_response", "tool_call_argument",
+    "file_write_content", "audit_log", "tool_schema", "protocol_metadata", "json", "text",
+}
 _UPSTREAM_TRACE_HEADERS = {
     "x-request-id",
     "request-id",
@@ -74,6 +82,58 @@ _UPSTREAM_TRACE_HEADERS = {
     "trace-id",
     "x-trace-id",
 }
+
+
+def _is_loopback_host(value: str) -> bool:
+    normalized = value.strip().removeprefix("[").removesuffix("]").rstrip(".")
+    if normalized.lower() == "localhost":
+        return True
+    try:
+        return ipaddress.ip_address(normalized).is_loopback
+    except ValueError:
+        return False
+
+
+def _request_host_name(value: str) -> str:
+    try:
+        return str(urlsplit(f"//{value}").hostname or "")
+    except ValueError:
+        return ""
+
+
+def _is_management_path(path: str) -> bool:
+    return path == "/" or path == "/ui" or path.startswith("/ui/") or path == "/api/admin" or path.startswith("/api/admin/")
+
+
+def _admin_request_is_local(request: Request, cfg: GatewayConfig) -> bool:
+    """Validate the socket peer and browser-visible authority for the unauthenticated admin plane."""
+
+    if not _is_loopback_host(cfg.bind_host):
+        return False
+    client_host = request.client.host if request.client is not None else ""
+    host_header = request.headers.get("host", "")
+    # Starlette's in-process TestClient has no IP socket. This exact pair cannot
+    # be produced by uvicorn, whose client host is always the socket peer IP.
+    in_process_test_client = client_host == "testclient" and _request_host_name(host_header) == "testserver"
+    if not in_process_test_client and not _is_loopback_host(client_host):
+        return False
+    if not in_process_test_client and _request_host_name(host_header) != "testserver" and not _is_loopback_host(_request_host_name(host_header)):
+        return False
+    origin = request.headers.get("origin")
+    if origin:
+        try:
+            parsed_origin = urlsplit(origin)
+            origin_port = parsed_origin.port or (443 if parsed_origin.scheme == "https" else 80)
+            request_port = request.url.port or (443 if request.url.scheme == "https" else 80)
+        except ValueError:
+            return False
+        if (
+            parsed_origin.scheme not in {"http", "https"}
+            or not _is_loopback_host(str(parsed_origin.hostname or ""))
+            or origin_port != request_port
+        ):
+            return False
+    return True
 PF_UPSTREAM_SYSTEM_PROMPT = """You are receiving content through PrivacyFlow (PF), a local privacy runtime.
 
 PrivacyFlow may replace local secrets, credentials, personal data, or private paths with opaque PF-managed placeholders before this request reaches you. You cannot access the protected values behind these local handles.
@@ -424,12 +484,11 @@ def create_app(config: GatewayConfig | None = None, upstream_client: UpstreamCli
         object.__setattr__(cfg, "primary_local_api_key", sorted(cfg.local_api_keys)[0])
 
     # The management plane is loopback-only by design and has no app-layer auth.
-    if cfg.bind_host not in {"127.0.0.1", "localhost", "::1"} and cfg.admin_enabled:
+    admin_routes_enabled = cfg.admin_enabled and _is_loopback_host(cfg.bind_host)
+    if cfg.admin_enabled and not admin_routes_enabled:
         warnings.warn(
-            f"Admin API is enabled on non-loopback address '{cfg.bind_host}' without authentication. "
-            "Management endpoints (WebUI, configuration, audit logs) are accessible over the network. "
-            "PrivacyFlow relies on loopback binding for admin security. To secure this deployment, either: "
-            "(1) bind to 127.0.0.1, or (2) add network-level access controls.",
+            f"Admin API and WebUI were disabled because '{cfg.bind_host}' is not a loopback address. "
+            "Bind PrivacyFlow to 127.0.0.1, ::1, or localhost to use the unauthenticated management plane.",
             RuntimeWarning,
             stacklevel=2
         )
@@ -506,7 +565,12 @@ def create_app(config: GatewayConfig | None = None, upstream_client: UpstreamCli
         update_config = getattr(upstream, "update_config", None)
         if callable(update_config):
             update_config(runtime_upstream_config)
-    audit = AuditLogger(cfg.audit_log_path, store)
+    audit = AuditLogger(
+        cfg.audit_log_path,
+        store,
+        max_bytes=cfg.audit_log_max_bytes,
+        backup_count=cfg.audit_log_backups,
+    )
     detector_state_path = str(Path(cfg.database_path).with_name("detector-control.json"))
     local_model_state_path = Path(cfg.database_path).with_name("local-models.json")
     local_model_cache_path = Path(cfg.database_path).with_name("models")
@@ -529,8 +593,11 @@ def create_app(config: GatewayConfig | None = None, upstream_client: UpstreamCli
         audit_callback=audit.log,
     )
     detector_control = DetectorControlPlane(
+        cfg.detectors_config,
         detector_state_path,
         apply_detector_manager,
+        model_path_resolver=local_models.resolve_model_path,
+        model_runner=local_models.infer,
         namespace="PF",
     )
     local_models.set_detector_control(detector_control)
@@ -740,6 +807,7 @@ def create_app(config: GatewayConfig | None = None, upstream_client: UpstreamCli
                 while True:
                     await asyncio.sleep(cfg.gc_interval_seconds)
                     store.tombstone_expired()
+                    store.purge_history(int(time.time()) - cfg.history_retention_seconds)
                     sessions.expire_sessions()
 
             gc_task = asyncio.create_task(gc_loop())
@@ -790,6 +858,20 @@ def create_app(config: GatewayConfig | None = None, upstream_client: UpstreamCli
     async def namespace_response(request: Request, call_next: Any) -> Response:
         """Expose PF names on new requests while keeping APG aliases readable."""
 
+        if cfg.admin_enabled and _is_management_path(request.url.path) and (
+            not admin_routes_enabled or not _admin_request_is_local(request, cfg)
+        ):
+            return JSONResponse(
+                {
+                    "detail": {
+                        "code": "PF_ADMIN_LOCAL_ONLY",
+                        "message": "The PrivacyFlow management plane is available only over a loopback connection.",
+                    }
+                },
+                status_code=403,
+                headers={"Cache-Control": "no-store"},
+            )
+
         conflict = namespace_header_conflict(request)
         if conflict is not None:
             canonical, legacy_header = conflict
@@ -807,22 +889,49 @@ def create_app(config: GatewayConfig | None = None, upstream_client: UpstreamCli
         content_type = response.headers.get("content-type", "").lower()
         if "application/json" not in content_type:
             return response
+        chunks: list[bytes] = []
+        total = 0
         try:
-            body = b"".join([chunk async for chunk in response.body_iterator])
+            iterator = response.body_iterator
+            async for chunk in iterator:
+                encoded = chunk.encode("utf-8") if isinstance(chunk, str) else bytes(chunk)
+                chunks.append(encoded)
+                total += len(encoded)
+                if total > _NAMESPACE_JSON_TRANSLATION_LIMIT:
+                    async def replay_body() -> Any:
+                        for captured in chunks:
+                            yield captured
+                        async for remaining in iterator:
+                            yield remaining
+
+                    return StreamingResponse(
+                        replay_body(),
+                        status_code=response.status_code,
+                        headers=dict(response.headers),
+                        background=response.background,
+                    )
+            body = b"".join(chunks)
             payload = json.loads(body.decode("utf-8"))
         except (AttributeError, UnicodeDecodeError, json.JSONDecodeError, TypeError):
-            return response
+            return Response(
+                content=b"".join(chunks),
+                status_code=response.status_code,
+                headers=dict(response.headers),
+                background=response.background,
+            )
         translated = translate_value(payload, legacy=legacy)
         if translated == payload:
-            return JSONResponse(
-                payload,
+            return Response(
+                content=body,
                 status_code=response.status_code,
-                headers={key: value for key, value in response.headers.items() if key.lower() != "content-length"},
+                headers=dict(response.headers),
+                background=response.background,
             )
         return JSONResponse(
             translated,
             status_code=response.status_code,
             headers={key: value for key, value in response.headers.items() if key.lower() != "content-length"},
+            background=response.background,
         )
 
     def _resolve_session_header(pf_session_id: str | None, apg_session_id: str | None) -> str | None:
@@ -1418,14 +1527,19 @@ def create_app(config: GatewayConfig | None = None, upstream_client: UpstreamCli
             if body.get("return_sanitized", True):
                 response["sanitized_text"] = text
             return JSONResponse(response)
-        kind = str(body.get("kind", "text"))
-        redactor.detector_manager.reset_diagnostics()
-        findings = redactor.detector_manager.scan_findings(text, kind=kind)
+        kind = body.get("kind", "text")
+        if not isinstance(kind, str) or kind not in DETECTOR_SOURCE_KINDS:
+            raise HTTPException(status_code=400, detail="Unsupported detector source kind")
+        findings, diagnostics = await asyncio.to_thread(
+            redactor.detector_manager.scan_findings_with_diagnostics,
+            text,
+            kind=kind,
+        )
         response: dict[str, Any] = {
             "session_id": session_id,
             "preset": redactor.detector_manager.hierarchical.flow.preset,
             "findings": [finding.to_dict() for finding in findings],
-            "diagnostics": redactor.detector_manager.diagnostics(),
+            "diagnostics": diagnostics,
         }
         if body.get("return_sanitized", True):
             response["sanitized_text"] = _preview_sanitized_text(
@@ -1441,7 +1555,7 @@ def create_app(config: GatewayConfig | None = None, upstream_client: UpstreamCli
                 "endpoint": endpoint,
                 "phase": "detect",
                 "detections": [finding.to_dict() for finding in findings],
-                "detector_diagnostics": redactor.detector_manager.diagnostics(),
+                "detector_diagnostics": diagnostics,
             }
         )
         return JSONResponse(response)
@@ -1486,7 +1600,7 @@ def create_app(config: GatewayConfig | None = None, upstream_client: UpstreamCli
     ) -> Response:
         return await proxy_json("/v1/responses", request, authorization, x_apg_session_id, x_pf_session_id, x_api_key)
 
-    if cfg.admin_enabled:
+    if admin_routes_enabled:
         webui_dir = Path(__file__).with_name("webui")
         webui_headers = {
             "Cache-Control": "no-store",
@@ -1510,7 +1624,7 @@ def create_app(config: GatewayConfig | None = None, upstream_client: UpstreamCli
         async def webui_asset(asset_name: str) -> Response:
             if asset_name not in {
                 "apg-icon.png",
-                "privacyflow-icon.svg",
+                "privacyflow-icon.png",
                 "agent-claude-code.svg",
                 "agent-codex.svg",
                 "agent-deepseek-harness.svg",
@@ -2359,6 +2473,177 @@ def create_app(config: GatewayConfig | None = None, upstream_client: UpstreamCli
         async def admin_purge_expired(
         ) -> Response:
             return JSONResponse(admin.purge_expired(), headers={"Cache-Control": "no-store"})
+
+        @app.get("/api/admin/detector-configurations")
+        async def admin_detector_configurations() -> Response:
+            return JSONResponse(detector_control.catalog(), headers={"Cache-Control": "no-store"})
+
+        @app.post("/api/admin/detector-configurations")
+        async def admin_create_detector_configuration(request: Request) -> Response:
+            try:
+                result = detector_control.create_configuration(await admin_body(request))
+            except DetectorConfigurationNotFound as exc:
+                raise HTTPException(status_code=404, detail=str(exc)) from exc
+            except DetectorControlError as exc:
+                raise HTTPException(status_code=400, detail=str(exc)) from exc
+            audit.log(
+                {
+                    "phase": "admin_action",
+                    "action": "create_detector_configuration",
+                    "configuration_id": result["id"],
+                    "source_template_id": result.get("source_template_id"),
+                    "module_count": len(result["modules"]),
+                    "result_code": "OK",
+                }
+            )
+            return JSONResponse(result, status_code=201, headers={"Cache-Control": "no-store"})
+
+        @app.get("/api/admin/detector-configurations/{configuration_id}")
+        async def admin_get_detector_configuration(configuration_id: str) -> Response:
+            try:
+                result = detector_control.get_configuration(configuration_id)
+            except DetectorConfigurationNotFound as exc:
+                raise HTTPException(status_code=404, detail=str(exc)) from exc
+            return JSONResponse(result, headers={"Cache-Control": "no-store"})
+
+        @app.put("/api/admin/detector-configurations/{configuration_id}")
+        async def admin_save_detector_configuration(configuration_id: str, request: Request) -> Response:
+            try:
+                result = detector_control.save_configuration(configuration_id, await admin_body(request))
+            except DetectorConfigurationNotFound as exc:
+                raise HTTPException(status_code=404, detail=str(exc)) from exc
+            except DetectorConfigurationConflict as exc:
+                raise HTTPException(status_code=409, detail=str(exc)) from exc
+            except DetectorControlError as exc:
+                raise HTTPException(status_code=400, detail=str(exc)) from exc
+            audit.log(
+                {
+                    "phase": "admin_action",
+                    "action": "save_detector_configuration",
+                    "configuration_id": result["id"],
+                    "revision": result["revision"],
+                    "module_count": len(result["modules"]),
+                    "module_types": [module["type"] for module in result["modules"]],
+                    "result_code": "OK",
+                }
+            )
+            return JSONResponse(result, headers={"Cache-Control": "no-store"})
+
+        @app.delete("/api/admin/detector-configurations/{configuration_id}")
+        async def admin_delete_detector_configuration(configuration_id: str) -> Response:
+            try:
+                result = detector_control.delete_configuration(configuration_id)
+            except DetectorConfigurationNotFound as exc:
+                raise HTTPException(status_code=404, detail=str(exc)) from exc
+            except DetectorConfigurationConflict as exc:
+                raise HTTPException(status_code=409, detail=str(exc)) from exc
+            except DetectorControlError as exc:
+                raise HTTPException(status_code=400, detail=str(exc)) from exc
+            audit.log(
+                {
+                    "phase": "admin_action",
+                    "action": "delete_detector_configuration",
+                    "configuration_id": configuration_id,
+                    "result_code": "OK",
+                }
+            )
+            return JSONResponse(result, headers={"Cache-Control": "no-store"})
+
+        @app.post("/api/admin/detector-configurations/{configuration_id}/activate")
+        async def admin_activate_detector_configuration(configuration_id: str) -> Response:
+            try:
+                result = detector_control.activate_configuration(configuration_id)
+            except DetectorConfigurationNotFound as exc:
+                raise HTTPException(status_code=404, detail=str(exc)) from exc
+            except DetectorControlError as exc:
+                raise HTTPException(status_code=400, detail=str(exc)) from exc
+            audit.log(
+                {
+                    "phase": "admin_action",
+                    "action": "activate_detector_configuration",
+                    "configuration_id": result["id"],
+                    "revision": result["revision"],
+                    "module_count": len(result["modules"]),
+                    "result_code": "OK",
+                }
+            )
+            return JSONResponse(result, headers={"Cache-Control": "no-store"})
+
+        @app.put("/api/admin/detector-configurations/{configuration_id}/modules/{module_id}/enabled")
+        async def admin_set_template_detector_module_enabled(
+            configuration_id: str,
+            module_id: str,
+            request: Request,
+        ) -> Response:
+            body = await admin_body(request)
+            enabled = body.get("enabled")
+            if not isinstance(enabled, bool):
+                raise HTTPException(status_code=400, detail="Expected boolean module enabled state")
+            try:
+                result = detector_control.set_template_module_enabled(configuration_id, module_id, enabled)
+            except DetectorConfigurationNotFound as exc:
+                raise HTTPException(status_code=404, detail=str(exc)) from exc
+            except DetectorControlError as exc:
+                raise HTTPException(status_code=400, detail=str(exc)) from exc
+            audit.log(
+                {
+                    "phase": "admin_action",
+                    "action": "toggle_preset_detector_module",
+                    "configuration_id": configuration_id,
+                    "module_id": module_id,
+                    "enabled": enabled,
+                    "result_code": "OK",
+                }
+            )
+            return JSONResponse(result, headers={"Cache-Control": "no-store"})
+
+        @app.post("/api/admin/detector-configurations/{configuration_id}/test")
+        async def admin_test_detector_configuration(configuration_id: str, request: Request) -> Response:
+            body = await admin_body(request)
+            text = body.get("text")
+            if not isinstance(text, str) or len(text) > 200_000:
+                raise HTTPException(status_code=400, detail="Expected string field 'text' up to 200,000 characters")
+            try:
+                configuration = detector_control.get_configuration(configuration_id)
+                manager = detector_control.manager_for_configuration(configuration_id)
+            except DetectorConfigurationNotFound as exc:
+                raise HTTPException(status_code=404, detail=str(exc)) from exc
+            except DetectorControlError as exc:
+                raise HTTPException(status_code=400, detail=str(exc)) from exc
+            kind = body.get("kind", "text")
+            if not isinstance(kind, str) or kind not in DETECTOR_SOURCE_KINDS:
+                raise HTTPException(status_code=400, detail="Unsupported detector source kind")
+            findings, diagnostics = await asyncio.to_thread(
+                manager.scan_findings_with_diagnostics,
+                text,
+                kind=kind,
+            )
+            response = {
+                "configuration_id": configuration_id,
+                "revision": configuration["revision"],
+                "findings": [finding.to_dict() for finding in findings],
+                "diagnostics": diagnostics,
+            }
+            audit.log(
+                {
+                    "phase": "admin_detector_test",
+                    "workspace_id": cfg.workspace_id,
+                    "configuration_id": configuration_id,
+                    "revision": configuration["revision"],
+                    "detections": [
+                        {
+                            "type": finding.type,
+                            "subtype": finding.subtype,
+                            "detectors": list(finding.detectors),
+                            "risk": finding.risk,
+                            "action": finding.suggested_action,
+                        }
+                        for finding in findings
+                    ],
+                    "detector_diagnostics": diagnostics,
+                }
+            )
+            return JSONResponse(response, headers={"Cache-Control": "no-store"})
 
     return app
 

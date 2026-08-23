@@ -10,11 +10,17 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 
-from gateway.compat import LegacyNamespaceWarning, NamespaceConflictError, get_env, translate_value
+from gateway.compat import LegacyNamespaceWarning, NamespaceConflictError, get_env, map_state_value, translate_value
 from gateway.agent_connectors import AgentConnectorService, ConnectorError
 from gateway.cli.launcher import main as launcher_main
 from gateway.config import GatewayConfig, UpstreamConfig
-from gateway.migration import MigrationError, migrate_state, rollback_migration
+from gateway.migration import (
+    MigrationError,
+    _acquire_migration_lock,
+    _release_migration_lock,
+    migrate_state,
+    rollback_migration,
+)
 from gateway.server import APG_UPSTREAM_SYSTEM_PROMPT, PF_UPSTREAM_SYSTEM_PROMPT, create_app
 from ruamel.yaml import YAML
 
@@ -34,6 +40,86 @@ def test_pf_environment_wins_and_conflicts_fail_closed() -> None:
         get_env("PORT", environ={"PF_PORT": "9000", "APG_PORT": "8765"})
 
 
+@pytest.mark.parametrize(
+    ("payload", "expected"),
+    [
+        ({"pf_enabled": True, "apg_enabled": True}, {"pf_enabled": True}),
+        ({"apg_enabled": True, "pf_enabled": True}, {"pf_enabled": True}),
+        (
+            {"providers": {"pf": {"apiBase": "same"}, "apg": {"apiBase": "same"}}},
+            {"providers": {"pf": {"apiBase": "same"}}},
+        ),
+        (
+            {"providers": {"apg": {"apiBase": "same"}, "pf": {"apiBase": "same"}}},
+            {"providers": {"pf": {"apiBase": "same"}}},
+        ),
+        (
+            {"modelPresets": {"PF": {"provider": "pf"}, "APG": {"provider": "apg"}}},
+            {"modelPresets": {"PF": {"provider": "pf"}}},
+        ),
+        (
+            {"modelPresets": {"APG": {"provider": "apg"}, "PF": {"provider": "pf"}}},
+            {"modelPresets": {"PF": {"provider": "pf"}}},
+        ),
+        (
+            {"env": {"PF_API_KEY": "same-secret", "APG_API_KEY": "same-secret"}},
+            {"env": {"PF_API_KEY": "same-secret"}},
+        ),
+        (
+            {"env": {"APG_API_KEY": "same-secret", "PF_API_KEY": "same-secret"}},
+            {"env": {"PF_API_KEY": "same-secret"}},
+        ),
+    ],
+)
+def test_state_namespace_collisions_accept_equal_values(payload: dict, expected: dict) -> None:
+    assert map_state_value(payload) == expected
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {"pf_enabled": True, "apg_enabled": False},
+        {"apg_enabled": False, "pf_enabled": True},
+        {"providers": {"pf": {"apiBase": "canonical"}, "apg": {"apiBase": "legacy"}}},
+        {"providers": {"apg": {"apiBase": "legacy"}, "pf": {"apiBase": "canonical"}}},
+        {"modelPresets": {"PF": {"model": "canonical"}, "APG": {"model": "legacy"}}},
+        {"modelPresets": {"APG": {"model": "legacy"}, "PF": {"model": "canonical"}}},
+        {"env": {"PF_API_KEY": "canonical-secret", "APG_API_KEY": "legacy-secret"}},
+        {"env": {"APG_API_KEY": "legacy-secret", "PF_API_KEY": "canonical-secret"}},
+    ],
+)
+def test_state_namespace_collisions_reject_different_values_without_leaking_values(payload: dict) -> None:
+    with pytest.raises(NamespaceConflictError) as exc_info:
+        map_state_value(payload)
+
+    assert exc_info.value.code == "PF_CONFIG_CONFLICT"
+    message = str(exc_info.value)
+    assert "canonical-secret" not in message
+    assert "legacy-secret" not in message
+
+
+def test_state_migration_conflict_rolls_back_temporary_tree_and_backup(tmp_path: Path) -> None:
+    source = tmp_path / ".apg"
+    destination = tmp_path / ".privacyflow"
+    backup_root = tmp_path / ".apg.legacy"
+    source.mkdir(mode=0o700)
+    (source / "detector-control.json").write_text(
+        json.dumps({"version": 2, "pf_enabled": True, "apg_enabled": False}) + "\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(MigrationError) as exc_info:
+        migrate_state(source, destination, backup_root=backup_root)
+
+    assert exc_info.value.code == "PF_CONFIG_CONFLICT"
+    assert not destination.exists()
+    assert not list(tmp_path.glob(".privacyflow.tmp-*"))
+    assert not list(backup_root.iterdir())
+    lock = tmp_path / ".privacyflow.migrate.lock"
+    assert lock.exists()
+    assert lock.stat().st_mode & 0o777 == 0o600
+
+
 def test_legacy_environment_warning_is_visible_once_without_value_leakage() -> None:
     code = """
 import warnings
@@ -43,7 +129,10 @@ environment = {'APG_UPSTREAM_API_KEY': 'must-not-appear'}
 get_env('UPSTREAM_API_KEY', environ=environment)
 get_env('UPSTREAM_API_KEY', environ=environment)
 """
-    result = subprocess.run([sys.executable, "-c", code], text=True, capture_output=True, check=True)
+    env = os.environ.copy()
+    src = str(Path(__file__).resolve().parents[1] / "src")
+    env["PYTHONPATH"] = src if not env.get("PYTHONPATH") else src + os.pathsep + env["PYTHONPATH"]
+    result = subprocess.run([sys.executable, "-c", code], text=True, capture_output=True, check=True, env=env)
     assert result.stderr.count("APG_UPSTREAM_API_KEY is deprecated") == 1
     assert "must-not-appear" not in result.stderr
     assert issubclass(LegacyNamespaceWarning, FutureWarning)
@@ -79,18 +168,61 @@ def test_state_migration_refuses_existing_destination(tmp_path: Path) -> None:
         migrate_state(source, tmp_path / ".privacyflow")
 
 
-def test_state_migration_does_not_remove_another_process_lock(tmp_path: Path) -> None:
+def test_state_migration_ignores_stale_lock_file(tmp_path: Path) -> None:
     source = tmp_path / ".apg"
     source.mkdir()
     (source / "state.json").write_text("{}", encoding="utf-8")
     lock = tmp_path / ".privacyflow.migrate.lock"
-    lock.write_text("active", encoding="utf-8")
+    lock.write_text("stale", encoding="utf-8")
+
+    result = migrate_state(source, tmp_path / ".privacyflow")
+
+    assert result.destination.exists()
+    assert "pid=" in lock.read_text(encoding="utf-8")
+
+
+def test_state_migration_rejects_an_actively_held_lock(tmp_path: Path) -> None:
+    source = tmp_path / ".apg"
+    source.mkdir()
+    (source / "state.json").write_text("{}", encoding="utf-8")
+    lock = tmp_path / ".privacyflow.migrate.lock"
+    descriptor = _acquire_migration_lock(lock)
+    try:
+        with pytest.raises(MigrationError) as exc_info:
+            migrate_state(source, tmp_path / ".privacyflow")
+        assert exc_info.value.code == "PF_MIGRATION_LOCKED"
+    finally:
+        _release_migration_lock(descriptor)
+
+
+def test_state_migration_rejects_symlinked_source_root(tmp_path: Path) -> None:
+    actual = tmp_path / "actual"
+    actual.mkdir()
+    (actual / "state.json").write_text("{}", encoding="utf-8")
+    source = tmp_path / ".apg"
+    source.symlink_to(actual, target_is_directory=True)
 
     with pytest.raises(MigrationError) as exc_info:
         migrate_state(source, tmp_path / ".privacyflow")
 
-    assert exc_info.value.code == "PF_MIGRATION_LOCKED"
-    assert lock.read_text(encoding="utf-8") == "active"
+    assert exc_info.value.code == "PF_MIGRATION_SYMLINK"
+    assert not (tmp_path / ".privacyflow").exists()
+
+
+def test_state_migration_rejects_symlinked_backup_root(tmp_path: Path) -> None:
+    source = tmp_path / ".apg"
+    source.mkdir()
+    (source / "state.json").write_text("{}", encoding="utf-8")
+    actual = tmp_path / "backup-target"
+    actual.mkdir()
+    backup = tmp_path / ".apg.legacy"
+    backup.symlink_to(actual, target_is_directory=True)
+
+    with pytest.raises(MigrationError) as exc_info:
+        migrate_state(source, tmp_path / ".privacyflow", backup_root=backup)
+
+    assert exc_info.value.code == "PF_MIGRATION_SYMLINK"
+    assert list(actual.iterdir()) == []
 
 
 def test_state_migration_keeps_distinct_safety_backups_on_retry(tmp_path: Path) -> None:
@@ -282,11 +414,42 @@ def test_state_migration_rejects_reserved_provider_in_unknown_json(tmp_path: Pat
     assert not (tmp_path / ".privacyflow").exists()
 
 
-def test_state_migration_normalizes_removed_custom_detector_state(tmp_path: Path) -> None:
+@pytest.mark.parametrize("snapshot", ["/tmp/outside.snapshot", "../../outside.snapshot"])
+def test_state_migration_rejects_connector_snapshot_path_escape(tmp_path: Path, snapshot: str) -> None:
+    source = tmp_path / ".apg"
+    source.mkdir(mode=0o700)
+    (source / "agent-connections.json").write_text(
+        json.dumps({
+            "version": 1,
+            "active": {
+                "codex": {
+                    "files": [{"path": str(tmp_path / ".codex" / "config.toml"), "existed": True, "snapshot": snapshot}]
+                }
+            },
+            "completed": {},
+        }) + "\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(MigrationError) as exc_info:
+        migrate_state(source, tmp_path / ".privacyflow")
+
+    assert exc_info.value.code == "PF_MIGRATION_STATE_INVALID"
+    assert not (tmp_path / ".privacyflow").exists()
+
+
+def test_state_migration_preserves_custom_detector_state(tmp_path: Path) -> None:
     source = tmp_path / ".apg"
     source.mkdir(mode=0o700)
     (source / "detector-control.json").write_text(
-        json.dumps({"version": 1, "builtin_ruleset_revision": 1, "apg_enabled": False, "configurations": [{"id": "legacy"}]}) + "\n",
+        json.dumps({
+            "version": 2,
+            "builtin_ruleset_revision": 4,
+            "active_configuration_id": "dcfg_0123456789ab",
+            "apg_enabled": False,
+            "template_module_overrides": {"builtin.comprehensive": {"entropy": True}},
+            "configurations": [{"id": "dcfg_0123456789ab", "name": "Legacy custom"}],
+        }) + "\n",
         encoding="utf-8",
     )
 
@@ -297,8 +460,38 @@ def test_state_migration_normalizes_removed_custom_detector_state(tmp_path: Path
     assert state["builtin_ruleset_revision"] == 4
     assert state["pf_enabled"] is False
     assert "apg_enabled" not in state
-    assert "configurations" not in state
-    assert "template_module_overrides" not in state
+    assert state["active_configuration_id"] == "dcfg_0123456789ab"
+    assert state["configurations"] == [{"id": "dcfg_0123456789ab", "name": "Legacy custom"}]
+    assert state["template_module_overrides"] == {"builtin.comprehensive": {"entropy": True}}
+
+    from gateway.detector_control import DetectorControlPlane
+
+    loaded = DetectorControlPlane(
+        {},
+        str(tmp_path / ".privacyflow" / "detector-control.json"),
+        lambda _manager: None,
+    )
+    assert loaded.pf_enabled() is False
+    assert loaded.catalog()["active_configuration_id"] == "dcfg_0123456789ab"
+    restored = loaded.get_configuration("dcfg_0123456789ab")
+    assert restored["name"] == "Legacy custom"
+    assert restored["modules"] == []
+    assert restored["flow_timeout_ms"] == 1500
+
+
+def test_state_migration_leaves_missing_detector_active_id_for_runtime_default(tmp_path: Path) -> None:
+    source = tmp_path / ".apg"
+    source.mkdir(mode=0o700)
+    (source / "detector-control.json").write_text(
+        json.dumps({"version": 2, "apg_enabled": False, "configurations": []}) + "\n",
+        encoding="utf-8",
+    )
+
+    migrate_state(source, tmp_path / ".privacyflow")
+
+    state = json.loads((tmp_path / ".privacyflow" / "detector-control.json").read_text(encoding="utf-8"))
+    assert "active_configuration_id" not in state
+    assert state["pf_enabled"] is False
 
 
 @pytest.mark.parametrize(

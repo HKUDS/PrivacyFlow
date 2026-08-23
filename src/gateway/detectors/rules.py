@@ -5,6 +5,8 @@ from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
 from typing import Any
 
+import regex as timeout_regex
+
 from gateway.detectors.base import Detector, safe_preview
 from gateway.detectors.findings import Finding, FindingType, Risk, SourceBlock, SuggestedAction
 from gateway.detectors.normalizer import NormalizedText
@@ -117,15 +119,28 @@ class DetectionRule:
 class RuleBasedDetector(Detector):
     name = "rules"
 
-    def __init__(self, rules: Iterable[DetectionRule | Mapping[str, Any]], *, name: str = "rules") -> None:
+    def __init__(
+        self,
+        rules: Iterable[DetectionRule | Mapping[str, Any]],
+        *,
+        name: str = "rules",
+        match_timeout_ms: int | None = 100,
+    ) -> None:
         self.name = name
+        self.match_timeout_ms = match_timeout_ms
         self.rules = [rule if isinstance(rule, DetectionRule) else DetectionRule.from_dict(rule) for rule in rules]
-        self._compiled = [(rule, re.compile(rule.pattern, _regex_flags(rule.flags))) for rule in self.rules if rule.enabled]
+        engine = timeout_regex if match_timeout_ms is not None else re
+        self._compiled = [(rule, engine.compile(rule.pattern, _regex_flags(rule.flags))) for rule in self.rules if rule.enabled]
 
     def detect(self, block: SourceBlock, normalized: NormalizedText) -> Iterable[Finding]:
         text = normalized.normalized
         for rule, pattern in self._compiled:
-            for match in pattern.finditer(text):
+            matches = (
+                pattern.finditer(text)
+                if self.match_timeout_ms is None
+                else pattern.finditer(text, timeout=self.match_timeout_ms / 1000, concurrent=True)
+            )
+            for match in matches:
                 if rule.id == "secret.env_assignment" and not _sensitive_env_assignment(match):
                     continue
                 value, value_span = _match_value_and_span(rule, match)
@@ -160,6 +175,17 @@ class RuleBasedDetector(Detector):
 
 def builtin_rules() -> list[DetectionRule]:
     return [DetectionRule.from_dict(rule) for rule in BUILTIN_RULES]
+
+
+def rules_are_trusted_builtins(rules: Iterable[DetectionRule | Mapping[str, Any]]) -> bool:
+    trusted = {(str(rule["id"]), str(rule["pattern"])) for rule in BUILTIN_RULES}
+    values = list(rules)
+    return bool(values) and all(
+        (rule.id, rule.pattern) in trusted
+        if isinstance(rule, DetectionRule)
+        else (str(rule.get("id", "")), str(rule.get("pattern", ""))) in trusted
+        for rule in values
+    )
 
 
 def _tuple(value: Any) -> tuple[str, ...]:

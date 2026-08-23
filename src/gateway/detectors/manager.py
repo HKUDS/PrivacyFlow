@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from contextvars import ContextVar
 from typing import Any
 
 from gateway.detectors.base import Detector
@@ -23,7 +24,10 @@ class HierarchicalDetectorManager:
             model_detectors=model_detectors,
             aggregator=aggregator,
         )
-        self.last_diagnostics: list[dict[str, Any]] = []
+        self._diagnostics: ContextVar[tuple[dict[str, Any], ...]] = ContextVar(
+            f"pf_hierarchical_diagnostics_{id(self)}",
+            default=(),
+        )
 
     def scan_text(
         self,
@@ -55,8 +59,12 @@ class HierarchicalDetectorManager:
 
     def scan_block_with_diagnostics(self, block: SourceBlock) -> FlowScanResult:
         result = self.flow.scan_block(block)
-        self.last_diagnostics = self.flow.last_diagnostics
+        self._diagnostics.set(tuple(diagnostic.to_dict() for diagnostic in result.diagnostics))
         return result
+
+    @property
+    def last_diagnostics(self) -> list[dict[str, Any]]:
+        return [dict(item) for item in self._diagnostics.get()]
 
     def scan_json(self, data: Any, *, kind: str = "json") -> list[Finding]:
         findings: list[Finding] = []

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from contextvars import ContextVar
 from typing import Any
 
 from gateway.detectors.findings import Finding
@@ -12,7 +13,10 @@ class DetectorManager:
         config = detectors_config or {}
         self.core_guard_enabled = True
         self.hierarchical = HierarchicalDetectorManager(detectors_config=config)
-        self.last_diagnostics: list[dict[str, Any]] = []
+        self._diagnostics: ContextVar[tuple[dict[str, Any], ...]] = ContextVar(
+            f"pf_detector_diagnostics_{id(self)}",
+            default=(),
+        )
 
     def scan(self, text: str, *, kind: str = "text") -> list[Detection]:
         findings = self.scan_findings(text, kind=kind)
@@ -20,17 +24,30 @@ class DetectorManager:
 
     def scan_findings(self, text: str, *, kind: str = "text") -> list[Finding]:
         result = self.hierarchical.scan_text_with_diagnostics(text, kind=kind)
-        self._merge_diagnostics(self.hierarchical.last_diagnostics)
+        self._merge_diagnostics([diagnostic.to_dict() for diagnostic in result.diagnostics])
         return result.findings
 
+    def scan_findings_with_diagnostics(
+        self,
+        text: str,
+        *,
+        kind: str = "text",
+    ) -> tuple[list[Finding], list[dict[str, Any]]]:
+        """Run an isolated scan and return diagnostics in the same execution context."""
+
+        self.reset_diagnostics()
+        findings = self.scan_findings(text, kind=kind)
+        return findings, self.diagnostics()
+
     def diagnostics(self) -> list[dict[str, Any]]:
-        return list(self.last_diagnostics)
+        return [dict(item) for item in self._diagnostics.get()]
 
     def reset_diagnostics(self) -> None:
-        self.last_diagnostics = []
+        self._diagnostics.set(())
 
     def _merge_diagnostics(self, diagnostics: list[dict[str, Any]]) -> None:
-        by_id = {str(item.get("id")): item for item in self.last_diagnostics}
+        merged = self.diagnostics()
+        by_id = {str(item.get("id")): item for item in merged}
         status_priority = {
             "disabled": 0,
             "skipped": 1,
@@ -44,7 +61,7 @@ class DetectorManager:
             existing = by_id.get(module_id)
             if existing is None:
                 stored = dict(diagnostic)
-                self.last_diagnostics.append(stored)
+                merged.append(stored)
                 by_id[module_id] = stored
                 continue
             existing["elapsed_ms"] = round(
@@ -57,6 +74,7 @@ class DetectorManager:
             if status_priority.get(incoming_status, 5) > status_priority.get(current_status, 5):
                 existing["status"] = incoming_status
                 existing["error"] = diagnostic.get("error")
+        self._diagnostics.set(tuple(merged))
 
 
 def _finding_to_detection(finding: Finding) -> Detection:

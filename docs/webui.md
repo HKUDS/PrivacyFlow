@@ -26,11 +26,11 @@ Protected values are identified by an HMAC-derived `pv_...` administration id. T
 
 The operation-list, request-detail, and protected-value endpoints provide a deliberate opt-in exception. With `include_raw=false` they return `***`; with `include_raw=true` they read an original only while the referenced mapping is active. Audit-operation rows do not duplicate the original or store a complete signed placeholder, and `.privacyflow/audit.jsonl` remains free of both. Every raw read records a safe `view_audit_raw_values` or `view_protected_raw_values` management event without the viewed content. Older `.apg/audit.jsonl` files are handled only by the explicit migration command.
 
-The WebUI and every `/api/admin/*` data or mutation endpoint require no key. PrivacyFlow binds to `127.0.0.1` by default, which is the management plane's security boundary. Do not bind PrivacyFlow to another interface unless that unauthenticated access is explicitly intended and protected by an external trusted boundary. Set `PF_ADMIN_ENABLED=false` to remove both `/ui/` and `/api/admin/*`.
+The WebUI and every `/api/admin/*` data or mutation endpoint require no key. PrivacyFlow therefore registers them only on a loopback bind and validates the socket peer, `Host`, and any supplied browser `Origin` on every request. A non-loopback bind disables the management routes while leaving authenticated Agent proxy endpoints available. Set `PF_ADMIN_ENABLED=false` to remove both `/ui/` and `/api/admin/*` explicitly.
 
-Local-model installation and download are more restrictive than the rest of the unauthenticated control plane: the PrivacyFlow bind address and actual client address must both be loopback. Remote-bound or remote-client sessions can inspect status but receive `LOCAL_MODEL_SETUP_LOCAL_ONLY` for every mutation. Dependency commands come from a fixed server-side manifest and always target PrivacyFlow's isolated managed Runtime; request bodies cannot supply package names, versions, indexes, or command arguments.
+Local-model installation and download inherit the management plane's loopback checks. Dependency commands come from a fixed server-side manifest and always target PrivacyFlow's isolated managed Runtime; request bodies cannot supply package names, versions, indexes, or command arguments.
 
-Agent Connector mutations use the same double-loopback rule. Connector status may be inspected locally, but connect and restore require both PrivacyFlow's bind address and the actual client address to be loopback. Connector responses and audit events never include dedicated Connector keys.
+Agent Connector status and mutations inherit the same loopback rule. Connector responses and audit events never include dedicated Connector keys.
 
 ## Views
 
@@ -74,28 +74,49 @@ Repeated uses of one mapping and representation are merged with an occurrence co
 
 ### Protected Values
 
-The registry exposes kind, subtype, scope, lifecycle state, materialization class, timestamps, and whether a local value is currently stored. Originals are masked by default. Its eye control requires confirmation and temporarily fetches originals only for active mappings; closing it immediately clears rendered and in-memory originals and reloads `***`. Automatic clearing is disabled by default, so active mappings display `不自动过期`. The retention control can enable idle-time clearing and set a duration from one minute to 365 days. Enabling starts a fresh deadline for all active mappings; disabling removes their pending deadlines. Active mappings can still be revoked individually, and expired records can be purged. Expired and manually revoked tombstones are displayed separately.
+The registry exposes kind, subtype, scope, lifecycle state, materialization class, timestamps, and whether a local value is currently stored. Originals are masked by default. Its eye control requires confirmation and temporarily fetches originals only for active mappings; closing it immediately clears rendered and in-memory originals and reloads `***`. Automatic clearing is disabled by default, so active mappings display `不自动过期`. The retention control can enable idle-time clearing and set a duration from one minute to 365 days. Enabling starts a fresh deadline for all active mappings; disabling removes their pending deadlines. Active mappings can still be revoked individually, and expired records can be purged. Expired and manually revoked tombstones are displayed separately until the configured history-retention period removes their non-secret metadata.
 
-### Protection Pipeline
+### Detector Configurations
 
-PrivacyFlow applies one fixed built-in detection pipeline to traffic. It combines
-deterministic credential/API-key and personal-information rules with local-path
-detection, followed by the fixed placeholder-integrity and streaming-boundary
-safety layers. The global PrivacyFlow switch can enable or disable protection,
-but it does not change the pipeline.
+The detector view manages complete, ordered local pipelines. Built-in templates
+cover credentials and keys, personal information, the local development
+environment, and comprehensive protection. Templates are read-only; **Copy and
+edit** creates an independent user configuration, while template module switches
+can be adjusted directly. YAML deployment templates remain entirely read-only,
+including their module switches.
 
-The WebUI has no detector configuration view or editor. Users cannot create, copy,
-edit, activate, delete, reorder, or test detector configurations; toggle detector
-modules or presets; attach local models; or choose per-detector fail-open/fail-close
-behavior. No detector-configuration CRUD endpoints are exposed by the management
-API.
+A user configuration has a name, description, total timeout, and ordered module
+list. It can be copied, renamed, activated, or deleted while inactive. Modules can
+be added, copied, edited, enabled, disabled, removed, and reordered. Supported
+module types are regular expressions, entropy checks, path detection, and verified
+local models. Each module can fail open or fail closed.
 
-`detector-control.json` is retained as internal fixed-pipeline state and the
-global protection toggle, not as a user-editable detector registry. At startup,
-stale or malformed legacy editor data is ignored and the fixed built-in pipeline
-is used. An explicit `privacyflow migrate` rewrites the copied legacy detector
-state to the normalized fixed form while leaving the original `.apg/` state
-untouched in a read-only `.apg.legacy/<timestamp>/` backup.
+Regular expressions are checked for length, empty matches, a conservative syntax
+subset, and common ReDoS structures. Every non-built-in regex module also runs
+through a timeout-capable engine with a 100 ms default. Regex matching does not
+use an abandoned executor thread, so a timed-out match cannot keep the gateway
+process alive indefinitely.
+
+The dry run evaluates a saved configuration without activating it. Findings are
+highlighted over the submitted text with module attribution, timing, hit counts,
+and safe diagnostics; test text and detector patterns are not written to audit
+records.
+
+Configurations are revisioned and stored in `detector-control.json` beside the
+mapping database with mode `0600`. Saving an active configuration builds and
+validates the replacement before an atomic persistence and runtime swap, so a
+failed build keeps the previous flow active. Valid legacy custom configurations
+are preserved during `privacyflow migrate`; malformed or unsupported state falls
+back to the built-in defaults at startup instead of blocking launch. If only one
+stored user configuration is invalid, PrivacyFlow skips that entry while retaining
+the master-switch value, active valid configuration, and all other valid entries.
+The skipped entry remains on disk when later detector state is saved, so a later
+revision can recover it.
+
+YAML deployment templates use runtime module types such as `regex_rules`,
+`entropy_context`, and `path_detector`. WebUI user configurations use the unified
+types `regex`, `entropy`, `path`, and `local_model`; PrivacyFlow maps them into
+the runtime schema before the flow is built.
 
 PF-marker integrity and streaming-boundary protection are fixed, always-on
 safety mechanisms. Exact valid same-session placeholders are restored in ordinary
@@ -111,13 +132,13 @@ even when the new surrounding syntax would not independently match the detector.
 
 ### Upstream Model Catalog
 
-The model catalog follows a provider-switcher style workflow: a saved profile may provide an explicit catalog URL, otherwise PrivacyFlow derives `/v1/models` and known compatibility siblings. A 404/405/501 is the only condition that advances to the next candidate. Catalog requests use `Accept: application/json` and a stable PrivacyFlow User-Agent (or the optional profile override); an Anthropic-configured profile also sends Bearer auth alongside its native headers so a root OpenAI-compatible catalog such as DeepSeek's can be discovered. Catalog responses are bounded to 500 safe identifiers, preserve provider display names/ownership for the UI, and never persist the response payload or API key. `POST /models/preview` performs the same discovery against unsaved values without writing the launcher file. PrivacyFlow keeps display labels separate from the actual model ID; it does not rewrite model names at proxy runtime.
+The model catalog follows a provider-switcher style workflow: a saved profile may provide an explicit catalog URL, otherwise PrivacyFlow derives `/v1/models` and known compatibility siblings. A 404/405/501 is the only condition that advances to the next candidate. Catalog requests use `Accept: application/json` and a stable PrivacyFlow User-Agent (or the optional profile override); an Anthropic-configured profile also sends Bearer auth alongside its native headers so a root OpenAI-compatible catalog such as DeepSeek's can be discovered. Catalog responses are bounded to 500 safe identifiers, preserve provider display names/ownership for the UI, and never persist the response payload or API key. `POST /api/admin/upstream-configuration/models/preview` performs the same discovery against unsaved values without writing the launcher file. PrivacyFlow keeps display labels separate from the actual model ID; it does not rewrite model names at proxy runtime.
 
 ### Local Model Management
 
 The local-model view manages manually added Hugging Face repositories or local
-directories independently of the fixed traffic pipeline. It does not create or
-attach detector modules. Its primary control is a single model-address input
+directories and exposes successfully verified models to local-model detector
+modules. Its primary control is a single model-address input
 followed by **Add and prepare**. PrivacyFlow recognizes `owner/model`, Hugging Face
 URLs, and existing local directories, then inspects metadata before doing any large
 download. Runtime, dependency, cache, and device information lives in a collapsed
@@ -127,9 +148,9 @@ Adapter and device preferences default to `auto`. Hugging Face `pipeline_tag`, `
 
 Each model can run the combined `inspect → runtime → download → verify` operation or a context-specific repair. PrivacyFlow builds a fixed, versioned environment under `runtimes/model-runtime-v1/` beside the database, verifies it in a temporary directory, and atomically replaces the active Runtime only after success. Model libraries are not installed into PrivacyFlow's own environment.
 
-A persistent private JSON-lines Worker performs `load`, `infer`, `unload`, and `health`. Models are loaded lazily and reused. The Worker uses offline Hugging Face mode, never enables `trust_remote_code`, and receives no upstream API key, Agent key, signing key, or Hugging Face token. A crashed Worker is restarted once; Worker errors do not change the fixed traffic pipeline.
+A persistent private JSON-lines Worker performs `load`, `infer`, `unload`, and `health`. Models are loaded lazily and reused. The Worker uses offline Hugging Face mode, never enables `trust_remote_code`, and receives no upstream API key, Agent key, signing key, or Hugging Face token. A crashed Worker is restarted once; the referencing detector module's fail-open/fail-close setting remains the final failure policy.
 
-Manual entries and validation records persist in the mode-`0600`, version-2 `local-models.json` beside the SQLite database. Hugging Face snapshots use the sibling `models/` cache. PrivacyFlow does not copy or delete user-owned local directories. Because local models are not attached to the fixed traffic pipeline, managed cache deletion is independent of that pipeline. Explicit user downloads are independent of the runtime `allow_model_download` switch.
+Manual entries and validation records persist in the mode-`0600`, version-2 `local-models.json` beside the SQLite database. Hugging Face snapshots use the sibling `models/` cache. PrivacyFlow does not copy or delete user-owned local directories. Managed cache deletion is blocked while an enabled module in the active detector configuration references the model. Explicit user downloads are independent of the runtime `allow_model_download` switch.
 
 The ordinary test suite never installs packages or downloads models. To explicitly exercise a real CPU-only dependency install, tiny Hugging Face snapshot download, load, and inference inside a temporary virtual environment, run:
 
@@ -143,13 +164,27 @@ PF_RUN_LOCAL_MODEL_INTEGRATION=1 .venv/bin/pytest -q tests/test_local_models_int
 | --- | --- | --- |
 | `GET` | `/api/admin/overview` | Safe dashboard summary |
 | `GET` | `/api/admin/connection` | One local Agent API key and protocol base paths |
+| `POST` | `/api/admin/connection/api-key` | Generate and persist a new primary local Agent API key |
+| `GET` | `/api/admin/privacy-control` | Master protection switch, availability, and effective enabled state |
+| `PUT` | `/api/admin/privacy-control` | Toggle the master protection switch |
 | `GET` | `/api/admin/agent-connectors` | Installation, paths, protocol, connection, and external-change status without keys |
 | `POST` | `/api/admin/agent-connectors/{id}/connect` | Probe the required protocol and transactionally connect an installed Agent |
 | `POST` | `/api/admin/agent-connectors/{id}/restore` | Restore the exact pre-connect snapshot, with explicit external-change confirmation |
 | `GET` | `/api/admin/upstream-configuration` | Provider-key configured status and safe upstream metadata |
 | `PUT` | `/api/admin/upstream-configuration` | Validate, persist, and hot-apply an upstream Base URL and provider API key without echoing the key |
+| `POST` | `/api/admin/upstream-configuration/test` | Probe the selected native protocol against a saved or unsaved upstream profile |
+| `POST` | `/api/admin/upstream-configuration/{profile_id}/activate` | Hot-apply a saved named upstream profile |
+| `DELETE` | `/api/admin/upstream-configuration/{profile_id}` | Delete a saved named upstream profile |
 | `GET` | `/api/admin/upstream-configuration/models` | Fetch the active provider catalog; `X-PF-Model-Catalog: rich`, `profile_id`, or `refresh=true` returns display options, source, cache time, and categorized errors |
 | `POST` | `/api/admin/upstream-configuration/models/preview` | Fetch an unsaved catalog from `{base_url, protocol, api_key, models_url?, user_agent?}` without persistence or secret echo |
+| `GET` | `/api/admin/detector-configurations` | List built-in/deployment templates, user configurations, and the active configuration |
+| `POST` | `/api/admin/detector-configurations` | Create a blank configuration or copy an existing template/configuration |
+| `GET` | `/api/admin/detector-configurations/{id}` | Read one complete detector configuration |
+| `PUT` | `/api/admin/detector-configurations/{id}` | Revision-check, validate, persist, and hot-apply a user configuration when active |
+| `DELETE` | `/api/admin/detector-configurations/{id}` | Delete an inactive user configuration |
+| `POST` | `/api/admin/detector-configurations/{id}/activate` | Atomically activate a saved configuration |
+| `PUT` | `/api/admin/detector-configurations/{id}/modules/{module_id}/enabled` | Toggle a module in a read-only preset |
+| `POST` | `/api/admin/detector-configurations/{id}/test` | Dry-run a saved configuration without auditing the submitted text |
 | `GET` | `/api/admin/audit` | Filtered audit events |
 | `GET` | `/api/admin/audit/operations` | Separate replacement or materialization operation list; optional `include_raw=true` |
 | `GET` | `/api/admin/audit/requests` | Request-level replacement/materialization summaries |

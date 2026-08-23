@@ -76,6 +76,70 @@ def test_mapping_retention_policy_updates_existing_records_and_checks_revision(c
     assert retained.max_expires_at == 0
 
 
+def test_history_cleanup_removes_only_old_audit_rows_and_tombstones(tmp_path) -> None:
+    store = MappingStore(str(tmp_path / "state.sqlite3"), namespace="PF")
+    old = store.upsert_mapping(
+        session_id="old-session",
+        workspace_id="ws",
+        scope="session",
+        kind="secret",
+        subtype="api_key",
+        value="old-secret",
+        store_value=True,
+        materialization_class="secret",
+    )
+    recent = store.upsert_mapping(
+        session_id="recent-session",
+        workspace_id="ws",
+        scope="session",
+        kind="secret",
+        subtype="api_key",
+        value="recent-secret",
+        store_value=True,
+        materialization_class="secret",
+    )
+    store.tombstone(old.handle_id)
+    store.tombstone(recent.handle_id)
+    with store.conn:
+        store.conn.execute("UPDATE mappings SET last_seen_at=1 WHERE handle_id=?", (old.handle_id,))
+    operation = {
+        "direction": "replacement",
+        "handle_id": "secr_history",
+        "kind": "secret",
+        "subtype": "api_key",
+        "risk": "high",
+        "detector": "test",
+        "action": "redact",
+        "sink": "upstream",
+        "result_code": "OK",
+    }
+    store.record_audit_operations(
+        request_id="req_old",
+        session_id="sess",
+        workspace_id="ws",
+        endpoint="/v1/responses",
+        timestamp=1,
+        operations=[operation],
+    )
+    store.record_audit_operations(
+        request_id="req_recent",
+        session_id="sess",
+        workspace_id="ws",
+        endpoint="/v1/responses",
+        timestamp=100,
+        operations=[{**operation, "handle_id": "secr_recent"}],
+    )
+
+    removed = store.purge_history(50)
+
+    assert removed["mapping_tombstones"] == 1
+    assert removed["audit_operations"] == 1
+    assert store.get(old.handle_id) is None
+    assert store.get(recent.handle_id) is not None
+    assert store.audit_operations_for_request("req_old", "ws") == []
+    assert len(store.audit_operations_for_request("req_recent", "ws")) == 1
+
+
 def test_unsupported_mapping_database_schema_is_rejected(tmp_path) -> None:
     database = tmp_path / "old.sqlite3"
     with sqlite3.connect(database) as connection:

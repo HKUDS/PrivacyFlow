@@ -191,3 +191,12 @@ def test_strict_config_rejects_unresolved_environment_reference(tmp_path, monkey
     )
     with pytest.raises(RuntimeError, match="APG_CONFIG_ENV_UNRESOLVED"):
         load_config(str(cfg_path))
+
+
+def test_history_and_audit_bounds_reject_unsafe_values(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("PF_LOCAL_API_KEYS", "local")
+    monkeypatch.setenv("PF_SIGNING_SECRET", "secret")
+    cfg_path = tmp_path / "policy.yaml"
+    cfg_path.write_text("strict_mode: true\naudit_log_backups: 0\n", encoding="utf-8")
+    with pytest.raises(RuntimeError, match="PF_CONFIG_VALUE_INVALID"):
+        load_config(str(cfg_path))

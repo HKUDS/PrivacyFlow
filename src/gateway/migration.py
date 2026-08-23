@@ -7,13 +7,29 @@ import json
 import os
 import shutil
 import sqlite3
+import stat
 import time
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from gateway.compat import CANONICAL_STATE_DIR, LEGACY_STATE_DIR, map_state_value
+from gateway.compat import (
+    CANONICAL_STATE_DIR,
+    LEGACY_STATE_DIR,
+    NamespaceConflictError,
+    map_state_value,
+)
+
+try:  # pragma: no cover - platform-specific import
+    import fcntl
+except ImportError:  # pragma: no cover - Windows only
+    fcntl = None  # type: ignore[assignment]
+
+try:  # pragma: no cover - platform-specific import
+    import msvcrt
+except ImportError:  # pragma: no cover - POSIX only
+    msvcrt = None  # type: ignore[assignment]
 
 
 class MigrationError(RuntimeError):
@@ -77,8 +93,14 @@ def migrate_state(
     """
 
     default_source, default_destination = default_state_paths()
-    source_path = (source or default_source).expanduser().resolve()
-    destination_path = (destination or default_destination).expanduser().resolve()
+    source_input = (source or default_source).expanduser()
+    destination_input = (destination or default_destination).expanduser()
+    if source_input.is_symlink():
+        raise MigrationError(f"Symbolic links are not allowed in state migration: {source_input}", code="PF_MIGRATION_SYMLINK")
+    if destination_input.is_symlink():
+        raise MigrationError(f"Symbolic links are not allowed in state migration: {destination_input}", code="PF_MIGRATION_SYMLINK")
+    source_path = source_input.resolve()
+    destination_path = destination_input.resolve()
     if not source_path.exists():
         raise MigrationError(f"Legacy state directory does not exist: {source_path}", code="PF_MIGRATION_SOURCE_MISSING")
     if not source_path.is_dir():
@@ -94,20 +116,15 @@ def migrate_state(
     temporary_path = destination_path.parent / f".{destination_path.name}.tmp-{uuid.uuid4().hex}"
     backup_path: Path | None = None
     backup_created = False
-    lock = None
-    lock_created = False
+    lock_fd: int | None = None
     replaced_destination = False
     try:
-        try:
-            lock = lock_path.open("x", encoding="utf-8")
-            lock_created = True
-            lock.write(f"pid={os.getpid()}\ntime={time.time()}\n")
-            lock.flush()
-            os.chmod(lock_path, 0o600)
-        except FileExistsError as exc:
-            raise MigrationError("Another PrivacyFlow migration is already running.", code="PF_MIGRATION_LOCKED") from exc
+        lock_fd = _acquire_migration_lock(lock_path)
 
-        backup_parent = (backup_root or source_path.parent / f"{source_path.name}.legacy").resolve()
+        backup_input = (backup_root or source_path.parent / f"{source_path.name}.legacy").expanduser()
+        if backup_input.is_symlink():
+            raise MigrationError(f"Symbolic links are not allowed in state migration: {backup_input}", code="PF_MIGRATION_SYMLINK")
+        backup_parent = backup_input.resolve()
         backup_parent.mkdir(parents=True, exist_ok=True, mode=0o700)
         os.chmod(backup_parent, 0o700)
         # Include a random suffix so a retry in the same second never points
@@ -143,13 +160,57 @@ def migrate_state(
             _remove_temporary(backup_path)
         raise MigrationError(f"Could not migrate PrivacyFlow state: {exc}") from exc
     finally:
-        if lock is not None:
-            lock.close()
-        if lock_created:
-            try:
-                lock_path.unlink()
-            except FileNotFoundError:
-                pass
+        if lock_fd is not None:
+            _release_migration_lock(lock_fd)
+
+
+def _acquire_migration_lock(path: Path) -> int:
+    """Acquire a process-owned lock; a stale lock file is harmless."""
+
+    if path.is_symlink():
+        raise MigrationError(f"Symbolic links are not allowed in state migration: {path}", code="PF_MIGRATION_SYMLINK")
+    flags = os.O_RDWR | os.O_CREAT
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    try:
+        descriptor = os.open(path, flags, 0o600)
+    except OSError as exc:
+        raise MigrationError("Could not open the PrivacyFlow migration lock.", code="PF_MIGRATION_LOCKED") from exc
+    try:
+        if not stat.S_ISREG(os.fstat(descriptor).st_mode):
+            raise MigrationError("The PrivacyFlow migration lock is not a regular file.", code="PF_MIGRATION_LOCKED")
+        if hasattr(os, "fchmod"):
+            os.fchmod(descriptor, 0o600)
+        else:  # pragma: no cover - Windows only
+            os.chmod(path, 0o600)
+        if fcntl is not None:
+            fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        elif msvcrt is not None:  # pragma: no cover - Windows only
+            if os.fstat(descriptor).st_size == 0:
+                os.write(descriptor, b"\0")
+            os.lseek(descriptor, 0, os.SEEK_SET)
+            msvcrt.locking(descriptor, msvcrt.LK_NBLCK, 1)
+        os.ftruncate(descriptor, 0)
+        os.write(descriptor, f"pid={os.getpid()}\ntime={time.time()}\n".encode("ascii"))
+        os.fsync(descriptor)
+        return descriptor
+    except MigrationError:
+        os.close(descriptor)
+        raise
+    except (BlockingIOError, OSError) as exc:
+        os.close(descriptor)
+        raise MigrationError("Another PrivacyFlow migration is already running.", code="PF_MIGRATION_LOCKED") from exc
+
+
+def _release_migration_lock(descriptor: int) -> None:
+    try:
+        if fcntl is not None:
+            fcntl.flock(descriptor, fcntl.LOCK_UN)
+        elif msvcrt is not None:  # pragma: no cover - Windows only
+            os.lseek(descriptor, 0, os.SEEK_SET)
+            msvcrt.locking(descriptor, msvcrt.LK_UNLCK, 1)
+    finally:
+        os.close(descriptor)
 
 
 def _copy_tree(source: Path, destination: Path) -> None:
@@ -205,24 +266,31 @@ def _rewrite_state_tree(root: Path) -> int:
             payload = json.loads(path.read_text(encoding="utf-8"))
         except (UnicodeDecodeError, json.JSONDecodeError) as exc:
             if path.name == "detector-control.json":
-                # Custom detector state is no longer part of PrivacyFlow. An
-                # unreadable legacy editor state must not make the fixed
-                # built-in protection pipeline unbootable; the untouched
-                # bytes remain in the read-only legacy backup.
+                # Keep startup recoverable even if a legacy editor state is
+                # unreadable. The original bytes remain in the read-only
+                # migration backup.
                 payload = {}
             else:
                 raise MigrationError(
                     f"PrivacyFlow state is not valid JSON: {path}",
                     code="PF_MIGRATION_STATE_INVALID",
                 ) from exc
-        rewritten = map_state_value(payload)
+        try:
+            rewritten = map_state_value(payload)
+        except NamespaceConflictError as exc:
+            raise MigrationError(
+                f"PrivacyFlow state contains conflicting PF and APG values: {path}",
+                code=exc.code,
+            ) from exc
         if path.name == "detector-control.json":
-            enabled = rewritten.get("pf_enabled", rewritten.get("apg_enabled", True)) if isinstance(rewritten, dict) else True
-            rewritten = {
-                "version": 3,
-                "builtin_ruleset_revision": 4,
-                "pf_enabled": enabled if isinstance(enabled, bool) else True,
-            }
+            rewritten = rewritten if isinstance(rewritten, dict) else {}
+            enabled = rewritten.get("pf_enabled", rewritten.get("apg_enabled", True))
+            rewritten["version"] = 3
+            rewritten["builtin_ruleset_revision"] = 4
+            rewritten["pf_enabled"] = enabled if isinstance(enabled, bool) else True
+            rewritten.pop("apg_enabled", None)
+            rewritten.setdefault("template_module_overrides", {})
+            rewritten.setdefault("configurations", [])
         if rewritten == payload:
             continue
         path.write_text(json.dumps(rewritten, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
@@ -282,8 +350,32 @@ def _validate_connector_snapshots(root: Path, payload: dict[str, Any]) -> None:
             if not isinstance(item, dict) or not isinstance(item.get("path"), str):
                 raise MigrationError("Agent Connector file state is invalid.", code="PF_MIGRATION_STATE_INVALID")
             snapshot = item.get("snapshot")
-            if item.get("existed") and (not isinstance(snapshot, str) or not (root / snapshot).is_file()):
-                raise MigrationError("Agent Connector snapshot is missing.", code="PF_MIGRATION_SNAPSHOT_MISSING")
+            if item.get("existed"):
+                snapshot_path = _state_child_path(root, snapshot)
+                if not snapshot_path.is_file():
+                    raise MigrationError("Agent Connector snapshot is missing.", code="PF_MIGRATION_SNAPSHOT_MISSING")
+
+
+def _state_child_path(root: Path, value: Any) -> Path:
+    if not isinstance(value, str) or not value:
+        raise MigrationError("Agent Connector snapshot is missing.", code="PF_MIGRATION_SNAPSHOT_MISSING")
+    relative = Path(value)
+    if relative.is_absolute() or ".." in relative.parts:
+        raise MigrationError("Agent Connector snapshot path is unsafe.", code="PF_MIGRATION_STATE_INVALID")
+    root_resolved = root.resolve()
+    candidate = root / relative
+    current = candidate
+    while current != root:
+        if current.is_symlink():
+            raise MigrationError(f"Symbolic links are not allowed in state migration: {current}", code="PF_MIGRATION_SYMLINK")
+        if current == current.parent:
+            raise MigrationError("Agent Connector snapshot path is unsafe.", code="PF_MIGRATION_STATE_INVALID")
+        current = current.parent
+    try:
+        candidate.resolve().relative_to(root_resolved)
+    except (OSError, ValueError) as exc:
+        raise MigrationError("Agent Connector snapshot path is unsafe.", code="PF_MIGRATION_STATE_INVALID") from exc
+    return candidate
 
 
 def _verify_tree(root: Path) -> None:

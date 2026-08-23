@@ -7,7 +7,13 @@ from collections.abc import Iterable
 
 from gateway.detectors.base import Detector
 from gateway.detectors.findings import Finding, SourceBlock
-from gateway.detectors.flow import DetectorFlow, FlowModule, build_detector_flow, compile_flow_config
+from gateway.detectors.flow import (
+    NORMALIZATION_CHUNK_SIZE,
+    DetectorFlow,
+    FlowModule,
+    build_detector_flow,
+    compile_flow_config,
+)
 from gateway.detectors.manager import HierarchicalDetectorManager
 from gateway.detectors.normalizer import NormalizedText
 
@@ -169,3 +175,74 @@ def test_module_timeout_fail_open_records_diagnostic() -> None:
     result = flow.scan_block(SourceBlock.from_text("hello"))
     assert result.findings == []
     assert result.diagnostics[0].status == "timeout"
+
+
+def test_module_timeout_is_shared_across_normalization_chunks() -> None:
+    class ChunkSlowDetector(Detector):
+        name = "chunk-slow"
+
+        def detect(self, block: SourceBlock, normalized: NormalizedText) -> Iterable[Finding]:
+            time.sleep(0.03)
+            return []
+
+    flow = DetectorFlow([
+        FlowModule("chunk-slow", "python_plugin", ChunkSlowDetector(), timeout_ms=45),
+    ])
+
+    result = flow.scan_block(SourceBlock.from_text("x" * (NORMALIZATION_CHUNK_SIZE + 1)))
+
+    assert result.diagnostics[0].status == "timeout"
+    assert result.diagnostics[0].error == "module_timeout"
+
+
+def test_flow_budget_limits_module_without_its_own_timeout() -> None:
+    flow = DetectorFlow(
+        [FlowModule("slow", "python_plugin", SlowDetector())],
+        flow_timeout_ms=5,
+    )
+    started = time.perf_counter()
+
+    result = flow.scan_block(SourceBlock.from_text("hello"))
+
+    assert time.perf_counter() - started < 0.04
+    assert result.diagnostics[0].status == "timeout"
+    assert result.diagnostics[0].error == "flow_timeout"
+
+
+def test_long_text_scans_sensitive_value_after_normalization_window() -> None:
+    value = "howard@example.com"
+    text = "x" * (NORMALIZATION_CHUNK_SIZE + 1) + " " + value
+    flow = build_detector_flow()
+
+    result = flow.scan_block(SourceBlock.from_text(text))
+
+    findings = [finding for finding in result.findings if finding.subtype == "email"]
+    assert len(findings) == 1
+    finding = findings[0]
+    assert text[finding.original_start : finding.original_end] == value
+    assert finding.original_start > NORMALIZATION_CHUNK_SIZE
+
+
+def test_overlapping_windows_deduplicate_boundary_secret_and_rebase_span() -> None:
+    value = "sk-proj-abcdefghijklmnopqrstuvwxyz123456"
+    text = "x" * (NORMALIZATION_CHUNK_SIZE - 8) + " " + value
+    flow = build_detector_flow()
+
+    result = flow.scan_block(SourceBlock.from_text(text))
+
+    findings = [finding for finding in result.findings if finding.subtype == "api_key"]
+    assert len(findings) == 1
+    finding = findings[0]
+    assert text[finding.original_start : finding.original_end] == value
+    assert finding.original_start == text.index(value)
+
+
+def test_overlapping_windows_rebase_boundary_path_span() -> None:
+    value = "/Users/alice/private/project/.env"
+    text = "x" * (NORMALIZATION_CHUNK_SIZE - 8) + " " + value
+    flow = build_detector_flow()
+
+    result = flow.scan_block(SourceBlock.from_text(text))
+
+    finding = next(finding for finding in result.findings if finding.subtype == "local_path")
+    assert text[finding.original_start : finding.original_end] == value

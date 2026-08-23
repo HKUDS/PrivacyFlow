@@ -8,7 +8,9 @@ import secrets
 import shutil
 import stat
 import tempfile
+import threading
 import time
+from contextlib import contextmanager
 from collections.abc import MutableMapping
 from dataclasses import dataclass
 from pathlib import Path
@@ -16,6 +18,16 @@ from typing import Any, Callable, Mapping
 
 import tomlkit
 from ruamel.yaml import YAML
+
+try:
+    import fcntl
+except ImportError:  # pragma: no cover - exercised only on Windows
+    fcntl = None
+
+try:
+    import msvcrt
+except ImportError:  # pragma: no cover - exercised only on POSIX
+    msvcrt = None
 
 from gateway.cli.launcher import (
     generate_local_api_key,
@@ -94,6 +106,23 @@ def _yaml_bytes(value: Any) -> bytes:
     return stream.getvalue().encode()
 
 
+_PROCESS_LOCKS: dict[str, threading.RLock] = {}
+_PROCESS_LOCKS_GUARD = threading.Lock()
+_HELD_TRANSACTION_LOCKS = threading.local()
+
+
+def _process_lock_for(path: Path) -> threading.RLock:
+    """Return the process-wide lock for one canonical state directory."""
+
+    key = os.path.normcase(str(path))
+    with _PROCESS_LOCKS_GUARD:
+        lock = _PROCESS_LOCKS.get(key)
+        if lock is None:
+            lock = threading.RLock()
+            _PROCESS_LOCKS[key] = lock
+        return lock
+
+
 class AgentConnectorService:
     def __init__(
         self,
@@ -116,7 +145,9 @@ class AgentConnectorService:
         self.which = which
         self.base_url = base_url.rstrip("/")
         self.index_path = self.state_dir / "agent-connections.json"
+        self.lock_path = self.state_dir / "agent-connections.lock"
         self.transactions_dir = self.state_dir / "agent-connection-transactions"
+        self._process_lock = _process_lock_for(self.state_dir)
         self._ensure_state_dirs()
 
     def list(self) -> dict[str, Any]:
@@ -124,6 +155,22 @@ class AgentConnectorService:
         return {"connectors": [self._public_status(connector_id, state) for connector_id in CONNECTOR_NAMES]}
 
     def connect(
+        self,
+        connector_id: str,
+        model: str,
+        models: list[str],
+        *,
+        confirm_existing_config: bool = False,
+    ) -> dict[str, Any]:
+        with self._transaction_lock():
+            return self._connect_locked(
+                connector_id,
+                model,
+                models,
+                confirm_existing_config=confirm_existing_config,
+            )
+
+    def _connect_locked(
         self,
         connector_id: str,
         model: str,
@@ -182,9 +229,10 @@ class AgentConnectorService:
         os.chmod(transaction_dir, 0o700)
         files: list[dict[str, Any]] = []
         for index, item in enumerate(prepared):
-            existed = item.path.exists()
-            raw = item.path.read_bytes() if existed else b""
-            mode = stat.S_IMODE(item.path.stat().st_mode) if existed else None
+            captured = self._capture_target(item.path)
+            existed = captured["existed"]
+            raw = captured["content"]
+            mode = captured["mode"]
             snapshot = transaction_dir / f"{index}.snapshot"
             snapshot.write_bytes(raw)
             os.chmod(snapshot, 0o600)
@@ -221,6 +269,10 @@ class AgentConnectorService:
         return self._public_status(connector_id, state)
 
     def restore(self, connector_id: str, *, confirm_external_changes: bool = False) -> dict[str, Any]:
+        with self._transaction_lock():
+            return self._restore_locked(connector_id, confirm_external_changes=confirm_external_changes)
+
+    def _restore_locked(self, connector_id: str, *, confirm_external_changes: bool = False) -> dict[str, Any]:
         self._validate_connector(connector_id)
         state = self._read_state()
         active = state["active"].get(connector_id)
@@ -257,7 +309,14 @@ class AgentConnectorService:
             self._apply_captured_files(connected_files)
             save_launcher_connector_api_key(self.launcher_path, connector_id, key)
             raise
-        self._prune_transaction_dirs(connector_id, {item["id"] for item in completed})
+        try:
+            self._prune_transaction_dirs(connector_id, {item["id"] for item in completed})
+        except OSError:
+            # Restoration and credential revocation are already committed.
+            # Old transaction directories are bounded cleanup artifacts; a
+            # cleanup failure must not turn a successful restore into a false
+            # API failure or resurrect the revoked Connector credential.
+            pass
         return self._public_status(connector_id, state)
 
     def credential(self, connector_id: str) -> str:
@@ -265,6 +324,10 @@ class AgentConnectorService:
         return load_connector_api_key(self.launcher_path, connector_id)
 
     def migrate_legacy_namespace(self) -> dict[str, Any]:
+        with self._transaction_lock():
+            return self._migrate_legacy_namespace()
+
+    def _migrate_legacy_namespace(self) -> dict[str, Any]:
         """Migrate APG-owned Agent files to the PrivacyFlow namespace.
 
         Only active transactions are eligible.  A reserved APG/PF provider found
@@ -747,12 +810,35 @@ class AgentConnectorService:
                 break
             parent = parent.parent
 
+    def _snapshot_path(self, item: dict[str, Any]) -> Path:
+        raw = item.get("snapshot")
+        if not isinstance(raw, str) or not raw:
+            raise ConnectorError("A required Agent configuration snapshot is missing.", code="CONNECTOR_SNAPSHOT_MISSING", status_code=500)
+        relative = Path(raw)
+        if relative.is_absolute() or ".." in relative.parts:
+            raise ConnectorError("The Agent Connector snapshot path is unsafe.", code="CONNECTOR_STATE_INVALID", status_code=500)
+        root = self.state_dir.resolve()
+        candidate = self.state_dir / relative
+        current = candidate
+        while current != self.state_dir:
+            if current.is_symlink():
+                raise ConnectorError("The Agent Connector snapshot path is unsafe.", code="CONNECTOR_PATH_UNSAFE", status_code=500)
+            if current == current.parent:
+                raise ConnectorError("The Agent Connector snapshot path is unsafe.", code="CONNECTOR_STATE_INVALID", status_code=500)
+            current = current.parent
+        try:
+            candidate.resolve().relative_to(root)
+        except (OSError, ValueError) as exc:
+            raise ConnectorError("The Agent Connector snapshot path is unsafe.", code="CONNECTOR_STATE_INVALID", status_code=500) from exc
+        return candidate
+
     def _replace_all(self, prepared: list[PreparedFile], snapshots: list[dict[str, Any]]) -> None:
         for item, snapshot in zip(prepared, snapshots, strict=True):
             path = item.path
             if snapshot["existed"]:
-                expected = (self.state_dir / snapshot["snapshot"]).read_bytes()
-                if not path.exists() or path.is_symlink() or not path.is_file() or path.read_bytes() != expected:
+                expected = self._snapshot_path(snapshot).read_bytes()
+                captured = self._capture_target(path)
+                if not captured["existed"] or captured["content"] != expected:
                     raise ConnectorError(
                         "The Agent configuration changed while PrivacyFlow was preparing the connection.",
                         code="CONNECTOR_CONCURRENT_CHANGE",
@@ -780,25 +866,24 @@ class AgentConnectorService:
             path = Path(item["path"])
             self._validate_target(path)
             if item["existed"]:
-                raw = (self.state_dir / item["snapshot"]).read_bytes()
+                raw = self._snapshot_path(item).read_bytes()
                 self._atomic_write(path, raw, int(item["mode"]))
-            elif path.exists():
-                path.unlink()
+            else:
+                self._unlink_target(path)
 
     def _restore_transaction(self, files: list[dict[str, Any]]) -> None:
         current = self._capture_current_files(files)
         for item in files:
-            path = Path(item["path"])
-            if item["existed"] and not (self.state_dir / item["snapshot"]).is_file():
+            if item["existed"] and not self._snapshot_path(item).is_file():
                 raise ConnectorError("A required Agent configuration snapshot is missing.", code="CONNECTOR_SNAPSHOT_MISSING", status_code=500)
         replaced = 0
         try:
             for item in files:
                 path = Path(item["path"])
                 if item["existed"]:
-                    self._atomic_write(path, (self.state_dir / item["snapshot"]).read_bytes(), int(item["mode"]))
-                elif path.exists():
-                    path.unlink()
+                    self._atomic_write(path, self._snapshot_path(item).read_bytes(), int(item["mode"]))
+                else:
+                    self._unlink_target(path)
                 replaced += 1
         except Exception:
             self._apply_captured_files(current[:replaced])
@@ -808,13 +893,7 @@ class AgentConnectorService:
         current: list[dict[str, Any]] = []
         for item in files:
             path = Path(item["path"])
-            self._validate_target(path)
-            current.append({
-                "path": path,
-                "existed": path.exists(),
-                "content": path.read_bytes() if path.exists() else b"",
-                "mode": stat.S_IMODE(path.stat().st_mode) if path.exists() else None,
-            })
+            current.append({"path": path, **self._capture_target(path)})
         return current
 
     def _capture_paths(self, paths: list[Path]) -> list[dict[str, Any]]:
@@ -824,20 +903,16 @@ class AgentConnectorService:
         for item in reversed(files):
             if item["existed"]:
                 self._atomic_write(item["path"], item["content"], int(item["mode"]))
-            elif item["path"].exists():
-                item["path"].unlink()
+            else:
+                self._unlink_target(item["path"])
 
     def _changed_paths(self, active: dict[str, Any]) -> list[str]:
         changed = []
         for item in active["files"]:
             path = Path(item["path"])
             try:
-                is_changed = (
-                    not path.exists()
-                    or path.is_symlink()
-                    or not path.is_file()
-                    or _sha256(path.read_bytes()) != item["connected_sha256"]
-                )
+                captured = self._capture_target(path)
+                is_changed = not captured["existed"] or _sha256(captured["content"]) != item["connected_sha256"]
             except OSError:
                 # An unreadable target is not safe to treat as unchanged. The
                 # UI can request an explicit external-change restore without
@@ -856,11 +931,12 @@ class AgentConnectorService:
         manifest = []
         for index, raw_path in enumerate(paths):
             path = Path(raw_path)
-            if path.exists() and path.is_file() and not path.is_symlink():
+            captured = self._capture_target(path)
+            if captured["existed"]:
                 target = backup / f"{index}.backup"
-                target.write_bytes(path.read_bytes())
+                target.write_bytes(captured["content"])
                 os.chmod(target, 0o600)
-                manifest.append({"path": raw_path, "file": target.name, "mode": stat.S_IMODE(path.stat().st_mode)})
+                manifest.append({"path": raw_path, "file": target.name, "mode": captured["mode"]})
             else:
                 manifest.append({"path": raw_path, "file": None, "mode": None})
         (backup / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
@@ -871,6 +947,31 @@ class AgentConnectorService:
 
     def _atomic_write(self, path: Path, content: bytes, mode: int) -> None:
         path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+        self._validate_target(path)
+        if os.name != "nt" and hasattr(os, "O_DIRECTORY") and hasattr(os, "O_NOFOLLOW"):
+            parent_fd = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+            temporary_name = f".{path.name}.{secrets.token_hex(8)}"
+            try:
+                self._validate_target_at(parent_fd, path.name, path)
+                descriptor = os.open(
+                    temporary_name,
+                    os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+                    mode,
+                    dir_fd=parent_fd,
+                )
+                with os.fdopen(descriptor, "wb") as stream:
+                    stream.write(content)
+                    stream.flush()
+                    os.fsync(stream.fileno())
+                self._validate_target_at(parent_fd, path.name, path)
+                os.replace(temporary_name, path.name, src_dir_fd=parent_fd, dst_dir_fd=parent_fd)
+            finally:
+                try:
+                    os.unlink(temporary_name, dir_fd=parent_fd)
+                except FileNotFoundError:
+                    pass
+                os.close(parent_fd)
+            return
         fd, name = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
         temporary = Path(name)
         try:
@@ -879,9 +980,71 @@ class AgentConnectorService:
                 stream.write(content)
                 stream.flush()
                 os.fsync(stream.fileno())
+            self._validate_target(path)
             os.replace(temporary, path)
         finally:
             temporary.unlink(missing_ok=True)
+
+    def _capture_target(self, path: Path) -> dict[str, Any]:
+        self._validate_target(path)
+        if not path.parent.exists():
+            return {"existed": False, "content": b"", "mode": None}
+        if os.name != "nt" and hasattr(os, "O_DIRECTORY") and hasattr(os, "O_NOFOLLOW"):
+            parent_fd = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+            try:
+                if not self._validate_target_at(parent_fd, path.name, path, allow_missing=True):
+                    return {"existed": False, "content": b"", "mode": None}
+                descriptor = os.open(path.name, os.O_RDONLY | os.O_NOFOLLOW, dir_fd=parent_fd)
+                try:
+                    info = os.fstat(descriptor)
+                    if not stat.S_ISREG(info.st_mode) or (hasattr(os, "getuid") and info.st_uid != os.getuid()):
+                        raise ConnectorError(f"Refusing unsafe file: {path}", code="CONNECTOR_PATH_UNSAFE")
+                    with os.fdopen(descriptor, "rb") as stream:
+                        descriptor = -1
+                        content = stream.read()
+                    return {"existed": True, "content": content, "mode": stat.S_IMODE(info.st_mode)}
+                finally:
+                    if descriptor >= 0:
+                        os.close(descriptor)
+            finally:
+                os.close(parent_fd)
+        self._validate_target(path)
+        if not path.exists():
+            return {"existed": False, "content": b"", "mode": None}
+        content = path.read_bytes()
+        self._validate_target(path)
+        return {"existed": True, "content": content, "mode": stat.S_IMODE(path.stat().st_mode)}
+
+    def _unlink_target(self, path: Path) -> None:
+        self._validate_target(path)
+        if not path.parent.exists():
+            return
+        if os.name != "nt" and hasattr(os, "O_DIRECTORY") and hasattr(os, "O_NOFOLLOW"):
+            parent_fd = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+            try:
+                if not self._validate_target_at(parent_fd, path.name, path, allow_missing=True):
+                    return
+                os.unlink(path.name, dir_fd=parent_fd)
+            finally:
+                os.close(parent_fd)
+            return
+        if path.exists():
+            self._validate_target(path)
+            path.unlink()
+
+    @staticmethod
+    def _validate_target_at(parent_fd: int, name: str, display_path: Path, *, allow_missing: bool = True) -> bool:
+        try:
+            info = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
+        except FileNotFoundError:
+            if allow_missing:
+                return False
+            raise
+        if not stat.S_ISREG(info.st_mode):
+            raise ConnectorError(f"Refusing non-regular file: {display_path}", code="CONNECTOR_PATH_UNSAFE")
+        if hasattr(os, "getuid") and info.st_uid != os.getuid():
+            raise ConnectorError(f"Refusing file owned by another user: {display_path}", code="CONNECTOR_PATH_UNSAFE")
+        return True
 
     def _public_status(self, connector_id: str, state: dict[str, Any]) -> dict[str, Any]:
         active = state["active"].get(connector_id)
@@ -1029,8 +1192,12 @@ class AgentConnectorService:
         except Exception:
             return "credential_missing"
         for item in active.get("files", []):
-            if item.get("existed") and not (self.state_dir / str(item.get("snapshot", ""))).is_file():
-                return "snapshot_missing"
+            if item.get("existed"):
+                try:
+                    if not self._snapshot_path(item).is_file():
+                        return "snapshot_missing"
+                except ConnectorError:
+                    return "snapshot_missing"
         return ""
 
     def _read_state(self) -> dict[str, Any]:
@@ -1047,6 +1214,69 @@ class AgentConnectorService:
 
     def _write_state(self, state: dict[str, Any]) -> None:
         self._atomic_write(self.index_path, _json_bytes(state), 0o600)
+
+    @contextmanager
+    def _transaction_lock(self):
+        """Serialize Connector transactions for this state directory.
+
+        The process lock avoids the per-process behaviour differences of OS file
+        locks (and makes separate service instances in one process safe).  The
+        file lock covers separate PrivacyFlow processes.  Both locks are acquired
+        in this order and released in ``finally`` so a failed transaction cannot
+        strand either lock.
+        """
+
+        lock_key = os.path.normcase(str(self.state_dir))
+        held = getattr(_HELD_TRANSACTION_LOCKS, "keys", set())
+        self._process_lock.acquire()
+        if lock_key in held:
+            try:
+                yield
+            finally:
+                self._process_lock.release()
+            return
+
+        lock_fd: int | None = None
+        file_locked = False
+        try:
+            flags = os.O_RDWR | os.O_CREAT
+            if hasattr(os, "O_CLOEXEC"):
+                flags |= os.O_CLOEXEC
+            if hasattr(os, "O_NOFOLLOW"):
+                flags |= os.O_NOFOLLOW
+            lock_fd = os.open(self.lock_path, flags, 0o600)
+            os.fchmod(lock_fd, 0o600)
+            if fcntl is not None:
+                fcntl.flock(lock_fd, fcntl.LOCK_EX)
+            elif msvcrt is not None:  # pragma: no cover - Windows only
+                # ``msvcrt.locking`` locks a byte starting at the current file
+                # position. Keep one non-secret byte in the lock file.
+                if os.fstat(lock_fd).st_size == 0:
+                    os.write(lock_fd, b"\0")
+                    os.fsync(lock_fd)
+                os.lseek(lock_fd, 0, os.SEEK_SET)
+                msvcrt.locking(lock_fd, msvcrt.LK_LOCK, 1)
+            else:  # pragma: no cover - unsupported Python platform
+                raise OSError("No supported cross-process file locking primitive is available")
+            file_locked = True
+            held.add(lock_key)
+            _HELD_TRANSACTION_LOCKS.keys = held
+            yield
+        finally:
+            try:
+                held.discard(lock_key)
+                if lock_fd is not None:
+                    try:
+                        if file_locked:
+                            if fcntl is not None:
+                                fcntl.flock(lock_fd, fcntl.LOCK_UN)
+                            elif msvcrt is not None:  # pragma: no cover - Windows only
+                                os.lseek(lock_fd, 0, os.SEEK_SET)
+                                msvcrt.locking(lock_fd, msvcrt.LK_UNLCK, 1)
+                    finally:
+                        os.close(lock_fd)
+            finally:
+                self._process_lock.release()
 
     def _ensure_state_dirs(self) -> None:
         ensure_private_state_directory(self.state_dir)

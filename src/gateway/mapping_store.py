@@ -675,13 +675,14 @@ class MappingStore:
         return True, self.get(handle_id), "OK"
 
     def tombstone(self, handle_id: str, *, reason: str = "revoked") -> None:
+        now = int(time.time())
         with self._lock, self.conn:
             self.conn.execute(
                 """
                 UPDATE mappings SET state='tombstoned', value=NULL, session_id='', workspace_id='',
-                  fingerprint='', tombstone_reason=? WHERE handle_id=?
+                  fingerprint='', tombstone_reason=?, last_seen_at=? WHERE handle_id=?
                 """,
-                (reason, handle_id),
+                (reason, now, handle_id),
             )
             self._write_generation += 1
 
@@ -689,16 +690,47 @@ class MappingStore:
         now = int(time.time())
         with self._lock, self.conn:
             cur = self.conn.execute(
-                "UPDATE mappings SET state='tombstoned', value=NULL, tombstone_reason='expired' "
+                "UPDATE mappings SET state='tombstoned', value=NULL, tombstone_reason='expired', last_seen_at=? "
                 "WHERE state='active' AND ("
                 "  (idle_expires_at>0 AND idle_expires_at < ?) "
                 "  OR (max_expires_at>0 AND max_expires_at < ?)"
                 ")",
-                (now, now),
+                (now, now, now),
             )
             if cur.rowcount:
                 self._write_generation += 1
             return cur.rowcount
+
+    def purge_history(self, before_timestamp: int) -> dict[str, int]:
+        """Bound non-secret audit history and expired mapping tombstones."""
+
+        cutoff = max(0, int(before_timestamp))
+        with self._lock, self.conn:
+            operations = self.conn.execute(
+                "DELETE FROM audit_operations WHERE timestamp < ?",
+                (cutoff,),
+            ).rowcount
+            stats = self.conn.execute(
+                """
+                DELETE FROM audit_operation_stats
+                WHERE NOT EXISTS (
+                  SELECT 1 FROM audit_operations
+                  WHERE audit_operations.workspace_id=audit_operation_stats.workspace_id
+                    AND audit_operations.request_id=audit_operation_stats.request_id
+                )
+                """
+            ).rowcount
+            tombstones = self.conn.execute(
+                "DELETE FROM mappings WHERE state='tombstoned' AND last_seen_at < ?",
+                (cutoff,),
+            ).rowcount
+            if tombstones:
+                self._write_generation += 1
+        return {
+            "audit_operations": max(0, operations),
+            "audit_operation_stats": max(0, stats),
+            "mapping_tombstones": max(0, tombstones),
+        }
 
     @property
     def write_generation(self) -> int:

@@ -6,7 +6,10 @@ import os
 import secrets
 import sys
 import tempfile
+import threading
+from contextlib import contextmanager
 from collections.abc import Mapping, MutableMapping, Sequence
+from functools import wraps
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse, urlsplit, urlunparse
@@ -19,6 +22,16 @@ from gateway.upstream_protocol import (
     UPSTREAM_PROTOCOL_ENDPOINTS,
     canonical_upstream_protocol,
 )
+
+try:
+    import fcntl
+except ImportError:  # pragma: no cover - Windows only
+    fcntl = None
+
+try:
+    import msvcrt
+except ImportError:  # pragma: no cover - POSIX only
+    msvcrt = None
 
 
 DEFAULT_LAUNCHER_PATH = Path(".privacyflow/launcher.json")
@@ -36,6 +49,81 @@ PERSISTED_LAUNCHER_KEYS = {
 
 class LauncherConfigError(RuntimeError):
     pass
+
+
+_LAUNCHER_PROCESS_LOCKS: dict[str, threading.RLock] = {}
+_LAUNCHER_PROCESS_LOCKS_GUARD = threading.Lock()
+_HELD_LAUNCHER_LOCKS = threading.local()
+
+
+def _launcher_process_lock(path: Path) -> threading.RLock:
+    key = os.path.normcase(str(path.expanduser().resolve()))
+    with _LAUNCHER_PROCESS_LOCKS_GUARD:
+        return _LAUNCHER_PROCESS_LOCKS.setdefault(key, threading.RLock())
+
+
+@contextmanager
+def _launcher_transaction(path: Path):
+    resolved = path.expanduser().resolve()
+    key = os.path.normcase(str(resolved))
+    process_lock = _launcher_process_lock(resolved)
+    held = getattr(_HELD_LAUNCHER_LOCKS, "keys", set())
+    process_lock.acquire()
+    if key in held:
+        try:
+            yield
+        finally:
+            process_lock.release()
+        return
+    lock_fd: int | None = None
+    file_locked = False
+    try:
+        ensure_private_state_directory(resolved.parent)
+        flags = os.O_RDWR | os.O_CREAT
+        if hasattr(os, "O_CLOEXEC"):
+            flags |= os.O_CLOEXEC
+        if hasattr(os, "O_NOFOLLOW"):
+            flags |= os.O_NOFOLLOW
+        lock_fd = os.open(resolved.with_name(f"{resolved.name}.lock"), flags, 0o600)
+        os.fchmod(lock_fd, 0o600)
+        if fcntl is not None:
+            fcntl.flock(lock_fd, fcntl.LOCK_EX)
+        elif msvcrt is not None:  # pragma: no cover - Windows only
+            if os.fstat(lock_fd).st_size == 0:
+                os.write(lock_fd, b"\0")
+                os.fsync(lock_fd)
+            os.lseek(lock_fd, 0, os.SEEK_SET)
+            msvcrt.locking(lock_fd, msvcrt.LK_LOCK, 1)
+        else:  # pragma: no cover - unsupported platform
+            raise OSError("No supported launcher file locking primitive is available")
+        file_locked = True
+        held.add(key)
+        _HELD_LAUNCHER_LOCKS.keys = held
+        yield
+    finally:
+        try:
+            held.discard(key)
+            if lock_fd is not None:
+                try:
+                    if file_locked:
+                        if fcntl is not None:
+                            fcntl.flock(lock_fd, fcntl.LOCK_UN)
+                        elif msvcrt is not None:  # pragma: no cover - Windows only
+                            os.lseek(lock_fd, 0, os.SEEK_SET)
+                            msvcrt.locking(lock_fd, msvcrt.LK_UNLCK, 1)
+                finally:
+                    os.close(lock_fd)
+        finally:
+            process_lock.release()
+
+
+def _launcher_locked(function):
+    @wraps(function)
+    def wrapped(path: Path, *args: Any, **kwargs: Any):
+        with _launcher_transaction(path):
+            return function(path, *args, **kwargs)
+
+    return wrapped
 
 
 def main(argv: Sequence[str] | None = None) -> None:
@@ -149,6 +237,7 @@ def terminal_hyperlink(
     return f"\033]8;;{safe_url}\033\\{safe_url}\033]8;;\033\\"
 
 
+@_launcher_locked
 def prepare_launcher_config(
     path: Path,
     *,
@@ -267,6 +356,7 @@ def save_launcher_connector_api_key(path: Path, connector_id: str, api_key: str 
     save_launcher_connector_api_keys(path, {connector_id: api_key})
 
 
+@_launcher_locked
 def save_launcher_connector_api_keys(path: Path, updates: Mapping[str, str | None]) -> None:
     """Apply Connector credential changes in one atomic launcher write."""
 
@@ -281,6 +371,7 @@ def save_launcher_connector_api_keys(path: Path, updates: Mapping[str, str | Non
     _write_launcher_config(path, _persistent_launcher_config(config))
 
 
+@_launcher_locked
 def save_launcher_local_api_key(path: Path, api_key: str) -> str:
     normalized = api_key.strip()
     if not normalized or len(normalized) > 4096:
@@ -293,6 +384,7 @@ def save_launcher_local_api_key(path: Path, api_key: str) -> str:
     return normalized
 
 
+@_launcher_locked
 def save_launcher_upstream_profile(
     path: Path,
     *,
@@ -359,6 +451,7 @@ def save_launcher_upstream_profile(
     return profile
 
 
+@_launcher_locked
 def activate_launcher_upstream_profile(path: Path, profile_id: str) -> dict[str, Any]:
     config = prepare_launcher_config(path, environ={})
     profile = next(
@@ -372,6 +465,7 @@ def activate_launcher_upstream_profile(path: Path, profile_id: str) -> dict[str,
     return dict(profile)
 
 
+@_launcher_locked
 def delete_launcher_upstream_profile(path: Path, profile_id: str) -> dict[str, Any] | None:
     config = prepare_launcher_config(path, environ={})
     profiles = [dict(profile) for profile in config["upstream_profiles"]]

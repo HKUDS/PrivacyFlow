@@ -212,7 +212,15 @@ def map_state_value(value: Any, *, key: str | None = None) -> Any:
                 next_key = "PF"
             elif key in {"env", "credentials", "environment"} and child_key.startswith("APG_"):
                 next_key = "PF_" + child_key[4:]
-            mapped[next_key] = map_state_value(raw_value, key=next_key)
+            mapped_value = map_state_value(raw_value, key=next_key)
+            if next_key in mapped:
+                if mapped[next_key] != mapped_value:
+                    raise NamespaceConflictError(
+                        f"Canonical and legacy values conflict for '{next_key}'. "
+                        f"({NamespaceConflictError.code})"
+                    )
+                continue
+            mapped[next_key] = mapped_value
         return mapped
     if isinstance(value, list):
         return [map_state_value(item, key=key) for item in value]

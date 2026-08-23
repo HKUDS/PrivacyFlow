@@ -634,21 +634,42 @@ class AdminService:
 
     def _read_events(self, *, max_events: int) -> tuple[list[dict[str, Any]], bool]:
         path = Path(self.config.audit_log_path)
-        if not path.exists():
+        candidates = [
+            path,
+            *(path.with_name(f"{path.name}.{index}") for index in range(1, self.config.audit_log_backups + 1)),
+        ]
+        if not any(candidate.exists() for candidate in candidates):
             return [], False
         max_bytes = 16 * 1024 * 1024
-        try:
-            size = path.stat().st_size
-            start = max(0, size - max_bytes)
-            with path.open("rb") as stream:
-                if start:
-                    stream.seek(start - 1)
-                    if stream.read(1) != b"\n":
-                        stream.readline()
-                raw_lines = stream.readlines()
-        except OSError:
-            return [], False
-        truncated = start > 0 or len(raw_lines) > max_events
+        remaining_bytes = max_bytes
+        newest_first: list[list[bytes]] = []
+        truncated = False
+        for candidate_index, candidate in enumerate(candidates):
+            if not candidate.exists():
+                continue
+            if remaining_bytes <= 0:
+                truncated = True
+                break
+            try:
+                size = candidate.stat().st_size
+                start = max(0, size - remaining_bytes)
+                with candidate.open("rb") as stream:
+                    if start:
+                        stream.seek(start - 1)
+                        if stream.read(1) != b"\n":
+                            stream.readline()
+                    lines = stream.readlines()
+            except OSError:
+                continue
+            newest_first.append(lines)
+            remaining_bytes -= sum(len(line) for line in lines)
+            if start > 0:
+                truncated = True
+                break
+            if candidate_index + 1 < len(candidates) and remaining_bytes <= 0:
+                truncated = True
+        raw_lines = [line for group in reversed(newest_first) for line in group]
+        truncated = truncated or len(raw_lines) > max_events
         lines = [line.decode("utf-8", errors="replace") for line in raw_lines[-max_events:]]
         events: list[dict[str, Any]] = []
         for line in lines:

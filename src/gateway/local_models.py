@@ -278,6 +278,12 @@ class LocalModelService:
             selected = [entry for entry in entries if not entry.get("orphaned")]
         if not selected:
             raise LocalModelError("NO_MODELS", "No local models are available to prepare")
+        if any(entry.get("adapter_conflict") for entry in selected):
+            raise LocalModelError(
+                "MODEL_TYPE_INCOMPATIBLE",
+                "The same model source is referenced with incompatible adapter types",
+                status_code=409,
+            )
         with self._lock:
             if self._active_job_id is not None:
                 active = self._jobs.get(self._active_job_id, {})
@@ -320,7 +326,7 @@ class LocalModelService:
             return dict(self._jobs[job_id])
 
     def resolve_model_path(self, model_name: str, adapter: str, device: str) -> str | None:
-        del adapter, device
+        del device
         try:
             source_type, source = self._resolve_source("auto", model_name, require_exists=False)
         except LocalModelError:
@@ -332,6 +338,9 @@ class LocalModelService:
         if entry is None:
             return None
         record = self._record(entry)
+        resolved_adapter = str(record.get("resolved_adapter", ""))
+        if resolved_adapter and adapter in ADAPTERS and resolved_adapter != adapter:
+            return None
         cache_path = Path(str(record.get("cache_path", ""))) if record.get("cache_path") else None
         return str(cache_path) if cache_path and cache_path.is_dir() else None
 
@@ -346,17 +355,25 @@ class LocalModelService:
         threshold: float = 0.5,
         aggregation_strategy: str = "simple",
     ) -> list[dict[str, Any]]:
-        model_path = self.resolve_model_path(model_name, adapter, configured_device)
-        if model_path is None:
-            raise LocalModelError("MODEL_NOT_READY", "The local model has not been prepared")
+        source = self._resolve_source("auto", model_name, require_exists=False)[1]
         entry = next(
-            (candidate for candidate in self._entries() if candidate["source"] == self._resolve_source("auto", model_name, require_exists=False)[1]),
+            (candidate for candidate in self._entries() if candidate["source"] == source),
             None,
         )
         if entry is None:
             raise LocalModelError("MODEL_NOT_FOUND", "Local model not found")
         record = self._record(entry)
-        resolved_adapter = str(record.get("resolved_adapter") or adapter)
+        resolved_adapter = str(record.get("resolved_adapter", ""))
+        if resolved_adapter and adapter in ADAPTERS and resolved_adapter != adapter:
+            raise LocalModelError(
+                "MODEL_TYPE_INCOMPATIBLE",
+                "The prepared model adapter does not match this detector module",
+                status_code=409,
+            )
+        model_path = self.resolve_model_path(model_name, adapter, configured_device)
+        if model_path is None:
+            raise LocalModelError("MODEL_NOT_READY", "The local model has not been prepared")
+        resolved_adapter = resolved_adapter or adapter
         resolved_device = str(record.get("resolved_device") or configured_device or "cpu")
         worker = self._worker_client()
         try:
@@ -384,6 +401,35 @@ class LocalModelService:
             self._worker = None
 
     def _run_job(
+        self,
+        job_id: str,
+        entries: list[dict[str, Any]],
+        stages: list[str],
+        force: bool,
+    ) -> None:
+        try:
+            self._run_job_inner(job_id, entries, stages, force)
+        except Exception as exc:
+            code = exc.code if isinstance(exc, LocalModelError) else "COMMAND_FAILED"
+            message = str(exc) if isinstance(exc, LocalModelError) else "Local model preparation failed"
+            try:
+                self._update_job(
+                    job_id,
+                    status="failed",
+                    stage="failed",
+                    error_code=code,
+                    message=message,
+                    finished_at=_now(),
+                )
+                self._audit("local_model_prepare_finished", code, job_id=job_id, model_ids=[item["id"] for item in entries])
+            except Exception:
+                pass
+        finally:
+            with self._lock:
+                if self._active_job_id == job_id:
+                    self._active_job_id = None
+
+    def _run_job_inner(
         self,
         job_id: str,
         entries: list[dict[str, Any]],
@@ -459,10 +505,6 @@ class LocalModelService:
                 finished_at=_now(),
             )
             self._audit("local_model_prepare_finished", "OK", job_id=job_id, model_ids=[item["id"] for item in entries])
-        with self._lock:
-            if self._active_job_id == job_id:
-                self._active_job_id = None
-
     def _inspect(self, entry: dict[str, Any]) -> None:
         metadata = self._inspect_source(entry)
         preference = str(entry.get("adapter_preference", "auto"))
@@ -628,6 +670,19 @@ class LocalModelService:
         self.runtime_root.mkdir(parents=True, exist_ok=True)
         temporary = self.runtime_root / f".{self.runtime_dir.name}.tmp-{uuid.uuid4().hex}"
         backup = self.runtime_root / f".{self.runtime_dir.name}.backup-{uuid.uuid4().hex}"
+        installed_runtime = False
+
+        def rollback_runtime() -> None:
+            if self._worker is not None:
+                self._worker.close()
+                self._worker = None
+            if temporary.exists():
+                shutil.rmtree(temporary)
+            if installed_runtime and self.runtime_dir.exists():
+                shutil.rmtree(self.runtime_dir)
+            if backup.exists() and not self.runtime_dir.exists():
+                backup.replace(self.runtime_dir)
+
         try:
             self._run_command([self.python_executable, "-m", "venv", str(temporary)], timeout=600)
             runtime_python = self._runtime_python(temporary)
@@ -666,21 +721,22 @@ class LocalModelService:
             if self.runtime_dir.exists():
                 self.runtime_dir.replace(backup)
             temporary.replace(self.runtime_dir)
-            if backup.exists():
-                shutil.rmtree(backup)
+            installed_runtime = True
             self._worker_client().health()
+            if backup.exists():
+                # The new runtime is healthy and committed. Cleanup of the old
+                # runtime is best effort: rolling back after a partial rmtree
+                # could replace the healthy runtime with a damaged backup.
+                shutil.rmtree(backup, ignore_errors=True)
         except LocalModelError:
-            if temporary.exists():
-                shutil.rmtree(temporary)
-            if backup.exists() and not self.runtime_dir.exists():
-                backup.replace(self.runtime_dir)
+            rollback_runtime()
             raise
-        except OSError as exc:
-            if temporary.exists():
-                shutil.rmtree(temporary)
-            if backup.exists() and not self.runtime_dir.exists():
-                backup.replace(self.runtime_dir)
+        except (OSError, ModelWorkerError) as exc:
+            rollback_runtime()
             raise LocalModelError("RUNTIME_UPDATE_FAILED", "The managed model runtime could not be updated") from exc
+        except Exception:
+            rollback_runtime()
+            raise
 
     def _download(self, entry: dict[str, Any], *, force: bool, job_id: str | None = None) -> None:
         if entry["source_type"] == "local":
@@ -868,6 +924,10 @@ class LocalModelService:
                     model_id,
                     self._base_entry(model_id, source_type, source, adapter, device),
                 )
+                required_adapters = entry.setdefault("required_adapters", [])
+                if adapter in ADAPTERS and adapter not in required_adapters:
+                    required_adapters.append(adapter)
+                entry["adapter_conflict"] = len(required_adapters) > 1
                 reference = {
                     "configuration_id": raw_reference["configuration_id"],
                     "configuration_name": raw_reference["configuration_name"],
@@ -929,6 +989,8 @@ class LocalModelService:
             "orphaned": False,
             "references": [],
             "active_in_use": False,
+            "required_adapters": [],
+            "adapter_conflict": False,
             "record": {},
         }
 
@@ -945,6 +1007,13 @@ class LocalModelService:
         cache_path = str(record.get("cache_path", ""))
         resolved_adapter = str(record.get("resolved_adapter", ""))
         resolved_device = str(record.get("resolved_device", ""))
+        adapter_conflict = bool(entry.get("adapter_conflict"))
+        last_error = record.get("last_error")
+        if adapter_conflict:
+            last_error = {
+                "code": "MODEL_TYPE_INCOMPATIBLE",
+                "message": "The same model source is referenced with incompatible adapter types",
+            }
         return {
             "id": entry["id"],
             "display_name": display_name,
@@ -960,13 +1029,14 @@ class LocalModelService:
             "orphaned": entry.get("orphaned", False),
             "references": entry.get("references", []),
             "active_in_use": entry.get("active_in_use", False),
-            "status": record.get("status", "not_prepared"),
+            "adapter_conflict": adapter_conflict,
+            "status": "needs_input" if adapter_conflict else record.get("status", "not_prepared"),
             "expected_size": int(record.get("expected_size", 0) or 0),
             "cache_size": int(record.get("cache_size", 0) or 0),
             "resolved_revision": str(record.get("resolved_revision", "")),
             "license": str(record.get("license", "")),
             "last_verified_at": record.get("last_verified_at"),
-            "last_error": record.get("last_error"),
+            "last_error": last_error,
             "cache_location": cache_path if entry["source_type"] == "huggingface" else "",
             "cache_managed": entry["source_type"] == "huggingface" and bool(cache_path),
         }

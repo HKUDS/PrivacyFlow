@@ -55,7 +55,7 @@ PrivacyFlow retains raw mapping values locally by default so long-running agents
 - `POST /v1/responses` — non-streaming and statefully scanned streaming Responses proxy
 - `POST /v1/messages` — native Anthropic Messages proxy
 - `GET /v1/models` — upstream model lookup normalized into a client-compatible list
-- `POST /v1/pf/detect` — dry-run detector inspection (the old `/v1/apg/detect` route remains a migration alias)
+- `POST /v1/pf/detect` — authenticated detector inspection of submitted text using the currently active configuration; writes a sanitized audit event and is not the WebUI dry-run. The old `/v1/apg/detect` route remains a migration alias. Use `POST /api/admin/detector-configurations/{id}/test` to dry-run a saved configuration without activating it or auditing the submitted text.
 
 ## Stable placeholders
 

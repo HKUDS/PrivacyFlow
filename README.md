@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="assets/branding/privacyflow-icon.svg" width="128" alt="PrivacyFlow shield logo">
+  <img src="assets/branding/privacyflow-icon.png" width="128" alt="PrivacyFlow robot shield logo">
 </p>
 
 <h1 align="center">PrivacyFlow</h1>
@@ -31,7 +31,7 @@
 </p>
 
 <p align="center">
-  <img src="docs/privacyflow-architecture.svg" width="100%" alt="PrivacyFlow architecture: sensitive values are replaced locally before cloud upload and restored in conversations and tool-use arguments so the Agent keeps working normally">
+  <img src="docs/privacyflow-architecture.png" width="100%" alt="PrivacyFlow architecture: sensitive values are replaced locally before cloud upload and restored in conversations and tool-use arguments so the Agent keeps working normally">
 </p>
 
 ## Why PrivacyFlow?
@@ -107,15 +107,14 @@ field classifications, not tool authorization or execution approval.
 
 | Detect locally | Protect before upload | Restore locally |
 | --- | --- | --- |
-| Credentials, PII, and local paths in scanned text fields | Signed placeholders and stable path aliases replace detected values | Verified values reappear in client-visible answers and recognized structured tool arguments |
+| Credentials, PII, local paths, and optional high-entropy findings in scanned text fields | Signed placeholders and stable path aliases replace detected values | Verified values reappear in client-visible answers and recognized structured tool arguments |
 
-PrivacyFlow uses one fixed built-in detection pipeline for traffic. It combines
-deterministic credential and personal-information rules with local-path detection,
-then applies the fixed placeholder and streaming safety layers. The WebUI and
-management API do not expose detector presets, custom configurations, module
-editing or ordering, dry runs, or per-detector failure-mode settings. Local model
-management remains available for preparing local model artifacts, but it does not
-attach a model to this pipeline.
+PrivacyFlow ships with safe built-in detector pipelines and also exposes local,
+revisioned detector configuration. In the WebUI you can copy a preset, order and
+toggle modules, add deterministic or local-model detectors, choose fail-open or
+fail-closed behavior, dry-run the saved configuration, and activate it without
+restarting the gateway. Placeholder integrity and streaming-boundary safeguards
+remain fixed and cannot be disabled by a custom detector configuration.
 
 ### What makes PrivacyFlow different
 
@@ -123,11 +122,11 @@ attach a model to this pipeline.
   local Agent client receives validated values back without manually decoding them.
 - **Local control plane** — provider credentials are configured locally and
   used only for upstream authentication rather than returned to the Agent;
-  mappings, fixed detector state, audit records, and optional models stay on
+  mappings, detector configurations, audit records, and optional models stay on
   the machine.
 - **Defense against placeholder spoofing** — materialization checks signature,
   session, workspace, mapping state, expiry, revocation, and response-field class.
-- **Inspectable behavior** — review protected mappings and audit every
+- **Inspectable behavior** — dry-run detector configurations, review protected mappings, and audit every
   replacement and restoration without storing raw values in logs.
 
 ## 🛡️ How it works
@@ -264,7 +263,9 @@ selection.
 > manage and quickly switch connection profiles across different Agents and
 > model providers, consider using [CC Switch](https://github.com/farion1231/cc-switch)
 > alongside PrivacyFlow. CC Switch manages configurations; it is not PrivacyFlow's protocol
-> conversion layer.
+> conversion layer. Agent quick connect only writes model endpoints, model names,
+> and local credentials; tool permission, tool execution, and local session logs
+> remain the Agent's responsibility.
 
 The repository-level `./privacyflow` wrapper is available for development
 checkouts. The old `apg` command remains a migration-release compatibility alias.
@@ -272,12 +273,19 @@ checkouts. The old `apg` command remains a migration-release compatibility alias
 If an existing installation still uses `.apg/`, run `privacyflow migrate` once.
 It copies the launcher, database, audit log, detector state, local-model state,
 and Agent connector transactions into `.privacyflow/`, verifies the copy, and
-normalizes any stale legacy detector editor state to the fixed built-in pipeline.
-The original `.apg/` tree is kept as a read-only `.apg.legacy/<timestamp>/`
-backup, including the untouched legacy detector file. Migration never edits shell
-startup files. During this release, `APG_*` environment variables, legacy
+upgrades the stored namespace while preserving valid custom detector configurations.
+Malformed or unsupported detector state safely falls back to the built-in defaults
+at startup rather than preventing PrivacyFlow from launching.
+A separate, hash-verified, read-only backup copy is created at
+`.apg.legacy/<timestamp>/`, including the untouched legacy detector file. The
+original `.apg/` tree remains in place and untouched: migration never moves,
+edits, or deletes it. Remove the original only after checking the migrated state
+and choosing to do so. Migration never edits shell startup files. During this
+release, `APG_*` environment variables, legacy
 `X-APG-*` headers, and `<APG:v1:...>` placeholders remain readable; `PF_*`,
-`X-PF-*`, and `<PF:v1:...>` are the canonical forms.
+`X-PF-*`, and `<PF:v1:...>` are the canonical forms. The APG command,
+environment, directory, header, route, error-code, and placeholder fallbacks
+are scheduled for removal in the next major release.
 
 ## 🔌 Supported API formats
 
@@ -296,12 +304,12 @@ into another protocol.
 
 ### Protection pipeline
 
-- one fixed built-in pipeline for credentials, API keys, personal information,
-  local paths, and stable workspace aliases;
+- built-in and custom ordered pipelines for credentials, API keys, personal
+  information, local paths, entropy checks, and optional local models;
 - session-bound signed placeholders and lifecycle-aware mappings;
 - streaming-safe replacement and restoration;
 - structured tool-argument materialization;
-- fixed handling for detector and placeholder failures.
+- per-module fail-open/fail-closed handling while placeholder-integrity safeguards remain fixed.
 
 Risk levels are audit metadata. They do not change how protected data is
 replaced; enforcement remains in the policy, mapping, placeholder, and
@@ -316,7 +324,7 @@ upstream request.
 - all three native API entrypoints on every upstream configuration;
 - random local Agent API-key generation;
 - bilingual English/Chinese WebUI;
-- one fixed built-in protection pipeline with a global PrivacyFlow switch;
+- detector presets, ordering, enablement, duplication, dry runs, and advanced settings;
 - protected-value review, revocation, and retention controls;
 - replacement and restoration audit views;
 - responsive desktop and mobile management UI.
@@ -393,6 +401,9 @@ Useful optional settings:
 export PF_ADMIN_ENABLED=true
 export PF_PII_MODE='pseudonymize'  # pseudonymize, redact, or allow
 export PF_GC_INTERVAL_SECONDS=60
+export PF_AUDIT_LOG_MAX_BYTES=16777216
+export PF_AUDIT_LOG_BACKUPS=5
+export PF_HISTORY_RETENTION_SECONDS=2592000
 ```
 
 See [`config/example_policy.yaml`](config/example_policy.yaml) for policy
@@ -406,8 +417,9 @@ Local state defaults to `.privacyflow/`:
 | --- | --- |
 | `launcher.json` | Named upstream profiles, provider keys, local Agent key |
 | `state.sqlite3` | Protected-value mappings and operation records |
-| `audit.jsonl` | Sanitized append-only audit events |
-| `detector-control.json` | Internal fixed-pipeline state and global protection toggle; stale legacy editor data is normalized or ignored |
+| `audit.jsonl` | Sanitized audit events, rotated at 16 MiB with five private backups by default |
+| `detector-control.json` | Revisioned detector configurations, template module overrides, and the global protection toggle |
+| `agent-connections.json` | Agent quick-connect snapshots, dedicated connector keys, and restore transactions |
 | `local-models.json` | Local-model catalog and validation state |
 | `models/` | PrivacyFlow-managed Hugging Face cache |
 | `runtimes/` | Isolated model runtime |

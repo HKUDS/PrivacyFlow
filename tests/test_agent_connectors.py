@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
+from contextlib import contextmanager
 import json
 import os
 import shutil
 import stat
+import threading
 from pathlib import Path
 
 import pytest
@@ -50,6 +53,47 @@ def test_connect_and_restore_missing_files_exactly(tmp_path: Path, connector_id:
     assert not any(Path(path).exists() for path in connected["paths"])
     with pytest.raises(LauncherConfigError):
         load_connector_api_key(tmp_path / ".apg" / "launcher.json", connector_id)
+
+
+def test_restore_remains_successful_when_completed_transaction_cleanup_fails(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    manager = service(tmp_path)
+    connected = manager.connect("nanobot", "model-a", ["model-a"])
+    monkeypatch.setattr(
+        manager,
+        "_prune_transaction_dirs",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("cleanup failed")),
+    )
+
+    restored = manager.restore("nanobot")
+
+    assert restored["status"] == "ready"
+    assert not any(Path(path).exists() for path in connected["paths"])
+    with pytest.raises(LauncherConfigError):
+        load_connector_api_key(tmp_path / ".apg" / "launcher.json", "nanobot")
+
+
+def test_restore_rejects_snapshot_path_outside_connector_state(tmp_path: Path) -> None:
+    manager = service(tmp_path)
+    config = tmp_path / ".codex" / "config.toml"
+    config.parent.mkdir()
+    config.write_text('model = "original"\n', encoding="utf-8")
+    manager.connect("codex", "model-a", ["model-a"])
+    connected = config.read_bytes()
+    outside = tmp_path / "outside.snapshot"
+    outside.write_bytes(b"attacker-controlled")
+    state = json.loads(manager.index_path.read_text(encoding="utf-8"))
+    state["active"]["codex"]["files"][0]["snapshot"] = str(outside)
+    manager.index_path.write_text(json.dumps(state), encoding="utf-8")
+
+    with pytest.raises(ConnectorError) as exc_info:
+        manager.restore("codex")
+
+    assert exc_info.value.code == "CONNECTOR_STATE_INVALID"
+    assert config.read_bytes() == connected
+    assert outside.read_bytes() == b"attacker-controlled"
 
 
 def test_codex_preserves_comments_and_uses_credential_command(tmp_path: Path) -> None:
@@ -157,6 +201,34 @@ def test_rejects_reserved_collision_symlink_and_not_installed(tmp_path: Path) ->
     assert caught.value.code == "CONNECTOR_NOT_INSTALLED"
 
 
+def test_atomic_write_rechecks_target_after_symlink_race(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    manager = service(tmp_path)
+    path = tmp_path / ".codex" / "config.toml"
+    path.parent.mkdir()
+    path.write_text("original", encoding="utf-8")
+    outside = tmp_path / "outside"
+    outside.write_text("outside", encoding="utf-8")
+    original_check = manager._validate_target_at
+    checks = 0
+
+    def inject_symlink(parent_fd, name, display_path, *, allow_missing=True):
+        nonlocal checks
+        result = original_check(parent_fd, name, display_path, allow_missing=allow_missing)
+        checks += 1
+        if checks == 1:
+            path.unlink()
+            path.symlink_to(outside)
+        return result
+
+    monkeypatch.setattr(manager, "_validate_target_at", inject_symlink)
+
+    with pytest.raises(ConnectorError) as exc_info:
+        manager._atomic_write(path, b"replacement", 0o600)
+
+    assert exc_info.value.code == "CONNECTOR_PATH_UNSAFE"
+    assert outside.read_text(encoding="utf-8") == "outside"
+
+
 def test_rejects_existing_claude_apg_environment_keys_without_transaction(tmp_path: Path) -> None:
     path = tmp_path / ".claude" / "settings.json"
     path.parent.mkdir()
@@ -257,6 +329,70 @@ def test_active_connect_is_idempotent_but_changed_model_is_blocked(tmp_path: Pat
     with pytest.raises(ConnectorError) as caught:
         manager.connect("codex", "m2", ["m1", "m2"])
     assert caught.value.status_code == 409
+
+
+def test_independent_services_serialize_connect_transactions(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    first = service(tmp_path)
+    second = service(tmp_path)
+    first_state_started = threading.Event()
+    release_first_state = threading.Event()
+    second_lock_attempted = threading.Event()
+    second_state_written = threading.Event()
+    original_first_write_state = first._write_state
+    original_second_write_state = second._write_state
+    original_second_transaction_lock = second._transaction_lock
+
+    def hold_first_state(state: dict) -> None:
+        first_state_started.set()
+        assert release_first_state.wait(timeout=5)
+        original_first_write_state(state)
+
+    def record_second_state(state: dict) -> None:
+        second_state_written.set()
+        original_second_write_state(state)
+
+    @contextmanager
+    def observe_second_transaction_lock():
+        second_lock_attempted.set()
+        with original_second_transaction_lock():
+            yield
+
+    monkeypatch.setattr(first, "_write_state", hold_first_state)
+    monkeypatch.setattr(second, "_write_state", record_second_state)
+    monkeypatch.setattr(second, "_transaction_lock", observe_second_transaction_lock)
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        first_future = executor.submit(first.connect, "codex", "model-codex", ["model-codex"])
+        assert first_state_started.wait(timeout=5)
+        second_future = executor.submit(second.connect, "nanobot", "model-nanobot", ["model-nanobot"])
+        assert second_lock_attempted.wait(timeout=5)
+        # Without the transaction lock, the second instance can write its
+        # stale state while the first transaction is paused at its state write.
+        assert not second_state_written.wait(timeout=0.2)
+        release_first_state.set()
+        first_result = first_future.result(timeout=5)
+        second_result = second_future.result(timeout=5)
+
+    assert second_state_written.is_set()
+
+    assert {first_result["id"], second_result["id"]} == {"codex", "nanobot"}
+    state = json.loads((tmp_path / ".apg" / "agent-connections.json").read_text())
+    assert set(state["active"]) == {"codex", "nanobot"}
+    transaction_dirs = [
+        path
+        for connector_id in ("codex", "nanobot")
+        for path in (tmp_path / ".apg" / "agent-connection-transactions" / connector_id).iterdir()
+        if path.is_dir() and path.name != "safety"
+    ]
+    assert len(transaction_dirs) == 2
+    launcher = json.loads((tmp_path / ".apg" / "launcher.json").read_text())
+    assert set(launcher["connector_api_keys"]) == {"codex", "nanobot"}
+    assert stat.S_IMODE((tmp_path / ".apg" / "agent-connections.lock").stat().st_mode) == 0o600
+
+    first.restore("codex")
+    second.restore("nanobot")
+    assert not Path(first_result["paths"][0]).exists()
+    assert not Path(second_result["paths"][0]).exists()
 
 
 def test_multifile_restore_failure_rolls_back_connected_files(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

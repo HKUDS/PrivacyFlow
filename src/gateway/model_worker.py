@@ -127,22 +127,33 @@ class ModelWorkerClient:
         self.request("unload", {"model_id": model_id})
 
     def close(self) -> None:
-        process = self._process
-        self._process = None
-        self._responses = queue.Queue()
-        if process is not None and process.poll() is None:
-            process.terminate()
-            try:
-                process.wait(timeout=3)
-            except subprocess.TimeoutExpired:
-                process.kill()
-                process.wait()
+        # Detach the current session before stopping the process.  The reader
+        # thread owns its session queue, so a late EOF/response from this
+        # process cannot be delivered to a worker started later.
+        with self._lock:
+            process = self._process
+            self._process = None
+            self._reader = None
+            self._responses = queue.Queue()
+            if process is not None and process.poll() is None:
+                try:
+                    process.terminate()
+                except ProcessLookupError:
+                    pass
+                try:
+                    process.wait(timeout=3)
+                except subprocess.TimeoutExpired:
+                    try:
+                        process.kill()
+                    except ProcessLookupError:
+                        pass
+                    process.wait()
 
     def _start(self) -> None:
         if self._process is not None and self._process.poll() is None:
             return
-        self._responses = queue.Queue()
-        self._process = subprocess.Popen(
+        responses: queue.Queue[dict[str, Any] | None] = queue.Queue()
+        process = subprocess.Popen(
             [self.python_executable, str(self.worker_script), "--worker"],
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
@@ -151,12 +162,19 @@ class ModelWorkerClient:
             bufsize=1,
             env=worker_environment(self.cache_root),
         )
-        self._reader = threading.Thread(target=self._read_responses, daemon=True)
+        self._responses = responses
+        self._process = process
+        self._reader = threading.Thread(
+            target=self._read_responses,
+            args=(process, responses),
+            daemon=True,
+        )
         self._reader.start()
 
     def _request_once(self, operation: str, payload: dict[str, Any]) -> Any:
         self._start()
         process = self._process
+        responses = self._responses
         if process is None or process.stdin is None:
             raise ModelWorkerError("WORKER_EXITED", "The model worker is unavailable")
         request_id = uuid.uuid4().hex
@@ -167,8 +185,12 @@ class ModelWorkerClient:
         }, ensure_ascii=False) + "\n")
         process.stdin.flush()
         try:
-            response = self._responses.get(timeout=self.timeout)
+            response = responses.get(timeout=self.timeout)
         except queue.Empty as exc:
+            # A timed-out inference may still be running in the worker.  It
+            # must not be allowed to answer a later request, so retire this
+            # process before exposing the timeout to the caller.
+            self.close()
             raise ModelWorkerError("WORKER_TIMEOUT", "The model worker did not respond in time") from exc
         if response is None:
             raise ModelWorkerError("WORKER_EXITED", "The model worker stopped unexpectedly")
@@ -182,17 +204,20 @@ class ModelWorkerClient:
             )
         return response.get("result")
 
-    def _read_responses(self) -> None:
-        process = self._process
+    def _read_responses(
+        self,
+        process: subprocess.Popen[str],
+        responses: queue.Queue[dict[str, Any] | None],
+    ) -> None:
         if process is None or process.stdout is None:
-            self._responses.put(None)
+            responses.put(None)
             return
         try:
             for line in process.stdout:
                 try:
                     response = json.loads(line)
                 except json.JSONDecodeError:
-                    self._responses.put({
+                    responses.put({
                         "id": "",
                         "ok": False,
                         "error": {
@@ -201,9 +226,9 @@ class ModelWorkerClient:
                         },
                     })
                     return
-                self._responses.put(response)
+                responses.put(response)
         finally:
-            self._responses.put(None)
+            responses.put(None)
 
 
 def _device_for_transformers(device: str) -> int | str:

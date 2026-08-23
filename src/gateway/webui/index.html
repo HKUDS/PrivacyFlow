@@ -5,14 +5,14 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="color-scheme" content="light">
   <title>PrivacyFlow</title>
-  <link rel="icon" type="image/svg+xml" href="/ui/assets/privacyflow-icon.svg">
+  <link rel="icon" type="image/png" href="/ui/assets/privacyflow-icon.png">
   <link rel="stylesheet" href="/ui/assets/styles.css">
 </head>
 <body>
   <div class="app-shell" id="app-shell" aria-busy="true">
     <aside class="sidebar">
       <div class="brand">
-        <span class="brand-mark" aria-hidden="true"><img src="/ui/assets/privacyflow-icon.svg" alt=""></span>
+        <span class="brand-mark" aria-hidden="true"><img src="/ui/assets/privacyflow-icon.png" alt=""></span>
         <div>
           <strong>PrivacyFlow</strong>
           <span>Privacy flow for AI Agents</span>
@@ -28,6 +28,9 @@
         </button>
         <button class="nav-item" type="button" data-view="protected">
           <i class="nav-icon" data-lucide="lock"></i><span>受保护值</span>
+        </button>
+        <button class="nav-item" type="button" data-view="detectors">
+          <i class="nav-icon" data-lucide="sliders-horizontal"></i><span>检测器配置</span>
         </button>
         <button class="nav-item" type="button" data-view="local-models">
           <i class="nav-icon" data-lucide="hard-drive-download"></i><span>本地模型管理</span>
@@ -247,6 +250,53 @@
           </div>
         </section>
 
+        <section class="view" id="view-detectors" aria-labelledby="page-title">
+          <section class="configuration-toolbar">
+            <label class="configuration-picker"><span>检测器配置</span><select id="configuration-select"></select></label>
+            <div class="configuration-actions">
+              <button class="secondary-button icon-action-button" type="button" id="new-configuration" aria-label="新建检测器配置" title="新建检测器配置"><i data-lucide="plus"></i></button>
+              <button class="secondary-button icon-action-button" type="button" id="duplicate-configuration" aria-label="复制检测器配置" title="复制检测器配置"><i data-lucide="copy"></i></button>
+            </div>
+          </section>
+
+          <section class="configuration-editor" id="configuration-editor">
+            <div class="configuration-heading">
+              <div class="configuration-identity">
+                <input id="configuration-name" aria-label="配置名称" maxlength="80">
+                <textarea id="configuration-description" aria-label="配置说明" rows="2" maxlength="240"></textarea>
+              </div>
+              <div class="configuration-status" id="configuration-status"></div>
+            </div>
+            <div class="configuration-settings">
+              <label><span>总流程超时（ms）</span><input id="configuration-timeout" type="number" min="10" max="120000"></label>
+              <div class="configuration-save-actions">
+                <button class="secondary-button danger-text icon-action-button" type="button" id="delete-configuration" aria-label="删除检测器配置" title="删除检测器配置"><i data-lucide="trash-2"></i></button>
+                <button class="primary-button labeled-icon-button" type="button" id="save-configuration"><i data-lucide="save"></i><span>保存配置</span></button>
+              </div>
+            </div>
+          </section>
+
+          <section class="detector-section module-pipeline-section">
+            <div class="section-heading">
+              <div><p class="section-kicker">ORDERED PIPELINE</p><h2>检测模块</h2></div>
+              <button class="primary-button icon-action-button" type="button" id="add-module" aria-label="新增检测模块" title="新增检测模块"><i data-lucide="plus"></i></button>
+            </div>
+            <div class="module-list" id="detector-modules"></div>
+          </section>
+
+          <section class="detector-lab">
+            <div class="section-heading">
+              <div><p class="section-kicker">LOCAL DRY RUN</p><h2>检测器试跑</h2></div>
+              <button class="primary-button icon-action-button" type="button" id="run-detection" aria-label="运行检测" title="运行检测"><i data-lucide="play"></i></button>
+            </div>
+            <div class="lab-grid">
+              <label class="lab-input"><span>测试文本</span><textarea id="detection-input" rows="7" placeholder="输入一段本地测试文本"></textarea></label>
+              <div class="lab-output" id="detection-output"><span class="muted">等待测试</span></div>
+            </div>
+            <div class="diagnostic-list" id="detection-diagnostics"></div>
+          </section>
+        </section>
+
         <section class="view" id="view-local-models" aria-labelledby="page-title">
           <div class="local-model-setup-notice is-hidden" id="local-model-setup-notice" role="status"></div>
 
@@ -316,6 +366,40 @@
   <dialog class="modal" id="detail-modal">
     <div class="modal-header"><div><p class="section-kicker" id="modal-kicker">DETAIL</p><h2 id="modal-title">详情</h2></div><button class="icon-button" type="button" data-close-modal aria-label="关闭弹窗" title="关闭弹窗"><i data-lucide="x"></i></button></div>
     <div class="modal-body" id="modal-body"></div>
+  </dialog>
+
+  <dialog class="modal configuration-modal" id="configuration-modal">
+    <form id="configuration-form">
+      <div class="modal-header"><div><p class="section-kicker">DETECTOR CONFIGURATION</p><h2>新建检测器配置</h2></div><button class="icon-button" type="button" data-close-modal aria-label="关闭弹窗" title="关闭弹窗"><i data-lucide="x"></i></button></div>
+      <div class="modal-body form-grid">
+        <label class="full-row"><span>配置名称</span><input name="name" maxlength="80" required></label>
+        <label class="full-row"><span>基于</span><select name="source_id" id="configuration-source"></select></label>
+        <p class="form-error full-row" id="configuration-error" role="alert"></p>
+      </div>
+      <div class="modal-actions"><button class="secondary-button" type="button" data-close-modal>取消</button><button class="primary-button labeled-icon-button" type="submit"><i data-lucide="plus"></i><span>创建配置</span></button></div>
+    </form>
+  </dialog>
+
+  <dialog class="modal module-modal" id="module-modal">
+    <form id="module-form">
+      <div class="modal-header"><div><p class="section-kicker">PIPELINE MODULE</p><h2 id="module-modal-title">编辑检测模块</h2></div><button class="icon-button" type="button" data-close-modal aria-label="关闭弹窗" title="关闭弹窗"><i data-lucide="x"></i></button></div>
+      <div class="modal-body">
+        <div class="form-grid module-common-fields">
+          <label id="module-name-field"><span>模块名称</span><input name="name" maxlength="80" required></label>
+          <label class="module-type-field" id="module-type-field"><span>模块类型</span><select name="type" id="module-type"><option value="regex">正则检测</option><option value="entropy">熵值检测</option><option value="path">路径检测</option><option value="local_model">本地小模型</option></select></label>
+        </div>
+        <div class="module-specific-fields" id="module-specific-fields"></div>
+        <details class="advanced-settings">
+          <summary>高级设置</summary>
+          <div class="form-grid">
+            <label><span>模块超时（ms）</span><input name="timeout_ms" type="number" min="1" max="60000" placeholder="不限制"></label>
+            <label><span>失败策略</span><select name="failure_mode"><option value="open">失败时跳过模块（Fail open）</option><option value="closed">失败时中止流程（Fail closed）</option></select></label>
+          </div>
+        </details>
+        <p class="form-error" id="module-error" role="alert"></p>
+      </div>
+      <div class="modal-actions"><button class="secondary-button" type="button" data-close-modal>取消</button><button class="primary-button labeled-icon-button" type="submit"><i data-lucide="check"></i><span>应用到草稿</span></button></div>
+    </form>
   </dialog>
 
   <dialog class="modal confirm-modal" id="confirm-modal">

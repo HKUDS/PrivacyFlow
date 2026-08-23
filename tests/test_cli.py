@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
 import json
 import os
 from pathlib import Path
+from threading import Event
 
 import pytest
+import gateway.cli.launcher as launcher_module
 
 from gateway.cli import (
     LauncherConfigError,
@@ -221,6 +224,53 @@ def test_multiple_upstream_profiles_can_be_saved_activated_and_deleted(tmp_path:
     stored = json.loads(path.read_text(encoding="utf-8"))
     assert [profile["id"] for profile in stored["upstream_profiles"]] == [second["id"]]
     assert stored["active_upstream_profile_id"] == second["id"]
+
+
+def test_launcher_transactions_preserve_concurrent_connector_and_upstream_updates(tmp_path: Path, monkeypatch) -> None:
+    path = tmp_path / ".privacyflow" / "launcher.json"
+    prepare_launcher_config(path, environ={})
+    connector_write_started = Event()
+    release_connector_write = Event()
+    upstream_write_started = Event()
+    original_write = launcher_module._write_launcher_config
+
+    def controlled_write(target: Path, config) -> None:
+        connector_keys = config.get("connector_api_keys", {})
+        profiles = config.get("upstream_profiles", [])
+        if connector_keys.get("codex") == "connector-key" and not connector_write_started.is_set():
+            connector_write_started.set()
+            assert release_connector_write.wait(timeout=5)
+        elif profiles:
+            upstream_write_started.set()
+        original_write(target, config)
+
+    monkeypatch.setattr(launcher_module, "_write_launcher_config", controlled_write)
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        connector = executor.submit(
+            launcher_module.save_launcher_connector_api_key,
+            path,
+            "codex",
+            "connector-key",
+        )
+        assert connector_write_started.wait(timeout=5)
+        upstream = executor.submit(
+            save_launcher_upstream_profile,
+            path,
+            profile_id="",
+            name="Concurrent upstream",
+            protocol=OPENAI_CHAT_COMPLETIONS,
+            base_url="https://upstream.example/v1",
+            api_key="provider-key",
+        )
+        assert not upstream_write_started.wait(timeout=0.2)
+        release_connector_write.set()
+        connector.result(timeout=5)
+        upstream.result(timeout=5)
+
+    stored = json.loads(path.read_text(encoding="utf-8"))
+    assert stored["connector_api_keys"] == {"codex": "connector-key"}
+    assert stored["upstream_profiles"][0]["name"] == "Concurrent upstream"
+    assert os.stat(path.with_name("launcher.json.lock")).st_mode & 0o777 == 0o600
 
 
 def test_upstream_profile_normalizes_protocols_and_full_endpoint(tmp_path: Path) -> None:
