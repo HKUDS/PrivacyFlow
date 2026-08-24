@@ -1623,7 +1623,6 @@ def create_app(config: GatewayConfig | None = None, upstream_client: UpstreamCli
         @app.get("/ui/assets/{asset_name}", include_in_schema=False)
         async def webui_asset(asset_name: str) -> Response:
             if asset_name not in {
-                "apg-icon.png",
                 "privacyflow-icon.png",
                 "agent-claude-code.svg",
                 "agent-codex.svg",
