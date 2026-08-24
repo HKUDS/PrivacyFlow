@@ -623,6 +623,12 @@ class RedactionEngine:
         events: list[dict[str, Any]] = list(marker_events)
         active_paths_for_aliasing: list[str] | None = None
         for det in detections:
+            if det.span_start < cursor:
+                # Never walk the cursor backwards. A detection that starts
+                # inside an already-replaced span would otherwise re-emit the
+                # tail of that span verbatim once the cursor rewound, leaking
+                # part of a value that was just protected.
+                continue
             out.append(text[cursor:det.span_start])
             raw = text[det.span_start:det.span_end]
             decision = self.policy.decision_for_detection(det)
@@ -1383,7 +1389,12 @@ class RedactionEngine:
             fold_apg_markers=fold_apg_markers,
         )
         for token, value in restorations.items():
-            safe = safe.replace(token, value, 1)
+            # ``protect()`` substitutes every occurrence of an alias or handle
+            # with the same token, so every occurrence must be restored. The
+            # token carries a per-call random nonce, so it can only appear in
+            # ``safe`` where this call put it; an upstream response cannot
+            # forge one.
+            safe = safe.replace(token, value)
         post_events: list[dict[str, Any]] = []
         for ph in self.signer.parse(safe):
             result = self._materializer.materialize_placeholder(ph, session_id=session_id, sink_type="local_user")

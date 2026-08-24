@@ -12,21 +12,25 @@ class FindingAggregator:
 
         merged: list[Finding] = []
         for block_findings in grouped.values():
-            consumed: set[int] = set()
-            for i, finding in enumerate(block_findings):
-                if i in consumed:
-                    continue
-                overlaps = [
-                    other
-                    for j, other in enumerate(block_findings[i + 1 :], start=i + 1)
-                    if j not in consumed and _overlaps(finding, other)
-                ]
-                overlap_group = [finding, *overlaps]
-                primary = max(overlap_group, key=_finding_priority)
-                others = [item for item in overlap_group if item is not primary]
-                for other in overlaps:
-                    consumed.add(block_findings.index(other))
+            # Sweep maximal runs of overlapping findings. Comparing each
+            # finding only against the run's first member would leave
+            # A-overlaps-B, B-overlaps-C, A-disjoint-C as two merged spans
+            # that still overlap each other; the caller replaces spans with a
+            # left-to-right cursor walk and cannot handle that safely.
+            index = 0
+            total = len(block_findings)
+            while index < total:
+                group = [block_findings[index]]
+                group_end = block_findings[index].normalized_end
+                cursor = index + 1
+                while cursor < total and block_findings[cursor].normalized_start < group_end:
+                    group.append(block_findings[cursor])
+                    group_end = max(group_end, block_findings[cursor].normalized_end)
+                    cursor += 1
+                primary = max(group, key=_finding_priority)
+                others = [item for item in group if item is not primary]
                 merged.append(score_finding(merge_findings(primary, others) if others else primary))
+                index = cursor
         return sorted(merged, key=lambda f: (f.source_block_id, f.normalized_start))
 
 
@@ -64,10 +68,6 @@ def score_finding(finding: Finding) -> Finding:
         safe_preview=finding.safe_preview,
         metadata=finding.metadata,
     )
-
-
-def _overlaps(a: Finding, b: Finding) -> bool:
-    return not (a.normalized_end <= b.normalized_start or b.normalized_end <= a.normalized_start)
 
 
 def _raise_risk(risk: str) -> str:

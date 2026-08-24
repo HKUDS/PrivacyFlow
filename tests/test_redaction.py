@@ -570,3 +570,49 @@ def test_local_model_only_scans_content_fields_while_rules_cover_tool_schema(com
     diagnostics = manager.diagnostics()
     assert [item["id"] for item in diagnostics] == ["rules", "personal_model"]
     assert diagnostics[-1]["status"] == "ok"
+
+
+def test_repeated_placeholder_restores_every_occurrence(redactor) -> None:
+    """Every occurrence of a handle must restore, not just the first.
+
+    ``scan_local_text`` swaps each handle for one internal restore sentinel
+    across all of its occurrences, so restoring only the first left the
+    sentinel visible to the user in place of the value.
+    """
+    raw = "sk-live-ABCDEFGHIJKLMNOPQRSTUVWX"
+    sanitized, _ = redactor.sanitize_text(f"use key {raw} for both calls", "sess_repeat")
+    handle = PLACEHOLDER_RE.search(sanitized)
+    assert handle is not None
+    placeholder = handle.group(0)
+
+    restored, _ = redactor.scan_local_text(f"first {placeholder} then {placeholder}", "sess_repeat")
+
+    assert restored == f"first {raw} then {raw}"
+    assert "LOCAL_RESTORE" not in restored
+
+
+def test_repeated_path_alias_restores_every_occurrence(redactor) -> None:
+    original = "/Users/alice/private/project"
+    sanitized, _ = redactor.sanitize_text(f"open {original} now", "sess_alias")
+    alias = sanitized.removeprefix("open ").removesuffix(" now")
+    assert alias != original
+
+    restored, _ = redactor.scan_local_text(f"cd {alias} && ls {alias}", "sess_alias")
+
+    assert restored == f"cd {original} && ls {original}"
+    assert "LOCAL_RESTORE" not in restored
+
+
+def test_interleaved_placeholders_each_restore_independently(redactor) -> None:
+    first_raw = "sk-live-ABCDEFGHIJKLMNOPQRSTUVWX"
+    second_raw = "sk-live-ZYXWVUTSRQPONMLKJIHGFEDC"
+    sanitized, _ = redactor.sanitize_text(f"keys {first_raw} and {second_raw}", "sess_mixed")
+    placeholders = [match.group(0) for match in PLACEHOLDER_RE.finditer(sanitized)]
+    assert len(placeholders) == 2
+
+    restored, _ = redactor.scan_local_text(
+        f"{placeholders[0]} {placeholders[1]} {placeholders[0]}",
+        "sess_mixed",
+    )
+
+    assert restored == f"{first_raw} {second_raw} {first_raw}"
