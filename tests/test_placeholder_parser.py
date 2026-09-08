@@ -18,7 +18,7 @@ def test_placeholder_wrong_session_fails(components) -> None:
     ph = signer.parse(signer.issue("pii", rec.handle_id, "sess_a"))[0]
     result = MaterializationEngine(store, signer, policy, "ws").materialize_placeholder(ph, session_id="sess_b", sink_type="local_user")
     assert not result.allowed
-    assert result.error_code == "APG_PLACEHOLDER_SCOPE_MISMATCH"
+    assert result.error_code == "PF_PLACEHOLDER_SCOPE_MISMATCH"
 
 
 def test_hallucinated_placeholder_invalid_mac_does_not_materialize(components) -> None:
@@ -27,7 +27,7 @@ def test_hallucinated_placeholder_invalid_mac_does_not_materialize(components) -
     fake = signer.parse("<APG:v1:pii:pii_fake:sess_a:123:badmac>")[0]
     result = MaterializationEngine(store, signer, policy, "ws").materialize_placeholder(fake, session_id="sess_a", sink_type="local_user")
     assert not result.allowed
-    assert result.error_code == "APG_PLACEHOLDER_INVALID_MAC"
+    assert result.error_code == "PF_PLACEHOLDER_INVALID_MAC"
 
 
 def test_fake_placeholder_in_file_content_does_not_materialize(components) -> None:
@@ -78,3 +78,17 @@ def test_secret_placeholder_never_materializes_for_remote_llm(components) -> Non
     result = MaterializationEngine(store, signer, policy, "ws").materialize_placeholder(ph, session_id="sess_a", sink_type="remote_llm")
     assert not result.allowed
     assert result.error_code == "remote_materialization_blocked"
+
+
+def test_default_and_invalid_namespaces_are_pf() -> None:
+    signer = PlaceholderSigner("test-secret", "ws")
+    assert signer.namespace == "PF"
+    assert signer.issue("pii", "pii_x", "sess_a", 1).startswith("<PF:v1:")
+    invalid = PlaceholderSigner("test-secret", "ws", namespace="OTHER")
+    assert invalid.namespace == "PF"
+
+
+def test_legacy_namespace_still_issues_apg_placeholders() -> None:
+    signer = PlaceholderSigner("test-secret", "ws", namespace="APG")
+    issued = signer.issue("pii", "pii_x", "sess_a", 1)
+    assert issued.startswith("<APG:v1:")

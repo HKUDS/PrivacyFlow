@@ -1,6 +1,10 @@
 # Live Validation Results
 
-> Historical validation artifact: the runs below predate the PrivacyFlow migration and intentionally retain APG names. New validation runs use the PF namespace; no generated evidence was rewritten.
+> Historical validation artifact: the runs below predate the PrivacyFlow
+> migration and intentionally retain APG names. The deterministic E2E harness
+> on this branch uses the PF namespace, but no PrivacyFlow-branded live-agent
+> matrix has been committed yet. The 2026-08-05 Claude Code + OpenCode run
+> remains the latest real-agent evidence.
 
 ## Full live-agent matrix: Claude Code + OpenCode
 

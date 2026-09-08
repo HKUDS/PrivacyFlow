@@ -52,6 +52,7 @@ from gateway.placeholder_parser import PF_PLACEHOLDER_FORMAT_EXAMPLE, Placeholde
 from gateway.policy_engine import PolicyEngine
 from gateway.redaction_engine import (
     RedactionEngine,
+    RequestBlockedError,
     ToolArgumentsJSONError,
 )
 from gateway.response_scanner import ResponseScanner
@@ -476,6 +477,53 @@ def _tool_arguments_error_response(
     else:
         payload = {"error": {"code": "PF_TOOL_ARGUMENTS_INVALID", "retryable": True, "message": message}}
     return JSONResponse(payload, status_code=502)
+
+
+def _admin_http_error(status_code: int, code: str, message: str) -> HTTPException:
+    return HTTPException(status_code=status_code, detail={"code": code, "message": message})
+
+
+def _detector_control_http_error(exc: DetectorControlError) -> HTTPException:
+    if isinstance(exc, DetectorConfigurationNotFound):
+        status_code = 404
+    elif isinstance(exc, DetectorConfigurationConflict):
+        status_code = 409
+    else:
+        status_code = 400
+    return _admin_http_error(status_code, getattr(exc, "code", "DETECTOR_CONTROL_INVALID"), str(exc))
+
+
+def _request_blocked_error_response(
+    error: RequestBlockedError,
+    audit: AuditLogger,
+    request_id: str,
+    session_id: str,
+    workspace_id: str,
+    endpoint: str,
+    *,
+    anthropic: bool = False,
+) -> JSONResponse:
+    audit.log(
+        {
+            "request_id": request_id,
+            "session_id": session_id,
+            "workspace_id": workspace_id,
+            "endpoint": endpoint,
+            "phase": "request_blocked",
+            "code": "PF_REQUEST_BLOCKED",
+            "reason_code": error.reason_code,
+            "subtype": error.subtype,
+            "detector": error.detector,
+            "risk": error.risk,
+            "status": 400,
+        }
+    )
+    message = "PrivacyFlow blocked this request because a detector marked a value as non-forwardable."
+    if anthropic:
+        payload: dict[str, Any] = {"type": "error", "error": {"type": "invalid_request_error", "message": message}}
+    else:
+        payload = {"error": {"code": "PF_REQUEST_BLOCKED", "retryable": False, "message": message}}
+    return JSONResponse(payload, status_code=400)
 
 
 def create_app(config: GatewayConfig | None = None, upstream_client: UpstreamClient | None = None) -> FastAPI:
@@ -1205,7 +1253,17 @@ def create_app(config: GatewayConfig | None = None, upstream_client: UpstreamCli
         except Exception as exc:
             raise HTTPException(status_code=400, detail="Invalid JSON") from exc
         if privacy_enabled:
-            sanitized, request_events = request_redactor.sanitize_json(body, session_id)
+            try:
+                sanitized, request_events = request_redactor.sanitize_json(body, session_id)
+            except RequestBlockedError as exc:
+                return _request_blocked_error_response(
+                    exc,
+                    audit,
+                    request_id,
+                    session_id,
+                    cfg.workspace_id,
+                    endpoint,
+                )
             if isinstance(sanitized, dict):
                 sanitized = (
                     _inject_apg_responses_instructions(sanitized, system_prompt)
@@ -1329,13 +1387,24 @@ def create_app(config: GatewayConfig | None = None, upstream_client: UpstreamCli
             raise HTTPException(status_code=400, detail="Invalid JSON") from exc
         if not isinstance(body, dict):
             raise HTTPException(status_code=400, detail="Invalid Anthropic messages payload")
+        endpoint = "/v1/messages"
         if privacy_enabled:
-            sanitized, request_events = request_redactor.sanitize_json(body, session_id)
+            try:
+                sanitized, request_events = request_redactor.sanitize_json(body, session_id)
+            except RequestBlockedError as exc:
+                return _request_blocked_error_response(
+                    exc,
+                    audit,
+                    request_id,
+                    session_id,
+                    cfg.workspace_id,
+                    endpoint,
+                    anthropic=True,
+                )
         else:
             sanitized, request_events = body, []
         upstream_payload = _inject_apg_anthropic_system(sanitized, system_prompt) if privacy_enabled else sanitized
         upstream_path = "/v1/messages"
-        endpoint = "/v1/messages"
         if privacy_enabled:
             audit.log(
                 {
@@ -1755,7 +1824,11 @@ def create_app(config: GatewayConfig | None = None, upstream_client: UpstreamCli
                 raise HTTPException(status_code=400, detail="Expected boolean field 'enabled'")
             status = privacy_control_status()
             if enabled and not status["available"]:
-                raise HTTPException(status_code=409, detail="PrivacyFlow cannot be enabled without an active usable configuration")
+                raise _admin_http_error(
+                    409,
+                    "DETECTOR_CONFIGURATION_UNAVAILABLE",
+                    "PrivacyFlow cannot be enabled without an active usable configuration",
+                )
             detector_control.set_pf_enabled(enabled)
             audit.log(
                 {
@@ -1906,7 +1979,11 @@ def create_app(config: GatewayConfig | None = None, upstream_client: UpstreamCli
             refresh: bool = False,
         ) -> Response:
             if not upstream_is_configured() or not active_upstream_profile_id:
-                raise HTTPException(status_code=409, detail="Configure and activate an upstream connection first")
+                raise _admin_http_error(
+                    409,
+                    "PF_UPSTREAM_NOT_CONFIGURED",
+                    "Configure and activate an upstream connection first",
+                )
 
             endpoint = "/v1/models"
             rich_result = bool(
@@ -2068,7 +2145,11 @@ def create_app(config: GatewayConfig | None = None, upstream_client: UpstreamCli
             request: Request,
         ) -> Response:
             if not upstream_is_configured() or not active_upstream_profile_id:
-                raise HTTPException(status_code=409, detail="Configure and activate an upstream connection first")
+                raise _admin_http_error(
+                    409,
+                    "PF_UPSTREAM_NOT_CONFIGURED",
+                    "Configure and activate an upstream connection first",
+                )
             body = await admin_body(request)
             model = body.get("model")
             if not isinstance(model, str) or not model.strip():
@@ -2453,9 +2534,9 @@ def create_app(config: GatewayConfig | None = None, upstream_client: UpstreamCli
                     revision=revision,
                 )
             except MappingRetentionConflictError as exc:
-                raise HTTPException(status_code=409, detail=str(exc)) from exc
+                raise _admin_http_error(409, getattr(exc, "code", "MAPPING_RETENTION_CONFLICT"), str(exc)) from exc
             except ValueError as exc:
-                raise HTTPException(status_code=400, detail=str(exc)) from exc
+                raise _admin_http_error(400, "MAPPING_RETENTION_INVALID", str(exc)) from exc
             return JSONResponse(result, headers={"Cache-Control": "no-store"})
 
         @app.post("/api/admin/protected-values/{public_id}/revoke")
@@ -2481,10 +2562,8 @@ def create_app(config: GatewayConfig | None = None, upstream_client: UpstreamCli
         async def admin_create_detector_configuration(request: Request) -> Response:
             try:
                 result = detector_control.create_configuration(await admin_body(request))
-            except DetectorConfigurationNotFound as exc:
-                raise HTTPException(status_code=404, detail=str(exc)) from exc
             except DetectorControlError as exc:
-                raise HTTPException(status_code=400, detail=str(exc)) from exc
+                raise _detector_control_http_error(exc) from exc
             audit.log(
                 {
                     "phase": "admin_action",
@@ -2501,20 +2580,16 @@ def create_app(config: GatewayConfig | None = None, upstream_client: UpstreamCli
         async def admin_get_detector_configuration(configuration_id: str) -> Response:
             try:
                 result = detector_control.get_configuration(configuration_id)
-            except DetectorConfigurationNotFound as exc:
-                raise HTTPException(status_code=404, detail=str(exc)) from exc
+            except DetectorControlError as exc:
+                raise _detector_control_http_error(exc) from exc
             return JSONResponse(result, headers={"Cache-Control": "no-store"})
 
         @app.put("/api/admin/detector-configurations/{configuration_id}")
         async def admin_save_detector_configuration(configuration_id: str, request: Request) -> Response:
             try:
                 result = detector_control.save_configuration(configuration_id, await admin_body(request))
-            except DetectorConfigurationNotFound as exc:
-                raise HTTPException(status_code=404, detail=str(exc)) from exc
-            except DetectorConfigurationConflict as exc:
-                raise HTTPException(status_code=409, detail=str(exc)) from exc
             except DetectorControlError as exc:
-                raise HTTPException(status_code=400, detail=str(exc)) from exc
+                raise _detector_control_http_error(exc) from exc
             audit.log(
                 {
                     "phase": "admin_action",
@@ -2532,12 +2607,8 @@ def create_app(config: GatewayConfig | None = None, upstream_client: UpstreamCli
         async def admin_delete_detector_configuration(configuration_id: str) -> Response:
             try:
                 result = detector_control.delete_configuration(configuration_id)
-            except DetectorConfigurationNotFound as exc:
-                raise HTTPException(status_code=404, detail=str(exc)) from exc
-            except DetectorConfigurationConflict as exc:
-                raise HTTPException(status_code=409, detail=str(exc)) from exc
             except DetectorControlError as exc:
-                raise HTTPException(status_code=400, detail=str(exc)) from exc
+                raise _detector_control_http_error(exc) from exc
             audit.log(
                 {
                     "phase": "admin_action",
@@ -2552,10 +2623,8 @@ def create_app(config: GatewayConfig | None = None, upstream_client: UpstreamCli
         async def admin_activate_detector_configuration(configuration_id: str) -> Response:
             try:
                 result = detector_control.activate_configuration(configuration_id)
-            except DetectorConfigurationNotFound as exc:
-                raise HTTPException(status_code=404, detail=str(exc)) from exc
             except DetectorControlError as exc:
-                raise HTTPException(status_code=400, detail=str(exc)) from exc
+                raise _detector_control_http_error(exc) from exc
             audit.log(
                 {
                     "phase": "admin_action",
@@ -2577,13 +2646,11 @@ def create_app(config: GatewayConfig | None = None, upstream_client: UpstreamCli
             body = await admin_body(request)
             enabled = body.get("enabled")
             if not isinstance(enabled, bool):
-                raise HTTPException(status_code=400, detail="Expected boolean module enabled state")
+                raise HTTPException(status_code=400, detail={"code": "DETECTOR_CONTROL_INVALID", "message": "Expected boolean module enabled state"})
             try:
                 result = detector_control.set_template_module_enabled(configuration_id, module_id, enabled)
-            except DetectorConfigurationNotFound as exc:
-                raise HTTPException(status_code=404, detail=str(exc)) from exc
             except DetectorControlError as exc:
-                raise HTTPException(status_code=400, detail=str(exc)) from exc
+                raise _detector_control_http_error(exc) from exc
             audit.log(
                 {
                     "phase": "admin_action",
@@ -2605,10 +2672,8 @@ def create_app(config: GatewayConfig | None = None, upstream_client: UpstreamCli
             try:
                 configuration = detector_control.get_configuration(configuration_id)
                 manager = detector_control.manager_for_configuration(configuration_id)
-            except DetectorConfigurationNotFound as exc:
-                raise HTTPException(status_code=404, detail=str(exc)) from exc
             except DetectorControlError as exc:
-                raise HTTPException(status_code=400, detail=str(exc)) from exc
+                raise _detector_control_http_error(exc) from exc
             kind = body.get("kind", "text")
             if not isinstance(kind, str) or kind not in DETECTOR_SOURCE_KINDS:
                 raise HTTPException(status_code=400, detail="Unsupported detector source kind")

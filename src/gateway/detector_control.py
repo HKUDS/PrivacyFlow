@@ -43,15 +43,20 @@ _UNSAFE_REGEX_FEATURE_RE = re.compile(r"\(\?(?:[=!<]|P=)|\\[1-9]|\.\*|\.\+")
 
 
 class DetectorControlError(ValueError):
-    pass
+    code = "DETECTOR_CONTROL_INVALID"
+
+    def __init__(self, message: str, *, code: str | None = None) -> None:
+        super().__init__(message)
+        if code is not None:
+            self.code = code
 
 
 class DetectorConfigurationNotFound(DetectorControlError):
-    pass
+    code = "DETECTOR_CONFIGURATION_NOT_FOUND"
 
 
 class DetectorConfigurationConflict(DetectorControlError):
-    pass
+    code = "DETECTOR_CONFIGURATION_CONFLICT"
 
 
 def _now() -> str:
@@ -279,7 +284,7 @@ class DetectorControlPlane:
             except (TypeError, ValueError) as exc:
                 raise DetectorControlError("Expected integer revision") from exc
             if revision != current["revision"]:
-                raise DetectorConfigurationConflict("Configuration revision is stale")
+                raise DetectorConfigurationConflict("Configuration revision is stale", code="DETECTOR_REVISION_STALE")
             candidate = {
                 **copy.deepcopy(current),
                 "name": payload.get("name", current["name"]),
@@ -343,7 +348,10 @@ class DetectorControlPlane:
     def delete_configuration(self, configuration_id: str) -> dict[str, Any]:
         with self._lock:
             if configuration_id == self._state["active_configuration_id"]:
-                raise DetectorConfigurationConflict("Activate another configuration before deleting this one")
+                raise DetectorConfigurationConflict(
+                    "Activate another configuration before deleting this one",
+                    code="DETECTOR_CONFIGURATION_IN_USE",
+                )
             self._user_configuration(configuration_id)
             next_state = copy.deepcopy(self._state)
             next_state["configurations"] = [item for item in next_state["configurations"] if item["id"] != configuration_id]

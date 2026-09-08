@@ -1,10 +1,11 @@
 from __future__ import annotations
 
 from gateway.detectors.base import Detector
+from gateway.detectors.external.unavailable import ExternalToolUnavailable
 
 
 class GitleaksPlugin(Detector):
     name = "external.gitleaks"
 
     def detect(self, block, normalized):
-        return []
+        raise ExternalToolUnavailable(self.name)

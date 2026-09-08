@@ -9,8 +9,7 @@ local-model management; safe audit views; and a loopback-only WebUI.
 Future work is intentionally limited to the privacy proxy boundary:
 
 - improve detector precision and streaming protocol coverage;
-- add explicit policy enforcement for detector `block` actions and, if kept in
-  scope, per-tool materialization rules rather than field-shape classification;
+- if kept in scope, add per-tool materialization rules rather than field-shape classification;
 - define scanning contracts for opaque multimodal payloads without corrupting
   native provider formats;
 - add explicit scanning entry points for additional native upload APIs when a

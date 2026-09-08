@@ -56,6 +56,25 @@ def test_non_streaming_chat_forwards_sanitized_request(tmp_path) -> None:
     assert "opening `<` and closing `>` delimiters" in PF_UPSTREAM_SYSTEM_PROMPT
 
 
+def test_private_key_block_does_not_reach_upstream(tmp_path) -> None:
+    fake = FakeUpstream()
+    cfg = GatewayConfig(database_path=str(tmp_path / "state.sqlite3"), audit_log_path=str(tmp_path / "audit.jsonl"), signing_secret="secret", local_api_keys={"local"}, upstream=UpstreamConfig(base_url="https://upstream", api_key="up"))
+    client = TestClient(create_app(cfg, fake))
+    pem = "-----BEGIN OPENSSH PRIVATE KEY-----\nabc\n-----END OPENSSH PRIVATE KEY-----"
+    resp = client.post(
+        "/v1/chat/completions",
+        headers={"Authorization": "Bearer local"},
+        json={"model": "x", "messages": [{"role": "user", "content": f"use this key\n{pem}"}]},
+    )
+    assert resp.status_code == 400
+    assert resp.json()["error"]["code"] == "PF_REQUEST_BLOCKED"
+    assert resp.json()["error"]["retryable"] is False
+    assert fake.calls == []
+    audit = (tmp_path / "audit.jsonl").read_text(encoding="utf-8")
+    assert "request_blocked" in audit
+    assert "PRIVATE KEY" not in audit
+
+
 def test_apg_prompt_prepends_existing_system_message(tmp_path) -> None:
     fake = FakeUpstream()
     cfg = GatewayConfig(database_path=str(tmp_path / "state.sqlite3"), audit_log_path=str(tmp_path / "audit.jsonl"), signing_secret="secret", local_api_keys={"local"}, upstream=UpstreamConfig(base_url="https://upstream", api_key="up"))

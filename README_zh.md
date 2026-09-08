@@ -207,7 +207,7 @@ PrivacyFlow 始终按请求原有的 API 格式转发，不会将其转换成另
 - 结构化工具参数还原；
 - 模块级 fail-open/fail-close，同时保持占位符完整性保护固定开启。
 
-风险等级仅用于审计元数据，不会改变受保护数据的替换方式。实际强制执行发生在策略、映射、占位符和还原层，而不是由模型置信度决定。检测结果中的 `block` 当前仍会像其他 Secret 一样被替换，不会拒绝整个上游请求。
+风险等级仅用于审计元数据，不会改变受保护数据的替换方式。实际强制执行发生在策略、映射、占位符和还原层，而不是由模型置信度决定。检测结果中的 `block` 会拒绝整个上游请求，并返回不可重试的 `PF_REQUEST_BLOCKED`；下行响应仍会折叠这类值，而不是把它们作为占位符转发。
 
 ### 控制与可观测性
 
@@ -312,7 +312,9 @@ export PF_HISTORY_RETENTION_SECONDS=2592000
 | 层级 | 目的 | 命令或证据 |
 | --- | --- | --- |
 | 单元与 API 回归 | 验证代理、检测器、映射、流式传输、WebUI 与安全行为 | `pytest -m 'not integration'` |
+| 确定性 E2E harness | 场景夹具、泄漏断言和报告生成 | `pytest e2e_agent_tests/tests/test_e2e_harness.py` |
 | 联网本地模型集成 | 验证隔离运行环境下载和真实 Worker 推理 | `PF_RUN_LOCAL_MODEL_INTEGRATION=1 pytest -m integration tests/test_local_models_integration.py` |
+| 历史真实 Agent 证据 | Claude Code / OpenCode 矩阵（APG 时期产物） | [`docs/live_validation_results.md`](docs/live_validation_results.md) |
 
 <a id="documentation"></a>
 

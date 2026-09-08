@@ -3,13 +3,15 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
+
 from gateway.detector_manager import DetectorManager
 from gateway.detectors.rules import builtin_rules
 from gateway.mapping_store import MappingStore
 from gateway.path_alias_manager import PathAliasManager
 from gateway.placeholder_parser import PLACEHOLDER_RE, PlaceholderSigner
 from gateway.policy_engine import PolicyEngine
-from gateway.redaction_engine import RedactionEngine
+from gateway.redaction_engine import RedactionEngine, RequestBlockedError
 
 
 def test_api_key_redacted_before_upstream(redactor) -> None:
@@ -17,7 +19,7 @@ def test_api_key_redacted_before_upstream(redactor) -> None:
     sanitized, events = redactor.sanitize_json(body, "sess_1")
     text = json.dumps(sanitized)
     assert "sk-proj-" not in text
-    assert "<APG:v1:secret:" in text
+    assert "<PF:v1:secret:" in text
     assert events[0]["subtype"] == "api_key"
 
 
@@ -29,7 +31,7 @@ def test_api_key_after_normalization_window_is_redacted_before_upstream(redactor
 
     content = sanitized["messages"][0]["content"]
     assert raw not in content
-    assert "<APG:v1:secret:" in content
+    assert "<PF:v1:secret:" in content
     assert any(event["subtype"] == "api_key" for event in events)
 
 
@@ -54,7 +56,7 @@ def test_placeholder_is_stable_after_restart_and_request_replay(redactor) -> Non
 
     replayed, replay_events = restarted.sanitize_text(first, "sess_stable")
     assert replayed == first
-    assert replayed.count("<APG:v1:") == 1
+    assert replayed.count("<PF:v1:") == 1
     assert replay_events[0]["action"] == "preserve"
 
     previous_valid_form = signer.issue("secret", record.handle_id, "sess_stable", record.created_at + 1)
@@ -68,12 +70,12 @@ def test_env_assignment_preserves_key_and_redacts_only_value(redactor) -> None:
         "SERVICE_TOKEN=sk-apgtest-stream-agent-secret-2026",
         "sess_1",
     )
-    assert sanitized.startswith("SERVICE_TOKEN=<APG:v1:secret:")
+    assert sanitized.startswith("SERVICE_TOKEN=<PF:v1:secret:")
     assert "sk-apgtest" not in sanitized
 
     exported_source = 'export SERVICE_TOKEN="svc_apgtest_live_agent_2026_abcdefghijklmnopqrstuvwxyz"'
     exported, _ = redactor.sanitize_text(exported_source, "sess_1")
-    assert exported.startswith('export SERVICE_TOKEN="<APG:v1:secret:')
+    assert exported.startswith('export SERVICE_TOKEN="<PF:v1:secret:')
     assert exported.endswith('>"')
     assert "svc_apgtest" not in exported
     assert redactor.materialize_local_text(exported, "sess_1") == exported_source
@@ -82,7 +84,7 @@ def test_env_assignment_preserves_key_and_redacts_only_value(redactor) -> None:
         '    42\u2192export SERVICE_TOKEN="svc_apgtest_live_agent_2026_abcdefghijklmnopqrstuvwxyz"',
         "sess_1",
     )
-    assert read_output.startswith('    42\u2192export SERVICE_TOKEN="<APG:v1:secret:')
+    assert read_output.startswith('    42\u2192export SERVICE_TOKEN="<PF:v1:secret:')
     assert read_output.endswith('>"')
     assert "svc_apgtest" not in read_output
 
@@ -99,7 +101,7 @@ def test_env_assignment_preserves_status_and_inline_log_context(redactor) -> Non
         "SERVICE_TOKEN=svc_apgtest_edge_inline_55555555555555555555; retry=true; status=401",
         "sess_1",
     )
-    assert log_line.startswith("SERVICE_TOKEN=<APG:v1:secret:")
+    assert log_line.startswith("SERVICE_TOKEN=<PF:v1:secret:")
     assert log_line.endswith("; retry=true; status=401")
     assert "svc_apgtest_edge_" not in log_line
 
@@ -126,7 +128,7 @@ def test_grep_path_delimiter_does_not_copy_secret_into_path_alias_or_audit_previ
     sanitized, events = redactor.sanitize_text(source, "sess_grep")
 
     assert secret not in sanitized
-    assert "SERVICE_TOKEN=<APG:v1:secret:" in sanitized
+    assert "SERVICE_TOKEN=<PF:v1:secret:" in sanitized
     assert all(secret not in str(event) for event in events)
     assert {event["subtype"] for event in events} == {"local_path", "env_assignment"}
 
@@ -235,7 +237,7 @@ def test_active_path_mapping_cached_until_mapping_changes(redactor, monkeypatch)
 
 def test_short_env_value_is_detected_but_not_merged_everywhere(redactor) -> None:
     assignment, events = redactor.sanitize_text("API_KEY=x", "sess_1")
-    assert assignment.startswith("API_KEY=<APG:v1:secret:")
+    assert assignment.startswith("API_KEY=<PF:v1:secret:")
     # The single `x` now exists as an active mapping. A second scan of text
     # that merely contains `x` inside another word must not re-protect it.
     text, events = redactor.sanitize_text("expand the next extra part", "sess_1")
@@ -251,7 +253,7 @@ def test_materialized_secret_is_reprotected_without_original_assignment_context(
     sanitized, events = redactor.sanitize_text(f"| observed value | `{materialized.split('=', 1)[1]}` |", "sess_1")
 
     assert raw not in sanitized
-    assert "<APG:v1:secret:" in sanitized
+    assert "<PF:v1:secret:" in sanitized
     assert any(event["detector"] == "known_value" for event in events)
 
 
@@ -364,7 +366,7 @@ def test_realistic_shell_fixtures_remain_usable_after_round_trip(redactor) -> No
     sanitized, events = redactor.sanitize_text(sensitive, "sess_shell_sensitive")
     assert len(events) == 7
     assert "SyntheticPass649" not in sanitized
-    assert 'ANTHROPIC_AUTH_TOKEN="<APG:v1:secret:' in sanitized
+    assert 'ANTHROPIC_AUTH_TOKEN="<PF:v1:secret:' in sanitized
     assert redactor.materialize_local_text(sanitized, "sess_shell_sensitive") == sensitive
 
 
@@ -616,3 +618,15 @@ def test_interleaved_placeholders_each_restore_independently(redactor) -> None:
     )
 
     assert restored == f"{first_raw} {second_raw} {first_raw}"
+
+
+def test_private_key_blocks_request_and_still_folds_on_response(redactor) -> None:
+    pem = "-----BEGIN OPENSSH PRIVATE KEY-----\nabc\n-----END OPENSSH PRIVATE KEY-----"
+    with pytest.raises(RequestBlockedError) as exc:
+        redactor.sanitize_text(pem, "sess_block")
+    assert exc.value.subtype == "private_key"
+    assert exc.value.reason_code == "block_private_key"
+
+    folded, events = redactor.sanitize_text(pem, "sess_block", scope="response")
+    assert "PRIVATE KEY" not in folded
+    assert any(event["action"] == "fold" for event in events)

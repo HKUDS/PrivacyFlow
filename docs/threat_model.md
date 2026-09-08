@@ -9,6 +9,7 @@
 - Fake placeholders in files, prompts, code blocks, JSON, or shell snippets
 - Some retry-loop behavior through stable non-retryable errors
 - Forged placeholders inside tool-call argument fields
+- Detector `block` findings in supported request text — the request is rejected with a non-retryable `PF_REQUEST_BLOCKED` error and is not forwarded
 
 ## Not Fully Protected
 
@@ -22,7 +23,6 @@
 - Local malware or compromised OS accounts
 - Tool calls that exfiltrate secrets via unsafe harness execution — PrivacyFlow materializes secrets into tool_call arguments by design (so the harness can execute authenticated tools transparently); the harness is responsible for approving/routing tool execution, domain allowlists, and unsafe-call protection.
 - Destructive file writes or redacted-view overwrites — those are harness/editor/VCS responsibilities, not PrivacyFlow responsibilities.
-- Findings whose detector action is `block` — the current policy replaces detected secrets but does not reject the whole upstream request.
 
 ## Premise
 

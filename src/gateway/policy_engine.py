@@ -27,6 +27,8 @@ class PolicyEngine:
         self.pii_mode = pii_mode
 
     def decision_for_detection(self, detection: Detection) -> PolicyDecision:
+        if detection.suggested_action == "block":
+            return PolicyDecision(False, "block", f"block_{detection.subtype}", retryable=False)
         if detection.type == "secret":
             return PolicyDecision(True, "redact", f"redact_{detection.subtype}", retryable=False)
         if detection.type == "pii":

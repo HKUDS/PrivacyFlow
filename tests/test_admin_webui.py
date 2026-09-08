@@ -1111,6 +1111,7 @@ def test_admin_can_configure_mapping_retention_with_revision_protection(tmp_path
             json={"enabled": False, "idle_ttl_seconds": 3600, "revision": 0},
         )
         assert conflict.status_code == 409
+        assert conflict.json()["detail"]["code"] == "MAPPING_RETENTION_CONFLICT"
 
         disabled = client.put(
             "/api/admin/protected-values/retention",
@@ -1347,10 +1348,19 @@ def test_detector_control_hot_reload_and_persistence(tmp_path) -> None:
             headers=_admin_headers(),
         )
         assert activated.status_code == 200
-        assert client.delete(
+        stale = client.put(
             f"/api/admin/detector-configurations/{configuration['id']}",
             headers=_admin_headers(),
-        ).status_code == 409
+            json={**configuration, "revision": configuration["revision"] - 1 if configuration["revision"] else 0},
+        )
+        assert stale.status_code == 409
+        assert stale.json()["detail"]["code"] == "DETECTOR_REVISION_STALE"
+        blocked = client.delete(
+            f"/api/admin/detector-configurations/{configuration['id']}",
+            headers=_admin_headers(),
+        )
+        assert blocked.status_code == 409
+        assert blocked.json()["detail"]["code"] == "DETECTOR_CONFIGURATION_IN_USE"
 
     state_path = tmp_path / "detector-control.json"
     assert state_path.exists()

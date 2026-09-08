@@ -88,6 +88,19 @@ def test_external_tool_requires_allowlist() -> None:
     assert "not_allowlisted" in (result.diagnostics[0].error or "")
 
 
+def test_allowlisted_external_tool_is_unavailable_not_silent() -> None:
+    flow = build_detector_flow(
+        {
+            "allow_external_tools": ["gitleaks"],
+            "flow": {"modules": [{"id": "gitleaks", "type": "external_tool", "tool": "gitleaks"}]},
+        }
+    )
+    result = flow.scan_block(SourceBlock.from_text("sk-proj-abcdefghijklmnopqrstuvwxyz123456"))
+    assert result.findings == []
+    assert result.diagnostics[0].status == "unavailable"
+    assert result.diagnostics[0].error == "external_tool_unavailable"
+
+
 def test_hf_token_classification_adapter_with_mock(monkeypatch) -> None:
     def fake_pipeline(**_kwargs):
         def run(_text: str):

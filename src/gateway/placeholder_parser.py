@@ -7,6 +7,8 @@ import time
 from dataclasses import dataclass
 from hashlib import sha256
 
+from gateway.compat import normalize_namespace
+
 PLACEHOLDER_RE = re.compile(
     r"<(?P<namespace>PF|APG):v1:(?P<kind>[a-z_]+):(?P<handle>[^:<>]+):"
     r"(?P<session>[^:<>]+):(?P<issued>\d{1,15}):(?P<mac>[A-Za-z0-9_-]+)>"
@@ -51,11 +53,11 @@ class ParsedPlaceholder:
 
 
 class PlaceholderSigner:
-    def __init__(self, secret: str, workspace_id: str = "default", policy_hash: str = "default", namespace: str = "APG") -> None:
+    def __init__(self, secret: str, workspace_id: str = "default", policy_hash: str = "default", namespace: str = "PF") -> None:
         self.secret = secret.encode("utf-8")
         self.workspace_id = workspace_id
         self.policy_hash = policy_hash
-        self.namespace = namespace if namespace in {"PF", "APG"} else "APG"
+        self.namespace = normalize_namespace(namespace)
 
     def issue(self, kind: str, handle_id: str, session_id: str, issued_at: int | None = None) -> str:
         # Prevent colon injection: fields must not contain ':' which is the MAC body delimiter

@@ -146,5 +146,5 @@ def test_incomplete_example_is_not_exempt_from_fail_closed_streaming(redactor) -
     scanner.feed(APG_PLACEHOLDER_FORMAT_EXAMPLE[:-1])
     output, events = scanner.flush()
 
-    assert output == "APG-managed protected value"
+    assert output == "PrivacyFlow-managed protected value"
     assert events[-1]["subtype"] == "incomplete_stream_candidate"

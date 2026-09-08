@@ -15,6 +15,7 @@ from gateway.mapping_store import MappingRecord, MappingStore
 from gateway.materialization_engine import MaterializationEngine
 from gateway.models import Detection
 from gateway.path_alias_manager import PathAliasManager
+from gateway.compat import normalize_namespace
 from gateway.placeholder_parser import PLACEHOLDER_RE, ParsedPlaceholder, PlaceholderSigner
 from gateway.policy_engine import PolicyEngine
 
@@ -87,6 +88,17 @@ class StreamProtocolError(ValueError):
     pass
 
 
+class RequestBlockedError(RuntimeError):
+    """Raised when a detector `block` finding must not leave the device."""
+
+    def __init__(self, *, subtype: str, detector: str, reason_code: str, risk: str = "") -> None:
+        super().__init__(reason_code)
+        self.subtype = subtype
+        self.detector = detector
+        self.reason_code = reason_code
+        self.risk = risk
+
+
 class ToolArgumentsJSONError(StreamProtocolError):
     def __init__(self, reason_code: str) -> None:
         super().__init__(reason_code)
@@ -156,7 +168,7 @@ async def iter_sse_data(chunks: AsyncIterator[bytes]) -> AsyncIterator[str]:
 
 @dataclass
 class StreamAuditSummary:
-    namespace: str = "APG"
+    namespace: str = "PF"
     folded: int = 0
     materialized: int = 0
     failures: Counter[str] = field(default_factory=Counter)
@@ -513,7 +525,7 @@ class RedactionEngine:
         self.detector_manager = detector_manager
         self.mapping_store = mapping_store
         self.signer = signer
-        self.namespace = getattr(signer, "namespace", getattr(mapping_store, "namespace", "APG"))
+        self.namespace = normalize_namespace(getattr(signer, "namespace", getattr(mapping_store, "namespace", None)))
         self.protected_value = "PrivacyFlow-managed protected value" if self.namespace == "PF" else "APG-managed protected value"
         self.policy = policy
         self.workspace_id = workspace_id
@@ -632,6 +644,13 @@ class RedactionEngine:
             out.append(text[cursor:det.span_start])
             raw = text[det.span_start:det.span_end]
             decision = self.policy.decision_for_detection(det)
+            if decision.action == "block" and scope != "response":
+                raise RequestBlockedError(
+                    subtype=det.subtype,
+                    detector=det.detector_name,
+                    reason_code=decision.reason_code,
+                    risk=det.risk,
+                )
             if det.type == "pii" and decision.action == "allow":
                 # pii_mode == "allow" (development only): pass PII through unchanged.
                 out.append(raw)

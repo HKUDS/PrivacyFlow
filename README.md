@@ -319,8 +319,9 @@ into another protocol.
 Risk levels are audit metadata. They do not change how protected data is
 replaced; enforcement remains in the policy, mapping, placeholder, and
 materialization layers. A detector finding whose suggested action is `block`
-is currently replaced like other secret findings; it does not reject the whole
-upstream request.
+rejects the complete upstream request with a non-retryable `PF_REQUEST_BLOCKED`
+error. Downlink responses still fold such values instead of forwarding them as
+placeholders.
 
 ### Control and observability
 
@@ -441,7 +442,9 @@ The main branch keeps the standard regression suite:
 | Layer | Purpose | Command or evidence |
 | --- | --- | --- |
 | Unit and API regression | Proxy, detector, mapping, stream, UI, and security behavior | `pytest -m 'not integration'` |
+| Deterministic E2E harness | Scenario fixtures, leak assertions, and report generation | `pytest e2e_agent_tests/tests/test_e2e_harness.py` |
 | Networked local-model integration | Isolated runtime download and real Worker inference | `PF_RUN_LOCAL_MODEL_INTEGRATION=1 pytest -m integration tests/test_local_models_integration.py` |
+| Historical live-agent evidence | Real Claude Code / OpenCode matrices (APG-era artifacts) | [`docs/live_validation_results.md`](docs/live_validation_results.md) |
 
 ## 📚 Documentation
 

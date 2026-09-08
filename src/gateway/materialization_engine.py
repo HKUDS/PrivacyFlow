@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from gateway.compat import normalize_namespace
 from gateway.mapping_store import MappingStore
 from gateway.models import MaterializationResult
 from gateway.path_alias_manager import PathAliasManager
@@ -16,11 +17,11 @@ class MaterializationEngine:
         self.path_aliases = PathAliasManager()
 
     def _code(self, suffix: str) -> str:
-        namespace = getattr(self.signer, "namespace", getattr(self.store, "namespace", "APG"))
+        namespace = normalize_namespace(getattr(self.signer, "namespace", getattr(self.store, "namespace", None)))
         return f"{namespace}_{suffix}"
 
     def _normalize_code(self, code: str) -> str:
-        namespace = getattr(self.signer, "namespace", getattr(self.store, "namespace", "APG"))
+        namespace = normalize_namespace(getattr(self.signer, "namespace", getattr(self.store, "namespace", None)))
         for other in ("PF", "APG"):
             if other != namespace and code.startswith(f"{other}_"):
                 return f"{namespace}_{code[len(other) + 1:]}"

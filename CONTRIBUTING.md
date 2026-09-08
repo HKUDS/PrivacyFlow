@@ -34,10 +34,12 @@ PF_RUN_LOCAL_MODEL_INTEGRATION=1 pytest -m integration \
   tests/test_local_models_integration.py
 ```
 
-The deterministic E2E harness and live Agent matrix are maintained on the
-`dev` branch. Real Agent tests consume external provider capacity and must not
-run in ordinary CI. Keep raw artifacts outside the repository and commit only
-evidence that has passed the leak assertions and been sanitized.
+The deterministic E2E harness lives on the default branch and runs in CI.
+Real Agent matrices consume external provider capacity and must not run in
+ordinary CI. Keep raw artifacts outside the repository and commit only
+evidence that has passed the leak assertions and been sanitized. The latest
+committed live-agent results remain APG-era; a PrivacyFlow-namespaced live
+matrix has not been checked in yet.
 
 ## Pull requests
 

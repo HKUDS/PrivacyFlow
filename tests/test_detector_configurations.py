@@ -123,14 +123,16 @@ def test_copy_edit_activate_and_atomic_revision(tmp_path) -> None:
     assert [module["id"] for module in saved["modules"]] == ["entropy", "credentials"]
     assert saved["revision"] == 2
 
-    with pytest.raises(DetectorConfigurationConflict):
+    with pytest.raises(DetectorConfigurationConflict) as conflict:
         detector_control.save_configuration(created["id"], created)
+    assert conflict.value.code == "DETECTOR_REVISION_STALE"
 
     detector_control.activate_configuration(created["id"])
     assert detector_control.catalog()["active_configuration_id"] == created["id"]
     assert applied[-1].hierarchical.flow.preset == created["id"]
-    with pytest.raises(DetectorConfigurationConflict):
+    with pytest.raises(DetectorConfigurationConflict) as conflict:
         detector_control.delete_configuration(created["id"])
+    assert conflict.value.code == "DETECTOR_CONFIGURATION_IN_USE"
 
 
 def test_template_module_switch_persists_and_hot_applies(tmp_path) -> None:

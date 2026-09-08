@@ -56,7 +56,7 @@ validation, emails, phones, PF markers, and high-confidence local paths. Local
 model artifacts can be inspected, prepared, validated, and selected by an optional
 local-model detector module through the WebUI.
 
-All detector outputs are normalized into `Finding` records. The aggregator merges overlapping evidence, raises risk when multiple weak signals agree, and keeps hard deterministic matches critical. Risk and detector `suggested_action` values are evidence and audit metadata. The current `PolicyEngine` replaces every detected secret, including findings marked `block`; it does not reject the complete upstream request on that action.
+All detector outputs are normalized into `Finding` records. The aggregator merges overlapping evidence, raises risk when multiple weak signals agree, and keeps hard deterministic matches critical. Risk values remain audit metadata. A detector `suggested_action` of `block` rejects the complete upstream request with a non-retryable `PF_REQUEST_BLOCKED` error so the value never leaves the device. Downlink scanning still folds such values in local response text rather than restoring them as placeholders.
 
 Known limits remain: unknown secret formats can be missed, PII is context-dependent,
 false positives are unavoidable, and semantic privacy leakage cannot be solved by

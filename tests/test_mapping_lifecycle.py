@@ -158,7 +158,7 @@ def test_unsupported_mapping_database_schema_is_rejected(tmp_path) -> None:
             "INSERT INTO mappings VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             ("secr_old", "sess", "ws", "session", "secret", "api_key", "secret-value", "fp", 1, 1, 2, 3, "active", "default", "secret"),
         )
-    with pytest.raises(RuntimeError, match="Unsupported APG mapping database schema"):
+    with pytest.raises(RuntimeError, match="Unsupported PrivacyFlow mapping database schema"):
         MappingStore(str(database))
 
 
@@ -168,7 +168,7 @@ def test_request_scoped_mapping_expires(components) -> None:
     time.sleep(1)
     ok, _, code = store.validate_active(rec.handle_id, "sess", "ws")
     assert not ok
-    assert code == "APG_PLACEHOLDER_EXPIRED"
+    assert code == "PF_PLACEHOLDER_EXPIRED"
 
 
 def test_session_pseudonym_stable_within_ttl(components) -> None:
@@ -184,7 +184,7 @@ def test_expired_placeholder_returns_unresolved_not_guessed(components) -> None:
     time.sleep(1)
     ok, _, code = store.validate_active(rec.handle_id, "sess", "ws")
     assert not ok
-    assert code == "APG_PLACEHOLDER_EXPIRED"
+    assert code == "PF_PLACEHOLDER_EXPIRED"
 
 
 def test_tombstone_error_retryable_false(components) -> None:
@@ -195,7 +195,7 @@ def test_tombstone_error_retryable_false(components) -> None:
     store.tombstone(rec.handle_id)
     ph = signer.parse(signer.issue("pii", rec.handle_id, "sess"))[0]
     result = MaterializationEngine(store, signer, policy, "ws").materialize_placeholder(ph, session_id="sess", sink_type="local_user")
-    assert result.error_code == "APG_PLACEHOLDER_TOMBSTONED"
+    assert result.error_code == "PF_PLACEHOLDER_TOMBSTONED"
     assert result.retryable is False
 
 

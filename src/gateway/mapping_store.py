@@ -10,6 +10,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from gateway.compat import normalize_namespace
+
 
 @dataclass(frozen=True)
 class MappingRecord:
@@ -41,7 +43,7 @@ class MappingRetentionPolicy:
 
 
 class MappingRetentionConflictError(RuntimeError):
-    pass
+    code = "MAPPING_RETENTION_CONFLICT"
 
 
 @dataclass(frozen=True)
@@ -71,9 +73,9 @@ class AuditOperationRecord:
 
 
 class MappingStore:
-    def __init__(self, path: str, namespace: str = "APG") -> None:
+    def __init__(self, path: str, namespace: str = "PF") -> None:
         self.path = path
-        self.namespace = namespace if namespace in {"PF", "APG"} else "APG"
+        self.namespace = normalize_namespace(namespace)
         Path(path).parent.mkdir(parents=True, exist_ok=True)
         self.conn = sqlite3.connect(path, check_same_thread=False)
         self._lock = threading.RLock()

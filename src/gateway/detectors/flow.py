@@ -13,6 +13,7 @@ from gateway.detectors.external.detect_secrets_plugin import DetectSecretsPlugin
 from gateway.detectors.external.gitleaks_plugin import GitleaksPlugin
 from gateway.detectors.external.presidio_plugin import PresidioPlugin
 from gateway.detectors.external.trufflehog_plugin import TruffleHogPlugin
+from gateway.detectors.external.unavailable import ExternalToolUnavailable
 from gateway.detectors.findings import Finding, SourceBlock
 from gateway.detectors.heuristic.entropy import EntropyContextDetector
 from gateway.detectors.model_adapters import GLiNERDetector, HFTokenClassificationDetector
@@ -231,7 +232,7 @@ class DetectorFlow:
         if module.config_error:
             if not module.fail_open:
                 raise RuntimeError(module.config_error)
-            status = "unavailable" if module.config_error == "module_not_available" else "error"
+            status = "unavailable" if module.config_error in {"module_not_available", "external_tool_unavailable"} else "error"
             return [], ModuleDiagnostic(module.id, module.type, True, status=status, error=module.config_error)
         if module.detector is None:
             return [], ModuleDiagnostic(module.id, module.type, True, status="unavailable", error="module_not_available")
@@ -265,6 +266,18 @@ class DetectorFlow:
                 raise
             elapsed_ms = (time.perf_counter() - start) * 1000
             return [], ModuleDiagnostic(module.id, module.type, True, elapsed_ms, status="timeout", error="module_timeout")
+        except ExternalToolUnavailable:
+            elapsed_ms = (time.perf_counter() - start) * 1000
+            if not module.fail_open:
+                raise
+            return [], ModuleDiagnostic(
+                module.id,
+                module.type,
+                True,
+                elapsed_ms,
+                status="unavailable",
+                error="external_tool_unavailable",
+            )
         except Exception as exc:
             if not module.fail_open:
                 raise
@@ -468,6 +481,17 @@ def _module_from_config(module: dict[str, Any], root_config: dict[str, Any]) -> 
         detector = _detector_from_config(module_id, module_type, module, root_config)
         executor_timeout_ms = None if module_type in {"regex_rules", "rule_validator"} else timeout_ms
         return FlowModule(module_id, module_type, detector, enabled, executor_timeout_ms, fail_open, stream_safe=stream_safe)
+    except ExternalToolUnavailable:
+        return FlowModule(
+            module_id,
+            module_type,
+            None,
+            enabled,
+            timeout_ms,
+            fail_open,
+            "external_tool_unavailable",
+            stream_safe,
+        )
     except Exception as exc:
         return FlowModule(module_id, module_type, None, enabled, timeout_ms, fail_open, f"{exc.__class__.__name__}: {exc}", stream_safe)
 
@@ -550,10 +574,9 @@ def _detector_from_config(module_id: str, module_type: str, module: dict[str, An
         allowlist = set(root_config.get("allow_external_tools", []))
         if name not in allowlist:
             raise ValueError("external_tool_not_allowlisted")
-        cls = BUILTIN_EXTERNALS.get(name)
-        if cls is None:
+        if name not in BUILTIN_EXTERNALS:
             raise ValueError("unknown_external_tool")
-        return cls()
+        raise ExternalToolUnavailable(name)
     if module_type == "python_plugin":
         import_path = str(module.get("import_path", ""))
         allowlist = set(root_config.get("allow_python_plugins", []))

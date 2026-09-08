@@ -149,8 +149,8 @@ def test_cross_session_placeholder_in_user_visible_text_fails_closed(redactor) -
 
     assert "sk-proj-" not in content
     assert placeholder not in content
-    assert content == "APG-managed protected value"
-    assert any(event.get("result_code") == "APG_PLACEHOLDER_SCOPE_MISMATCH" for event in events)
+    assert content == "PrivacyFlow-managed protected value"
+    assert any(event.get("result_code") == "PF_PLACEHOLDER_SCOPE_MISMATCH" for event in events)
 
 
 def test_materialization_events_cover_cross_session_and_expired_handles(redactor, components) -> None:
@@ -159,7 +159,7 @@ def test_materialization_events_cover_cross_session_and_expired_handles(redactor
     value, events = redactor.materialize_local_text_with_events(placeholder, "sess_b")
     assert value == placeholder
     assert events[-1]["action"] == "preserve"
-    assert events[-1]["result_code"] == "APG_PLACEHOLDER_SCOPE_MISMATCH"
+    assert events[-1]["result_code"] == "PF_PLACEHOLDER_SCOPE_MISMATCH"
     assert "handle" not in events[-1]
     assert events[-1]["_audit_operation"]["direction"] == "materialization_failed"
     assert events[-1]["_audit_operation"]["placeholder_session_id"] == "sess_a"
@@ -180,7 +180,7 @@ def test_materialization_events_cover_cross_session_and_expired_handles(redactor
     expired_redactor = RedactionEngine(DetectorManager(), store, signer, policy, "ws")
     value, events = expired_redactor.materialize_local_text_with_events(expired, "sess_expired")
     assert value == expired
-    assert events[-1]["result_code"] == "APG_PLACEHOLDER_EXPIRED"
+    assert events[-1]["result_code"] == "PF_PLACEHOLDER_EXPIRED"
     assert events[-1]["_audit_operation"]["direction"] == "materialization_failed"
 
 

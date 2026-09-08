@@ -49,7 +49,7 @@ class ToolArgEchoUpstream:
         self.calls.append((method, path, payload))
         text = json.dumps(payload)
         match = PLACEHOLDER_RE.search(text)
-        placeholder = match.group(0) if match else "<APG:v1:secret:missing:sess_missing:1:missing>"
+        placeholder = match.group(0) if match else "<PF:v1:secret:missing:sess_missing:1:missing>"
 
         async def chunks():
             yield (
@@ -96,7 +96,7 @@ def test_balanced_scanner_handles_every_placeholder_and_secret_split(redactor) -
     local_value = "howard@example.com"
     secret = "sk-proj-abcdefghijklmnopqrstuvwxyz0"
     placeholder, _ = redactor.sanitize_text(local_value, session_id)
-    assert placeholder.startswith("<APG:v1:")
+    assert placeholder.startswith("<PF:v1:")
 
     for value in (placeholder, secret):
         for split in range(1, len(value)):
@@ -105,13 +105,14 @@ def test_balanced_scanner_handles_every_placeholder_and_secret_split(redactor) -
             second, _ = scanner.feed(value[split:] + " now")
             tail, _ = scanner.flush()
             output = first + second + tail
+            assert "<PF" not in output
             assert "<APG" not in output
             if value == placeholder:
                 assert local_value in output
                 assert PROTECTED_VALUE not in output
             else:
                 assert secret not in output
-    assert "APG-managed protected value" in output
+    assert "PrivacyFlow-managed protected value" in output
 
 
 def test_balanced_scanner_does_not_hide_an_unclassified_value_only_because_it_was_seen(redactor) -> None:
@@ -141,13 +142,13 @@ def test_balanced_scanner_folds_incomplete_and_oversized_candidates(redactor) ->
     scanner = BalancedStreamScanner(redactor, "sess_stream")
     output, events = scanner.feed("<APG:v1:secret:" + "x" * 5000)
     tail, tail_events = scanner.flush()
-    assert output + tail == "APG-managed protected value"
+    assert output + tail == "PrivacyFlow-managed protected value"
     assert any(event["subtype"] == "stream_pending_limit" for event in [*events, *tail_events])
 
     scanner = BalancedStreamScanner(redactor, "sess_stream")
     scanner.feed("-----BEGIN PRIVATE KEY-----\nnot-finished")
     output, events = scanner.flush()
-    assert output == "APG-managed protected value"
+    assert output == "PrivacyFlow-managed protected value"
     assert events[-1]["subtype"] == "incomplete_stream_candidate"
 
 
@@ -175,7 +176,7 @@ def test_custom_detector_uses_strict_buffer_and_caps_text_block(tmp_path) -> Non
     scanner = BalancedStreamScanner(redactor, "sess")
     assert scanner.strict is True
     output, events = scanner.feed("a" * (STREAM_TEXT_MAX_STRICT_BLOCK + 1))
-    assert output == "APG-managed protected value"
+    assert output == "PrivacyFlow-managed protected value"
     assert events[-1]["subtype"] == "stream_strict_limit"
     assert scanner.flush() == ("", [])
 

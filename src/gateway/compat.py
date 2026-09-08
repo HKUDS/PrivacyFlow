@@ -20,6 +20,16 @@ from typing import Any
 LEGACY_COMPATIBILITY = True
 CANONICAL_STATE_DIR = ".privacyflow"
 LEGACY_STATE_DIR = ".apg"
+CANONICAL_NAMESPACE = "PF"
+LEGACY_NAMESPACE = "APG"
+SUPPORTED_NAMESPACES = {CANONICAL_NAMESPACE, LEGACY_NAMESPACE}
+
+
+def normalize_namespace(namespace: str | None) -> str:
+    """Return PF unless the caller explicitly requested the APG migration namespace."""
+
+    return namespace if namespace in SUPPORTED_NAMESPACES else CANONICAL_NAMESPACE
+
 
 _warned_legacy_names: set[str] = set()
 

@@ -101,6 +101,14 @@ const BACKEND_ERROR_MESSAGES = {
   UPSTREAM_MODELS_FAILED: "获取上游模型列表失败。",
   UPSTREAM_TEST_FAILED: "上游连接测试失败。",
   PF_ADMIN_LOCAL_ONLY: "PrivacyFlow 管理面板只能通过 loopback 连接访问。",
+  DETECTOR_REVISION_STALE: "检测器配置已被更新，请刷新后重试。",
+  DETECTOR_CONFIGURATION_IN_USE: "请先启用其他配置，再删除当前配置。",
+  DETECTOR_CONFIGURATION_NOT_FOUND: "找不到该检测器配置。",
+  DETECTOR_CONFIGURATION_CONFLICT: "检测器配置冲突，请刷新后重试。",
+  DETECTOR_CONFIGURATION_UNAVAILABLE: "没有可用的检测器配置，无法开启保护。",
+  DETECTOR_CONTROL_INVALID: "检测器配置无效。",
+  MAPPING_RETENTION_CONFLICT: "保留策略已被更新，请刷新后重试。",
+  MAPPING_RETENTION_INVALID: "保留策略无效。",
 };
 const ERROR_FALLBACK_MESSAGES = {
   request: "请求失败",
@@ -2664,6 +2672,7 @@ function toast(message, error = false) {
 function inferErrorContext(error) {
   const code = String(error?.code || "").toUpperCase();
   if (code.startsWith("CONNECTOR_") || code.startsWith("PF_MIGRATION_")) return "connector";
+  if (code.startsWith("DETECTOR_") || code.startsWith("MAPPING_RETENTION")) return "detector";
   if (code.startsWith("LOCAL_") || code.startsWith("MODEL_") || code.startsWith("RUNTIME_") || code.startsWith("WORKER_") || code.startsWith("DOWNLOAD_") || code.startsWith("COMMAND_") || code.startsWith("CUDA_") || code.startsWith("DEVICE_") || code.startsWith("JOB_") || code === "NO_MODELS" || code === "DEPENDENCIES_MISSING" || code === "CACHE_PATH_INVALID") return "localModel";
   if (code.startsWith("PF_UPSTREAM_") || code.startsWith("UPSTREAM_")) return "upstream";
   return "request";

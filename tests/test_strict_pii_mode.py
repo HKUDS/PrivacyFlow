@@ -70,7 +70,7 @@ def test_pii_mode_pseudonymize_uses_signed_placeholder_and_restores_locally(tmp_
     signer = PlaceholderSigner("s", "ws")
     red = RedactionEngine(DetectorManager(), store, signer, pol, "ws")
     out, ev = red.sanitize_text("contact me at alice@example.com please", session_id="sess")
-    assert "<APG:v1:pii:" in out
+    assert "<PF:v1:pii:" in out
     assert "alice@example.com" not in out
     assert ev and ev[0]["action"] == "pseudonymize"
     local, local_events = red.scan_local_text(out, "sess")
@@ -98,14 +98,14 @@ def test_pii_mode_redact_treats_pii_as_secret(tmp_path) -> None:
     red = RedactionEngine(DetectorManager(), store, signer, pol, "ws")
     out, ev = red.sanitize_text("contact alice@example.com", session_id="sess")
     # Redacted PII uses the same signed secret track as credentials.
-    assert "<APG:v1:secret:" in out
+    assert "<PF:v1:secret:" in out
     assert "alice@example.com" not in out
     assert ev and ev[0]["action"] == "redact"
     # Stored mapping kind is "secret", so it can be restored only at local
     # user/tool sinks and never into upstream traffic.
     import re
 
-    placeholder = re.search(r"<APG:v1:secret:(?P<handle>[^:]+):", out).group("handle")
+    placeholder = re.search(r"<PF:v1:secret:(?P<handle>[^:]+):", out).group("handle")
     rec = store.get(placeholder)
     assert rec.kind == "secret" and rec.materialization_class == "secret"
 
