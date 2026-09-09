@@ -52,9 +52,15 @@ to content-bearing prompt and response fields.
 The built-in rules cover PEM private keys, JWTs, database URLs, bearer
 tokens, `.env` sensitive assignments, provider-like tokens, cookies/session IDs,
 IP-hosted access links, credential-pair passwords, credit cards with Luhn
-validation, emails, phones, PF markers, and high-confidence local paths. Local
-model artifacts can be inspected, prepared, validated, and selected by an optional
-local-model detector module through the WebUI.
+validation, emails, phones, PF markers, and high-confidence local paths. A
+workspace-level exact-string watchlist can register additional values; those
+entries are injected after the PF-marker core guard, apply to every
+configuration, and match `re.escape` literals rather than user-authored regular
+expressions. The default action is redact, and the streaming response scanner
+holds back an in-progress literal prefix so values longer than the base
+streaming tail cannot be emitted piecewise. Local model artifacts can be
+inspected, prepared, validated, and selected by an optional local-model detector
+module through the WebUI.
 
 All detector outputs are normalized into `Finding` records. The aggregator merges overlapping evidence, raises risk when multiple weak signals agree, and keeps hard deterministic matches critical. Risk values remain audit metadata. A detector `suggested_action` of `block` rejects the complete upstream request with a non-retryable `PF_REQUEST_BLOCKED` error so the value never leaves the device. Downlink scanning still folds such values in local response text rather than restoring them as placeholders.
 

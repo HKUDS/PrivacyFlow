@@ -2554,6 +2554,28 @@ def create_app(config: GatewayConfig | None = None, upstream_client: UpstreamCli
         ) -> Response:
             return JSONResponse(admin.purge_expired(), headers={"Cache-Control": "no-store"})
 
+        @app.get("/api/admin/custom-literals")
+        async def admin_custom_literals() -> Response:
+            return JSONResponse(detector_control.custom_literals(), headers={"Cache-Control": "no-store"})
+
+        @app.put("/api/admin/custom-literals")
+        async def admin_replace_custom_literals(request: Request) -> Response:
+            try:
+                result = detector_control.replace_custom_literals(await admin_body(request))
+            except DetectorControlError as exc:
+                raise _detector_control_http_error(exc) from exc
+            audit.log(
+                {
+                    "phase": "admin_action",
+                    "action": "replace_custom_literals",
+                    "revision": result["revision"],
+                    "literal_count": len(result["literals"]),
+                    "literal_ids": [item["id"] for item in result["literals"]],
+                    "result_code": "OK",
+                }
+            )
+            return JSONResponse(result, headers={"Cache-Control": "no-store"})
+
         @app.get("/api/admin/detector-configurations")
         async def admin_detector_configurations() -> Response:
             return JSONResponse(detector_control.catalog(), headers={"Cache-Control": "no-store"})

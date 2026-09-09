@@ -83,7 +83,9 @@ cover credentials and keys, personal information, the local development
 environment, and comprehensive protection. Templates are read-only; **Copy and
 edit** creates an independent user configuration, while template module switches
 can be adjusted directly. YAML deployment templates remain entirely read-only,
-including their module switches.
+including their module switches. A separate **Always protect these values**
+section at the top of the page is workspace-wide: it is not bound to the selected
+configuration, and switching pipelines does not drop it.
 
 A user configuration has a name, description, total timeout, and ordered module
 list. It can be copied, renamed, activated, or deleted while inactive. Modules can
@@ -103,7 +105,14 @@ and safe diagnostics; test text and detector patterns are not written to audit
 records.
 
 Configurations are revisioned and stored in `detector-control.json` beside the
-mapping database with mode `0600`. Saving an active configuration builds and
+mapping database with mode `0600`. The same file holds a workspace-level exact-string
+watchlist that is injected after the PF-marker core guard and applies to every
+configuration, including built-in templates. Watchlist entries are matched as
+literal strings (`re.escape`); they are never compiled as user regular expressions.
+The default action is redact. The loopback management API returns the plaintext
+values and a normalized `match_text` so the WebUI can edit them and detect
+duplicates after Unicode normalization; audit records store only counts and ids. Saving
+an active configuration builds and
 validates the replacement before an atomic persistence and runtime swap, so a
 failed build keeps the previous flow active. Valid legacy custom configurations
 are preserved during `privacyflow migrate`; malformed or unsupported state falls

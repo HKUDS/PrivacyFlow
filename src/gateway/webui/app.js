@@ -107,6 +107,11 @@ const BACKEND_ERROR_MESSAGES = {
   DETECTOR_CONFIGURATION_CONFLICT: "检测器配置冲突，请刷新后重试。",
   DETECTOR_CONFIGURATION_UNAVAILABLE: "没有可用的检测器配置，无法开启保护。",
   DETECTOR_CONTROL_INVALID: "检测器配置无效。",
+  CUSTOM_LITERAL_REVISION_STALE: "观察名单已被更新，请刷新后重试。",
+  CUSTOM_LITERAL_TOO_SHORT: "短于 8 个字符的值需要确认后再加入。",
+  CUSTOM_LITERAL_TOO_LONG: "单个保护值不能超过 512 个字符。",
+  CUSTOM_LITERAL_LIMIT: "观察名单最多保存 64 条。",
+  CUSTOM_LITERAL_INVALID: "观察名单条目无效。",
   MAPPING_RETENTION_CONFLICT: "保留策略已被更新，请刷新后重试。",
   MAPPING_RETENTION_INVALID: "保留策略无效。",
 };
@@ -138,6 +143,7 @@ const state = {
   detectorCatalog: null,
   detectorConfiguration: null,
   detectorDraft: null,
+  customLiterals: null,
   editingModuleIndex: null,
   moduleDraft: null,
   moduleDraftSourceName: "",
@@ -311,6 +317,7 @@ function bindActions() {
     $("#" + id).addEventListener("input", updateConfigurationFields);
   }
   $("#run-detection").addEventListener("click", runDetection);
+  $("#custom-literals-form").addEventListener("submit", addCustomLiteral);
   $("#manual-model-form").addEventListener("submit", addManualLocalModel);
   $("#prepare-all-models").addEventListener("click", () => prepareLocalModels([], ["inspect", "runtime", "download", "verify"]));
   $("#local-model-list").addEventListener("click", handleLocalModelAction);
@@ -1863,8 +1870,14 @@ async function purgeExpired() {
 }
 
 async function loadDetectors() {
-  state.detectorCatalog = await api("/detector-configurations");
+  const [catalog, literals] = await Promise.all([
+    api("/detector-configurations"),
+    api("/custom-literals"),
+  ]);
+  state.detectorCatalog = catalog;
+  state.customLiterals = literals;
   renderConfigurationOptions();
+  renderCustomLiterals();
   const activeId = state.detectorCatalog.active_configuration_id;
   await loadDetectorConfiguration(activeId);
   state.loaded.add("detectors");
@@ -1875,6 +1888,85 @@ function renderConfigurationOptions() {
   const options = (items) => items.map((item) => `<option value="${escapeHtml(item.id)}">${escapeHtml(uiText(item.name))}${item.is_active ? ` · ${escapeHtml(uiText("当前启用"))}` : ""}</option>`).join("");
   select.innerHTML = `<optgroup label="${escapeHtml(uiText("内置与部署模板"))}">${options(state.detectorCatalog.templates)}</optgroup><optgroup label="${escapeHtml(uiText("用户配置"))}">${options(state.detectorCatalog.configurations)}</optgroup>`;
   if (state.detectorConfiguration) select.value = state.detectorConfiguration.id;
+}
+
+function renderCustomLiterals() {
+  const list = $("#custom-literals-list");
+  const error = $("#custom-literals-error");
+  if (error) error.textContent = "";
+  const literals = state.customLiterals?.literals || [];
+  if (!literals.length) {
+    list.innerHTML = `<p class="muted">${escapeHtml(uiText("还没有自定义保护值。加入后，第一次请求就会替换。"))}</p>`;
+    return;
+  }
+  list.innerHTML = literals.map((item) => `<div class="custom-literal-chip"><code class="mono">${escapeHtml(item.value)}</code><button class="secondary-button icon-action-button danger-text" type="button" data-literal-id="${escapeHtml(item.id)}" aria-label="${escapeHtml(uiText("移出观察名单"))}" title="${escapeHtml(uiText("移出观察名单"))}">${iconMarkup("trash-2")}</button></div>`).join("");
+  $$("[data-literal-id]", list).forEach((button) => button.addEventListener("click", () => removeCustomLiteral(button.dataset.literalId)));
+  renderIcons(list);
+}
+
+function customLiteralValues() {
+  return (state.customLiterals?.literals || []).map((item) => item.value);
+}
+
+function customLiteralMatchText(value) {
+  return Array.from(String(value || "").normalize("NFKC")).filter((character) => !"\u200b\u200c\u200d\ufeff".includes(character)).join("");
+}
+
+function customLiteralAlreadyListed(value) {
+  const matchText = customLiteralMatchText(value);
+  return (state.customLiterals?.literals || []).some((item) => (item.match_text || customLiteralMatchText(item.value)) === matchText);
+}
+
+async function addCustomLiteral(event) {
+  event.preventDefault();
+  const input = $("#custom-literal-input");
+  const trimmed = String(input.value || "").trim();
+  if (!trimmed) return toast("请输入要保护的值", true);
+  if (customLiteralAlreadyListed(trimmed)) {
+    input.value = "";
+    return toast("该值已在观察名单中");
+  }
+  const existing = customLiteralValues();
+  const minLength = Number(state.customLiterals?.min_length || 8);
+  if (trimmed.length < minLength) {
+    return confirmAction(
+      "确认加入短值",
+      "这个值短于 8 个字符，误屏蔽常见短词的风险更高。仍要加入观察名单吗？",
+      () => saveCustomLiterals([...existing, trimmed], {confirmShort: true, clearInput: true, added: true}),
+    );
+  }
+  await saveCustomLiterals([...existing, trimmed], {clearInput: true, added: true});
+}
+
+async function removeCustomLiteral(literalId) {
+  const remaining = (state.customLiterals?.literals || []).filter((item) => item.id !== literalId).map((item) => item.value);
+  await saveCustomLiterals(remaining);
+}
+
+async function saveCustomLiterals(values, {confirmShort = false, clearInput = false, added = false} = {}) {
+  const error = $("#custom-literals-error");
+  error.textContent = "";
+  const previousRevision = state.customLiterals?.revision || 0;
+  try {
+    state.customLiterals = await api("/custom-literals", {
+      method: "PUT",
+      body: JSON.stringify({
+        revision: state.customLiterals?.revision || 0,
+        literals: values,
+        confirm_short: confirmShort,
+      }),
+    });
+    if (clearInput) $("#custom-literal-input").value = "";
+    renderCustomLiterals();
+    toast(added && state.customLiterals.revision === previousRevision ? "该值已在观察名单中" : "观察名单已更新");
+  } catch (errorValue) {
+    if (errorValue.code === "CUSTOM_LITERAL_REVISION_STALE") {
+      try { state.customLiterals = await api("/custom-literals"); } catch (_) {}
+      renderCustomLiterals();
+    }
+    error.textContent = localizedBackendError(errorValue, "detector");
+    handleError(errorValue, "detector");
+  }
 }
 
 async function loadDetectorConfiguration(configurationId) {
@@ -2364,7 +2456,12 @@ function applyModuleDraft(event) {
 
 function renderDetectionDiagnostics(diagnostics) {
   const visibleDiagnostics = diagnostics.filter((item) => item.id !== "pf_core");
-  $("#detection-diagnostics").innerHTML = visibleDiagnostics.length ? `<div class="diagnostic-heading"><p class="section-kicker">EXECUTION TRACE</p><span>${escapeHtml(uiText(`${visibleDiagnostics.length} 个步骤`))}</span></div>${visibleDiagnostics.map((item, index) => `<div class="diagnostic-row"><span class="diagnostic-order">${index + 1}</span><strong>${escapeHtml(item.id)}</strong><span>${escapeHtml(uiText(item.type))}</span><span>${escapeHtml(uiText(`${item.findings} 命中`))}</span><span>${Number(item.elapsed_ms).toFixed(2)} ms</span><b class="badge ${item.status === "ok" ? "green" : ["disabled", "unavailable"].includes(item.status) ? "neutral" : "red"}">${escapeHtml(uiText(item.status))}</b></div>`).join("")}` : "";
+  $("#detection-diagnostics").innerHTML = visibleDiagnostics.length ? `<div class="diagnostic-heading"><p class="section-kicker">EXECUTION TRACE</p><span>${escapeHtml(uiText(`${visibleDiagnostics.length} 个步骤`))}</span></div>${visibleDiagnostics.map((item, index) => `<div class="diagnostic-row"><span class="diagnostic-order">${index + 1}</span><strong>${escapeHtml(detectorDiagnosticLabel(item.id))}</strong><span>${escapeHtml(uiText(item.type))}</span><span>${escapeHtml(uiText(`${item.findings} 命中`))}</span><span>${Number(item.elapsed_ms).toFixed(2)} ms</span><b class="badge ${item.status === "ok" ? "green" : ["disabled", "unavailable"].includes(item.status) ? "neutral" : "red"}">${escapeHtml(uiText(item.status))}</b></div>`).join("")}` : "";
+}
+
+function detectorDiagnosticLabel(id) {
+  if (id === "pf_custom_literals") return uiText("自定义观察名单");
+  return id;
 }
 
 function moduleTypeLabel(type) {
@@ -2506,6 +2603,10 @@ function findingModuleNames(finding) {
       names.push(uiText("PrivacyFlow 内置安全防线"));
       continue;
     }
+    if (detector === "rules.pf_custom_literals" || ruleId.startsWith("custom.literal.")) {
+      names.push(uiText("自定义观察名单"));
+      continue;
+    }
     const matched = modules.filter((module) => {
       if (detector === `rules.${module.id}` || detector === `models.${module.id}`) return true;
       if (module.type === "regex" && ruleId) {
@@ -2606,6 +2707,7 @@ function findingSubtypeLabel(value) {
     bearer_token: "Bearer Token",
     database_url: "数据库连接",
     high_entropy_token: "高熵 Token",
+    custom_literal: "自定义保护值",
   };
   return uiText(labels[value] || value);
 }
@@ -2672,7 +2774,7 @@ function toast(message, error = false) {
 function inferErrorContext(error) {
   const code = String(error?.code || "").toUpperCase();
   if (code.startsWith("CONNECTOR_") || code.startsWith("PF_MIGRATION_")) return "connector";
-  if (code.startsWith("DETECTOR_") || code.startsWith("MAPPING_RETENTION")) return "detector";
+  if (code.startsWith("DETECTOR_") || code.startsWith("CUSTOM_LITERAL_") || code.startsWith("MAPPING_RETENTION")) return "detector";
   if (code.startsWith("LOCAL_") || code.startsWith("MODEL_") || code.startsWith("RUNTIME_") || code.startsWith("WORKER_") || code.startsWith("DOWNLOAD_") || code.startsWith("COMMAND_") || code.startsWith("CUDA_") || code.startsWith("DEVICE_") || code.startsWith("JOB_") || code === "NO_MODELS" || code === "DEPENDENCIES_MISSING" || code === "CACHE_PATH_INVALID") return "localModel";
   if (code.startsWith("PF_UPSTREAM_") || code.startsWith("UPSTREAM_")) return "upstream";
   return "request";

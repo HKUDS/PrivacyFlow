@@ -311,6 +311,8 @@ into another protocol.
 
 - built-in and custom ordered pipelines for credentials, API keys, personal
   information, local paths, entropy checks, and optional local models;
+- a workspace-level exact-string watchlist that redacts registered values in
+  every detector configuration, including the first request;
 - session-bound signed placeholders and lifecycle-aware mappings;
 - streaming-safe replacement and restoration;
 - structured tool-argument materialization;
@@ -424,7 +426,7 @@ Local state defaults to `.privacyflow/`:
 | `launcher.json` | Named upstream profiles, provider keys, local Agent key |
 | `state.sqlite3` | Protected-value mappings and operation records |
 | `audit.jsonl` | Sanitized audit events, rotated at 16 MiB with five private backups by default |
-| `detector-control.json` | Revisioned detector configurations, template module overrides, and the global protection toggle |
+| `detector-control.json` | Revisioned detector configurations, template module overrides, the global protection toggle, and the workspace exact-string watchlist |
 | `agent-connections.json` | Agent quick-connect snapshots, dedicated connector keys, and restore transactions |
 | `local-models.json` | Local-model catalog and validation state |
 | `models/` | PrivacyFlow-managed Hugging Face cache |

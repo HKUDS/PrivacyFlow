@@ -2,7 +2,7 @@
 
 ## Protected
 
-- Accidental prompt leakage of detected API keys, tokens, private keys, emails, phone numbers, credit cards, local paths, and config secrets in supported textual fields
+- Accidental prompt leakage of detected API keys, tokens, private keys, emails, phone numbers, credit cards, local paths, config secrets, and user-registered exact strings in supported textual fields
 - Detected machine secrets in supported textual fields being sent to cloud LLM providers through PrivacyFlow
 - Model outputs that echo secret-like content
 - Prompt injection asking for secrets, placeholders, or secret forwarding

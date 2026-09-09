@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from gateway.detector_control import DetectorConfigurationConflict, DetectorControlError, DetectorControlPlane
+from gateway.detector_control import DetectorConfigurationConflict, DetectorControlError, DetectorControlPlane, DetectorLiteralConflict
 from gateway.detector_manager import DetectorManager
 from gateway.detectors.base import Detector
 from gateway.detectors.findings import SourceBlock
@@ -14,7 +14,7 @@ from gateway.detectors.flow import DetectorFlow, FlowModule
 from gateway.mapping_store import MappingStore
 from gateway.placeholder_parser import PlaceholderSigner
 from gateway.policy_engine import PolicyEngine
-from gateway.redaction_engine import RedactionEngine
+from gateway.redaction_engine import PROTECTED_VALUE, STREAM_TEXT_BASE_TAIL, BalancedStreamScanner, RedactionEngine
 
 
 def control(tmp_path, base_config=None):
@@ -491,3 +491,191 @@ def test_runtime_module_rejects_deployment_without_runtime(tmp_path) -> None:
             "failure_mode": "closed",
             "config": {},
         })
+
+
+def test_custom_literals_redact_exact_strings_across_configurations(tmp_path) -> None:
+    detector_control, applied = control(tmp_path)
+    secret = "token.v1-secret"
+    wildcard = "foo.*bar_xx"
+    listed = detector_control.replace_custom_literals({"revision": 0, "literals": [secret, wildcard]})
+    assert listed["revision"] == 1
+    assert [item["value"] for item in listed["literals"]] == [secret, wildcard]
+    assert listed["literals"][0]["id"].startswith("lit_")
+
+    credentials = detector_control.manager_for_configuration("builtin.credentials")
+    personal = detector_control.manager_for_configuration("builtin.personal")
+    assert "custom_literal" in subtypes(credentials, f"prefix {secret} suffix")
+    assert "custom_literal" in subtypes(personal, f"prefix {secret} suffix")
+    assert "custom_literal" not in subtypes(credentials, "prefix tokenXv1-secret suffix")
+    assert "custom_literal" not in subtypes(credentials, "fooXXbar_xx")
+    assert "custom_literal" in subtypes(credentials, wildcard)
+
+    _findings, diagnostics = applied[-1].scan_findings_with_diagnostics(f"prefix {secret} suffix")
+    assert diagnostics[0]["id"] == "pf_core"
+    assert diagnostics[1]["id"] == "pf_custom_literals"
+
+    redactor = RedactionEngine(
+        applied[-1],
+        MappingStore(str(tmp_path / "state.sqlite3")),
+        PlaceholderSigner("secret", "ws"),
+        PolicyEngine(),
+        "ws",
+    )
+    sanitized, events = redactor.sanitize_text(f"use {secret} now", "sess_watch")
+    assert secret not in sanitized
+    assert "<PF:v1:secret:" in sanitized
+    assert any(event.get("subtype") == "custom_literal" or event.get("action") == "redact" for event in events)
+
+    detector_control.activate_configuration("builtin.personal")
+    assert "custom_literal" in subtypes(applied[-1], f"{secret} still protected")
+
+    reloaded, _ = control(tmp_path)
+    restored = reloaded.custom_literals()
+    assert [item["value"] for item in restored["literals"]] == [secret, wildcard]
+    assert restored["literals"][0]["id"] == listed["literals"][0]["id"]
+    assert "custom_literal" in subtypes(reloaded.manager_for_configuration("builtin.comprehensive"), secret)
+
+
+def test_custom_literals_longer_than_stream_tail_do_not_leak_in_streaming(tmp_path) -> None:
+    detector_control, applied = control(tmp_path)
+    long_secret = ("Zq7" * 200)[: STREAM_TEXT_BASE_TAIL + 100]
+    special = "foo.*bar(1)+[x]\\y-literal"
+    detector_control.replace_custom_literals({"revision": 0, "literals": [long_secret, special]})
+    redactor = RedactionEngine(
+        applied[-1],
+        MappingStore(str(tmp_path / "state.sqlite3")),
+        PlaceholderSigner("secret", "ws"),
+        PolicyEngine(),
+        "ws",
+    )
+    assert redactor.stream_literal_sequences() == (long_secret, special)
+
+    for secret in (long_secret, special):
+        scanner = BalancedStreamScanner(redactor, "sess_stream_literal")
+        assert scanner.strict is False
+        text = f"The model says: {secret} and that is all."
+        output = ""
+        for index in range(0, len(text), 7):
+            chunk, _ = scanner.feed(text[index : index + 7])
+            output += chunk
+        tail, _ = scanner.flush()
+        output += tail
+        assert secret not in output
+        assert secret[:32] not in output
+        assert output == f"The model says: {PROTECTED_VALUE} and that is all."
+
+    # An incomplete prefix at end-of-stream can no longer become the literal
+    # and must be emitted unchanged rather than folded.
+    scanner = BalancedStreamScanner(redactor, "sess_stream_literal")
+    output, _ = scanner.feed("ends with " + long_secret[:40])
+    tail, events = scanner.flush()
+    assert output + tail == "ends with " + long_secret[:40]
+    assert events == []
+
+
+def test_custom_literals_short_values_need_confirmation_and_empty_skips_module(tmp_path) -> None:
+    detector_control, applied = control(tmp_path)
+    with pytest.raises(DetectorControlError) as exc:
+        detector_control.replace_custom_literals({"revision": 0, "literals": ["short"]})
+    assert exc.value.code == "CUSTOM_LITERAL_TOO_SHORT"
+    _findings, diagnostics = applied[-1].scan_findings_with_diagnostics("nothing sensitive")
+    assert [item["id"] for item in diagnostics] == [
+        "pf_core",
+        "credentials",
+        "personal_data",
+        "local_paths",
+        "entropy",
+        "personal_model",
+    ]
+
+    added = detector_control.replace_custom_literals({"revision": 0, "literals": ["short"], "confirm_short": True})
+    assert added["literals"][0]["value"] == "short"
+    _findings, diagnostics = applied[-1].scan_findings_with_diagnostics("short")
+    assert "pf_custom_literals" in [item["id"] for item in diagnostics]
+
+    with pytest.raises(DetectorLiteralConflict) as conflict:
+        detector_control.replace_custom_literals({"revision": 0, "literals": ["abcdefgh"]})
+    assert conflict.value.code == "CUSTOM_LITERAL_REVISION_STALE"
+
+    with pytest.raises(DetectorControlError) as too_long:
+        detector_control.replace_custom_literals({"revision": added["revision"], "literals": ["a" * 513]})
+    assert too_long.value.code == "CUSTOM_LITERAL_TOO_LONG"
+
+    with pytest.raises(DetectorControlError) as too_many:
+        detector_control.replace_custom_literals({
+            "revision": added["revision"],
+            "literals": [f"literal-{index:02d}-value" for index in range(65)],
+        })
+    assert too_many.value.code == "CUSTOM_LITERAL_LIMIT"
+
+    with pytest.raises(DetectorControlError) as invalid:
+        detector_control.replace_custom_literals({"revision": added["revision"], "literals": ["line\nbreak-value"]})
+    assert invalid.value.code == "CUSTOM_LITERAL_INVALID"
+
+    deduped = detector_control.replace_custom_literals({
+        "revision": added["revision"],
+        "literals": ["abcdefgh", "abcdefgh"],
+    })
+    assert [item["value"] for item in deduped["literals"]] == ["abcdefgh"]
+
+    cleared = detector_control.replace_custom_literals({"revision": deduped["revision"], "literals": []})
+    assert cleared["literals"] == []
+    _findings, diagnostics = applied[-1].scan_findings_with_diagnostics("abcdefgh")
+    assert "pf_custom_literals" not in [item["id"] for item in diagnostics]
+
+
+def test_custom_literals_invalid_persisted_entries_are_skipped(tmp_path) -> None:
+    path = tmp_path / "detector-control.json"
+    path.write_text(
+        json.dumps({
+            "version": 3,
+            "active_configuration_id": "builtin.comprehensive",
+            "pf_enabled": True,
+            "template_module_overrides": {},
+            "configurations": [],
+            "custom_literals": [
+                {"id": "lit_abcd1234abcd", "value": "kept-secret-value", "created_at": "2026-01-01T00:00:00+00:00"},
+                {"id": "bad", "value": "ignored"},
+                "not-an-object",
+            ],
+            "custom_literals_revision": 4,
+        }),
+        encoding="utf-8",
+    )
+    with pytest.warns(RuntimeWarning, match="Ignoring invalid custom literal"):
+        detector_control, _ = control(tmp_path)
+    restored = detector_control.custom_literals()
+    assert restored["revision"] == 4
+    assert [item["value"] for item in restored["literals"]] == ["kept-secret-value"]
+    assert restored["literals"][0]["match_text"] == "kept-secret-value"
+    assert "custom_literal" in subtypes(detector_control.manager_for_configuration("builtin.credentials"), "kept-secret-value")
+
+
+def test_custom_literals_normalized_duplicates_do_not_change_revision(tmp_path) -> None:
+    detector_control, applied = control(tmp_path)
+    secret = "token.v1-secret"
+    added = detector_control.replace_custom_literals({"revision": 0, "literals": [secret]})
+    assert added["revision"] == 1
+    assert added["literals"][0]["match_text"] == secret
+    manager_count = len(applied)
+    duplicate = detector_control.replace_custom_literals({
+        "revision": added["revision"],
+        "literals": [secret, f"{secret[:6]}\u200b{secret[6:]}", "ｔｏｋｅｎ.v1-secret"],
+    })
+    assert duplicate["revision"] == added["revision"]
+    assert [item["value"] for item in duplicate["literals"]] == [secret]
+    assert [item["id"] for item in duplicate["literals"]] == [added["literals"][0]["id"]]
+    assert len(applied) == manager_count
+    assert "custom_literal" in subtypes(applied[-1], secret)
+
+
+def test_custom_literals_persist_when_active_configuration_is_missing(tmp_path) -> None:
+    detector_control, applied = control(tmp_path)
+    detector_control._state["active_configuration_id"] = "missing.configuration"
+    assert detector_control.active_configuration_available() is False
+    listed = detector_control.replace_custom_literals({"revision": 0, "literals": ["missing-config-secret"]})
+    assert listed["revision"] == 1
+    assert listed["literals"][0]["value"] == "missing-config-secret"
+    assert "custom_literal" in subtypes(applied[-1], "missing-config-secret")
+    reloaded, _ = control(tmp_path)
+    assert [item["value"] for item in reloaded.custom_literals()["literals"]] == ["missing-config-secret"]

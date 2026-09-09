@@ -89,6 +89,7 @@ def test_webui_assets_and_admin_api_require_no_authentication(tmp_path) -> None:
         assert "PrivacyFlow" in page.text
         assert "Privacy flow for AI Agents" in page.text
         assert ">Privacy gateway<" not in page.text
+        assert "始终保护这些值" in page.text
         assert "frame-ancestors 'none'" in page.headers["content-security-policy"]
         app_js = client.get("/ui/assets/app.js")
         assert app_js.status_code == 200
@@ -106,6 +107,7 @@ def test_webui_assets_and_admin_api_require_no_authentication(tmp_path) -> None:
             assert client.get(f"/ui/assets/{removed_agent_icon}").status_code == 404
         assert "@license lucide v1.27.0 - ISC" in lucide_js.text
         assert "Privacy operations overview" in i18n_js.text
+        assert "Always protect these values" in i18n_js.text
         assert "Detectors" in i18n_js.text
         assert "pf:localechange" in i18n_js.text
         assert "Local module pipeline organized by detection scope" in i18n_js.text
@@ -1380,6 +1382,67 @@ def test_detector_control_hot_reload_and_persistence(tmp_path) -> None:
             f"/api/admin/detector-configurations/{configuration['id']}",
             headers=_admin_headers(),
         ).status_code == 200
+
+
+def test_custom_literals_admin_api_redacts_and_keeps_values_out_of_audit(tmp_path) -> None:
+    cfg = _config(tmp_path)
+    secret = "workspace-watch-secret"
+    with TestClient(create_app(cfg, AdminFakeUpstream())) as client:
+        empty = client.get("/api/admin/custom-literals", headers=_admin_headers())
+        assert empty.status_code == 200
+        assert empty.json()["literals"] == []
+        assert empty.json()["min_length"] == 8
+
+        created = client.put(
+            "/api/admin/custom-literals",
+            headers=_admin_headers(),
+            json={"revision": 0, "literals": [secret]},
+        )
+        assert created.status_code == 200
+        payload = created.json()
+        assert payload["revision"] == 1
+        assert payload["literals"][0]["value"] == secret
+        assert payload["literals"][0]["match_text"] == secret
+
+        stale = client.put(
+            "/api/admin/custom-literals",
+            headers=_admin_headers(),
+            json={"revision": 0, "literals": [secret, "another-secret-value"]},
+        )
+        assert stale.status_code == 409
+        assert stale.json()["detail"]["code"] == "CUSTOM_LITERAL_REVISION_STALE"
+
+        short = client.put(
+            "/api/admin/custom-literals",
+            headers=_admin_headers(),
+            json={"revision": 1, "literals": ["short"]},
+        )
+        assert short.status_code == 400
+        assert short.json()["detail"]["code"] == "CUSTOM_LITERAL_TOO_SHORT"
+
+        probed = client.post(
+            "/api/admin/detector-configurations/builtin.personal/test",
+            headers=_admin_headers(),
+            json={"text": f"prefix {secret} suffix"},
+        )
+        assert probed.status_code == 200
+        assert any(item["subtype"] == "custom_literal" for item in probed.json()["findings"])
+        assert any(item["id"] == "pf_custom_literals" for item in probed.json()["diagnostics"])
+
+        chat = client.post(
+            "/v1/chat/completions",
+            headers={"Authorization": "Bearer agent-key"},
+            json={"model": "test-model", "messages": [{"role": "user", "content": f"password={secret}"}]},
+        )
+        assert chat.status_code == 200
+
+    audit_text = (tmp_path / "audit.jsonl").read_text(encoding="utf-8")
+    assert secret not in audit_text
+    assert "replace_custom_literals" in audit_text
+    assert '"literal_count": 1' in audit_text
+    state_text = (tmp_path / "detector-control.json").read_text(encoding="utf-8")
+    assert secret in state_text
+    assert os.stat(tmp_path / "detector-control.json").st_mode & 0o777 == 0o600
 
 
 def test_detector_api_rejects_unknown_kind_and_deployment_template_toggle(tmp_path) -> None:

@@ -202,6 +202,7 @@ PrivacyFlow 始终按请求原有的 API 格式转发，不会将其转换成另
 ### 保护流水线
 
 - 覆盖凭据、API Key、个人信息、本地路径、熵值检测和可选本地模型的内置及自定义有序流水线；
+- 工作区级精确字符串观察名单，在所有检测器配置中替换已登记的值，第一次请求即生效；
 - 会话绑定的签名占位符和带生命周期的映射；
 - 对流式传输安全的替换与还原；
 - 结构化工具参数还原；
@@ -297,7 +298,7 @@ export PF_HISTORY_RETENTION_SECONDS=2592000
 | `launcher.json` | 具名上游配置、供应商 Key、本地 Agent Key |
 | `state.sqlite3` | 受保护值映射和操作记录 |
 | `audit.jsonl` | 脱敏审计事件；默认达到 16 MiB 后轮转，并保留 5 份私有备份 |
-| `detector-control.json` | 带版本的检测器配置、模板模块开关和全局保护开关 |
+| `detector-control.json` | 带版本的检测器配置、模板模块开关、全局保护开关和工作区精确字符串观察名单 |
 | `agent-connections.json` | Agent 快连快照、独立 Connector Key 和恢复事务 |
 | `local-models.json` | 本地模型目录和验证状态 |
 | `models/` | PrivacyFlow 管理的 Hugging Face 缓存 |

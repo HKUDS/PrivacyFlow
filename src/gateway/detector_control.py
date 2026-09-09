@@ -15,6 +15,7 @@ from typing import Any, Callable
 
 from gateway.detector_manager import DetectorManager
 from gateway.detectors.flow import compile_flow_config
+from gateway.detectors.normalizer import normalize_with_mapping
 from gateway.detectors.rules import VALIDATORS, builtin_rules
 from gateway.local_models import local_model_id
 
@@ -38,8 +39,14 @@ _CONFIG_ID_RE = re.compile(r"^(?:builtin|deployment)\.[a-z][a-z0-9_.-]{1,63}$|^d
 _MODULE_ID_RE = re.compile(r"^[a-z][a-z0-9_.-]{1,63}$|^mod_[a-f0-9]{8,32}$")
 _RULE_ID_RE = re.compile(r"^[a-z][a-z0-9_.-]{1,95}$")
 _SUBTYPE_RE = re.compile(r"^[a-z][a-z0-9_.-]{1,63}$")
+_CUSTOM_LITERAL_ID_RE = re.compile(r"^lit_[a-f0-9]{12,32}$")
 _UNSAFE_GROUP_REPEAT_RE = re.compile(r"\([^)]*\)\s*(?:[+*]|\{)")
 _UNSAFE_REGEX_FEATURE_RE = re.compile(r"\(\?(?:[=!<]|P=)|\\[1-9]|\.\*|\.\+")
+
+CUSTOM_LITERAL_MIN_LENGTH = 8
+CUSTOM_LITERAL_MAX_LENGTH = 512
+CUSTOM_LITERAL_MAX_COUNT = 64
+CUSTOM_LITERAL_MODULE_ID = "pf_custom_literals"
 
 
 class DetectorControlError(ValueError):
@@ -59,8 +66,39 @@ class DetectorConfigurationConflict(DetectorControlError):
     code = "DETECTOR_CONFIGURATION_CONFLICT"
 
 
+class DetectorLiteralConflict(DetectorConfigurationConflict):
+    code = "CUSTOM_LITERAL_REVISION_STALE"
+
+
 def _now() -> str:
     return datetime.now(UTC).isoformat()
+
+
+def _custom_literal_match_text(value: str) -> str:
+    return normalize_with_mapping(value).normalized
+
+
+def _clean_custom_literal_value(value: Any, *, confirm_short: bool) -> str:
+    if not isinstance(value, str):
+        raise DetectorControlError("Custom literal value must be a string", code="CUSTOM_LITERAL_INVALID")
+    cleaned = value.strip()
+    if not cleaned:
+        raise DetectorControlError("Custom literal value cannot be empty", code="CUSTOM_LITERAL_INVALID")
+    if any(character in cleaned for character in "\x00\r\n"):
+        raise DetectorControlError("Custom literal value cannot contain line breaks", code="CUSTOM_LITERAL_INVALID")
+    if len(cleaned) > CUSTOM_LITERAL_MAX_LENGTH:
+        raise DetectorControlError(
+            f"Custom literal value cannot exceed {CUSTOM_LITERAL_MAX_LENGTH} characters",
+            code="CUSTOM_LITERAL_TOO_LONG",
+        )
+    if len(cleaned) < CUSTOM_LITERAL_MIN_LENGTH and not confirm_short:
+        raise DetectorControlError(
+            f"Values shorter than {CUSTOM_LITERAL_MIN_LENGTH} characters need confirmation",
+            code="CUSTOM_LITERAL_TOO_SHORT",
+        )
+    if not _custom_literal_match_text(cleaned):
+        raise DetectorControlError("Custom literal value cannot be empty after normalization", code="CUSTOM_LITERAL_INVALID")
+    return cleaned
 
 
 def _rule_dict(rule: Any) -> dict[str, Any]:
@@ -390,6 +428,37 @@ class DetectorControlPlane:
         """Compatibility alias for the migration release."""
         return self.set_pf_enabled(enabled)
 
+    def custom_literals(self) -> dict[str, Any]:
+        with self._lock:
+            return self._public_custom_literals()
+
+    def replace_custom_literals(self, payload: dict[str, Any]) -> dict[str, Any]:
+        with self._lock:
+            try:
+                revision = int(payload.get("revision"))
+            except (TypeError, ValueError) as exc:
+                raise DetectorControlError("Expected integer revision", code="CUSTOM_LITERAL_INVALID") from exc
+            current_revision = int(self._state.get("custom_literals_revision", 0))
+            if revision != current_revision:
+                raise DetectorLiteralConflict("Custom literal list revision is stale", code="CUSTOM_LITERAL_REVISION_STALE")
+            confirm_short = payload.get("confirm_short", False)
+            if not isinstance(confirm_short, bool):
+                raise DetectorControlError("Expected boolean confirm_short", code="CUSTOM_LITERAL_INVALID")
+            existing_items = list(self._state.get("custom_literals", []))
+            next_items = self._normalized_custom_literals(
+                payload.get("literals", payload.get("values")),
+                confirm_short=confirm_short,
+                existing=existing_items,
+            )
+            if self._custom_literal_items_equal(existing_items, next_items):
+                return self._public_custom_literals()
+            next_state = copy.deepcopy(self._state)
+            next_state["custom_literals"] = next_items
+            next_state["custom_literals_revision"] = current_revision + 1
+            manager = self._build_manager(self._runtime_configuration(next_state), state=next_state)
+            self._commit_manager_state(next_state, manager)
+            return self._public_custom_literals()
+
     def active_configuration_available(self) -> bool:
         with self._lock:
             return self._active_configuration_available()
@@ -418,21 +487,36 @@ class DetectorControlPlane:
                 module["enabled"] = enabled
         return configuration
 
+    def _runtime_configuration(self, state: dict[str, Any]) -> dict[str, Any]:
+        """Return the active configuration, or a core-only stub if it is missing.
+
+        The workspace watchlist is independent of the selected pipeline.  A
+        missing active configuration must not block saving or applying it.
+        """
+        try:
+            return self._configuration(str(state.get("active_configuration_id", "")))
+        except DetectorConfigurationNotFound:
+            return {
+                "id": str(state.get("active_configuration_id") or "unavailable"),
+                "flow_timeout_ms": DEFAULT_FLOW_TIMEOUT_MS,
+                "modules": [],
+            }
+
     def _user_configuration(self, configuration_id: str) -> dict[str, Any]:
         configuration = self._configuration(configuration_id)
         if configuration.get("readonly"):
             raise DetectorControlError("Built-in and deployment templates are read-only")
         return configuration
 
-    def _build_manager(self, configuration: dict[str, Any]) -> DetectorManager:
+    def _build_manager(self, configuration: dict[str, Any], state: dict[str, Any] | None = None) -> DetectorManager:
         try:
-            return DetectorManager(detectors_config=self._runtime_config(configuration))
+            return DetectorManager(detectors_config=self._runtime_config(configuration, state=state))
         except DetectorControlError:
             raise
         except (KeyError, TypeError, ValueError) as exc:
             raise DetectorControlError("Detector configuration could not be built") from exc
 
-    def _runtime_config(self, configuration: dict[str, Any]) -> dict[str, Any]:
+    def _runtime_config(self, configuration: dict[str, Any], state: dict[str, Any] | None = None) -> dict[str, Any]:
         modules: list[dict[str, Any]] = []
         modules.append({
             "id": f"{self.namespace.lower()}_core",
@@ -442,6 +526,9 @@ class DetectorControlPlane:
             "fail_open": False,
             "stream_safe": True,
         })
+        literal_module = self._custom_literal_runtime_module(state if state is not None else self._state)
+        if literal_module is not None:
+            modules.append(literal_module)
         modules.extend(self._runtime_module(module) for module in configuration["modules"])
         return {
             "core_guard_enabled": True,
@@ -907,6 +994,8 @@ class DetectorControlPlane:
             "pf_enabled": True,
             "template_module_overrides": {},
             "configurations": [],
+            "custom_literals": [],
+            "custom_literals_revision": 0,
         }
         self._retained_invalid_configurations = []
         if not self.state_path.exists():
@@ -967,6 +1056,8 @@ class DetectorControlPlane:
             "pf_enabled": empty["pf_enabled"],
             "template_module_overrides": self._validate_template_module_overrides(data.get("template_module_overrides", {})),
             "configurations": configurations,
+            "custom_literals": self._load_custom_literals(data.get("custom_literals", [])),
+            "custom_literals_revision": self._load_custom_literals_revision(data.get("custom_literals_revision", 0)),
         }
         if active not in self._templates and not any(item["id"] == active for item in configurations):
             state["active_configuration_id"] = self._default_active_id()
@@ -1000,6 +1091,169 @@ class DetectorControlPlane:
             if modules:
                 out[str(configuration_id)] = modules
         return out
+
+    def _public_custom_literals(self, state: dict[str, Any] | None = None) -> dict[str, Any]:
+        source = state or self._state
+        return {
+            "revision": int(source.get("custom_literals_revision", 0)),
+            "min_length": CUSTOM_LITERAL_MIN_LENGTH,
+            "max_length": CUSTOM_LITERAL_MAX_LENGTH,
+            "max_count": CUSTOM_LITERAL_MAX_COUNT,
+            "literals": [
+                {
+                    "id": item["id"],
+                    "value": item["value"],
+                    "match_text": _custom_literal_match_text(item["value"]),
+                    "length": len(item["value"]),
+                    "created_at": item["created_at"],
+                }
+                for item in source.get("custom_literals", [])
+            ],
+        }
+
+    def _normalized_custom_literals(
+        self,
+        raw_items: Any,
+        *,
+        confirm_short: bool,
+        existing: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        if raw_items is None:
+            raise DetectorControlError("Expected field 'literals'", code="CUSTOM_LITERAL_INVALID")
+        if not isinstance(raw_items, list):
+            raise DetectorControlError("Custom literals must be a list", code="CUSTOM_LITERAL_INVALID")
+        existing_by_match = {
+            _custom_literal_match_text(str(item.get("value", ""))): item
+            for item in existing
+            if isinstance(item, dict) and isinstance(item.get("value"), str)
+        }
+        next_items: list[dict[str, Any]] = []
+        seen: set[str] = set()
+        for item in raw_items:
+            if isinstance(item, str):
+                value = item
+            elif isinstance(item, dict):
+                value = item.get("value")
+            else:
+                raise DetectorControlError("Custom literal entries must be strings", code="CUSTOM_LITERAL_INVALID")
+            cleaned = _clean_custom_literal_value(value, confirm_short=confirm_short)
+            match_text = _custom_literal_match_text(cleaned)
+            if match_text in seen:
+                continue
+            seen.add(match_text)
+            previous = existing_by_match.get(match_text)
+            if previous is not None:
+                next_items.append({
+                    "id": previous["id"],
+                    "value": previous["value"],
+                    "created_at": previous.get("created_at") or _now(),
+                })
+            else:
+                next_items.append({
+                    "id": f"lit_{uuid.uuid4().hex[:16]}",
+                    "value": cleaned,
+                    "created_at": _now(),
+                })
+            if len(next_items) > CUSTOM_LITERAL_MAX_COUNT:
+                raise DetectorControlError(
+                    f"Custom literal list cannot exceed {CUSTOM_LITERAL_MAX_COUNT} entries",
+                    code="CUSTOM_LITERAL_LIMIT",
+                )
+        return next_items
+
+    @staticmethod
+    def _custom_literal_items_equal(left: list[dict[str, Any]], right: list[dict[str, Any]]) -> bool:
+        if len(left) != len(right):
+            return False
+        return all(
+            item.get("id") == other.get("id") and item.get("value") == other.get("value")
+            for item, other in zip(left, right, strict=True)
+        )
+
+    def _custom_literal_runtime_module(self, state: dict[str, Any]) -> dict[str, Any] | None:
+        items = state.get("custom_literals") or []
+        if not items:
+            return None
+        rules: list[dict[str, Any]] = []
+        for item in items:
+            match_text = _custom_literal_match_text(str(item.get("value", "")))
+            if not match_text:
+                continue
+            rules.append({
+                "id": f"custom.literal.{item['id']}",
+                "pattern": re.escape(match_text),
+                "type": "MACHINE_SECRET",
+                "subtype": "custom_literal",
+                "risk": "high",
+                "suggested_action": "redact",
+                "preview_keep": 0,
+                "enabled": True,
+                "flags": [],
+                "validators": [],
+                "require_validators": [],
+                "reject_validators": [],
+                "metadata": {},
+            })
+        if not rules:
+            return None
+        return {
+            "id": CUSTOM_LITERAL_MODULE_ID,
+            "type": "regex_rules",
+            "rules": rules,
+            "enabled": True,
+            "fail_open": False,
+            "stream_safe": True,
+        }
+
+    def _load_custom_literals(self, raw: Any) -> list[dict[str, Any]]:
+        if raw in (None, []):
+            return []
+        if not isinstance(raw, list):
+            warnings.warn(
+                "Custom literals must be a list; ignoring the malformed collection.",
+                RuntimeWarning,
+                stacklevel=2,
+            )
+            return []
+        out: list[dict[str, Any]] = []
+        seen: set[str] = set()
+        for index, item in enumerate(raw):
+            try:
+                parsed = self._parse_stored_custom_literal(item)
+            except DetectorControlError:
+                warnings.warn(
+                    f"Ignoring invalid custom literal at index {index}.",
+                    RuntimeWarning,
+                    stacklevel=2,
+                )
+                continue
+            match_text = _custom_literal_match_text(parsed["value"])
+            if match_text in seen:
+                continue
+            seen.add(match_text)
+            out.append(parsed)
+            if len(out) >= CUSTOM_LITERAL_MAX_COUNT:
+                break
+        return out
+
+    def _parse_stored_custom_literal(self, item: Any) -> dict[str, Any]:
+        if not isinstance(item, dict):
+            raise DetectorControlError("Invalid custom literal", code="CUSTOM_LITERAL_INVALID")
+        literal_id = str(item.get("id", "")).strip()
+        if not _CUSTOM_LITERAL_ID_RE.fullmatch(literal_id):
+            raise DetectorControlError("Invalid custom literal id", code="CUSTOM_LITERAL_INVALID")
+        cleaned = _clean_custom_literal_value(item.get("value"), confirm_short=True)
+        created = item.get("created_at")
+        if not isinstance(created, str) or not created.strip():
+            created = _now()
+        return {"id": literal_id, "value": cleaned, "created_at": created}
+
+    def _load_custom_literals_revision(self, raw: Any) -> int:
+        try:
+            revision = int(raw)
+        except (TypeError, ValueError):
+            return 0
+        return revision if revision >= 0 else 0
 
     def _persist_state(self, state: dict[str, Any]) -> None:
         self._preserve_unusable_state()

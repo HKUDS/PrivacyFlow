@@ -276,6 +276,19 @@
             </div>
           </section>
 
+          <section class="detector-section custom-literals-section" id="custom-literals-section">
+            <div class="section-heading">
+              <div><p class="section-kicker">WORKSPACE WATCHLIST</p><h2>始终保护这些值</h2></div>
+            </div>
+            <p class="custom-literals-copy">这些精确字符串会在所有检测器配置中替换成密钥占位符。切换流水线不会丢失。输入按字面匹配，不会当作正则。</p>
+            <div class="custom-literals-list" id="custom-literals-list"></div>
+            <form class="custom-literals-form" id="custom-literals-form">
+              <label class="custom-literals-input"><span>要保护的值</span><input id="custom-literal-input" type="text" autocomplete="off" spellcheck="false" maxlength="512" placeholder="例如内部密码或固定令牌"></label>
+              <button class="primary-button labeled-icon-button" type="submit"><i data-lucide="plus"></i><span>加入名单</span></button>
+            </form>
+            <p class="form-error" id="custom-literals-error" role="alert"></p>
+          </section>
+
           <section class="detector-section module-pipeline-section">
             <div class="section-heading">
               <div><p class="section-kicker">ORDERED PIPELINE</p><h2>检测模块</h2></div>

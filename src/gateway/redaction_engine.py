@@ -336,6 +336,7 @@ class BalancedStreamScanner:
         self.session_id = session_id
         self.path_mapping = path_mapping if path_mapping is not None else redactor._active_path_mapping(session_id)
         self.path_aliases = [alias for alias, _, _ in self.path_mapping]
+        self.literal_sequences = list(redactor.stream_literal_sequences())
         self.strict = redactor.stream_requires_strict_buffering()
         self.tail = STREAM_TEXT_BASE_TAIL
         self.pending = ""
@@ -368,6 +369,13 @@ class BalancedStreamScanner:
         candidate_start = self._incomplete_candidate_start(self.pending)
         if candidate_start is not None:
             cut = min(cut, candidate_start)
+        # A watchlist literal can exceed the base tail and only matches once it
+        # is complete, so keep any in-progress prefix buffered until the next
+        # chunk decides it.  This is intentionally not part of flush(): a prefix
+        # that is still incomplete at end-of-stream cannot be the literal.
+        literal_start = _partial_sequence_start(self.pending, self.literal_sequences)
+        if literal_start is not None:
+            cut = min(cut, literal_start)
 
         if cut <= 0:
             if len(self.pending) > STREAM_TEXT_MAX_PENDING:
@@ -485,6 +493,14 @@ def _partial_pf_start(text: str) -> int | None:
     return None
 
 
+_ESCAPED_CHAR_RE = re.compile(r"\\(.)", re.DOTALL)
+
+
+def _unescape_literal_pattern(pattern: str) -> str:
+    """Invert ``re.escape`` for watchlist rules, which never contain user regex syntax."""
+    return _ESCAPED_CHAR_RE.sub(r"\1", pattern)
+
+
 def _partial_sequence_start(text: str, sequences: list[str]) -> int | None:
     starts: list[int] = []
     for sequence in sequences:
@@ -548,6 +564,7 @@ class RedactionEngine:
         # credentials-only config no longer keeps re-aliasing paths that were
         # mapped by an earlier path-inclusive configuration.
         self._supported_kinds_cache: tuple[DetectorManager, frozenset[str]] | None = None
+        self._stream_literal_cache: tuple[DetectorManager, tuple[str, ...]] | None = None
 
     def _code(self, suffix: str) -> str:
         return f"{self.namespace}_{suffix}"
@@ -848,6 +865,31 @@ class RedactionEngine:
                         kinds.add("path")
         result = frozenset(kinds)
         self._supported_kinds_cache = (self.detector_manager, result)
+        return result
+
+    def stream_literal_sequences(self) -> tuple[str, ...]:
+        """Exact-string watchlist values the balanced stream scanner must hold back.
+
+        Watchlist literals may be longer than the base streaming tail, and a
+        regex only fires once the whole literal is buffered, so the scanner
+        needs the plain values to keep an in-progress prefix from being emitted.
+        """
+        cached = self._stream_literal_cache
+        if cached is not None and cached[0] is self.detector_manager:
+            return cached[1]
+        sequences: list[str] = []
+        modules = getattr(self.detector_manager.hierarchical.flow, "modules", ())
+        for module in modules:
+            if not getattr(module, "enabled", True) or getattr(module, "type", "") != "regex_rules":
+                continue
+            for rule in getattr(getattr(module, "detector", None), "rules", ()):
+                if not getattr(rule, "enabled", True) or getattr(rule, "subtype", "") != "custom_literal":
+                    continue
+                literal = _unescape_literal_pattern(str(getattr(rule, "pattern", "")))
+                if literal and literal not in sequences:
+                    sequences.append(literal)
+        result = tuple(sorted(sequences, key=len, reverse=True))
+        self._stream_literal_cache = (self.detector_manager, result)
         return result
 
     def _issue_placeholder(self, kind: str, record: MappingRecord) -> str:
