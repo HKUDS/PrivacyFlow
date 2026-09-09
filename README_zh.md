@@ -52,11 +52,6 @@ privacyflow
 python -m pip install "privacyflow @ git+https://github.com/HKUDS/PrivacyFlow.git@v0.1.0"
 ```
 
-> [!WARNING]
-> PrivacyFlow 仅通过本仓库和
-> [GitHub Releases](https://github.com/HKUDS/PrivacyFlow/releases) 分发。
-> PyPI 上的 `privacyflow` 包**不是**本项目，请勿执行 `pip install privacyflow`。
-
 然后打开 [http://127.0.0.1:8765/ui/](http://127.0.0.1:8765/ui/)，依次：
 
 1. 添加并启用上游供应商；
@@ -68,10 +63,6 @@ PrivacyFlow 会在修改用户级配置前验证 Agent 的原生协议。点击
 **恢复原配置**可将配置精确恢复到接入前的状态。内置 Connector 已覆盖
 Codex、Claude Code、DeepSeek Harness 和 nanobot；其他 Agent 可以通过
 PrivacyFlow 的标准本地端点接入。
-
-> [!NOTE]
-> PrivacyFlow 不转换协议。Agent 和上游供应商必须支持相同的格式：
-> Chat Completions、Responses 或 Anthropic Messages。
 
 手动端点、快照行为和旧 APG 状态迁移请参阅[详细接入与迁移](#detailed-setup-and-migration)。
 

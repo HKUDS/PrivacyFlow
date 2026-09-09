@@ -55,12 +55,6 @@ To install a tagged release into an existing environment instead:
 python -m pip install "privacyflow @ git+https://github.com/HKUDS/PrivacyFlow.git@v0.1.0"
 ```
 
-> [!WARNING]
-> PrivacyFlow is distributed only through this repository and its
-> [GitHub releases](https://github.com/HKUDS/PrivacyFlow/releases). The
-> `privacyflow` package on PyPI is **not** this project; do not
-> `pip install privacyflow`.
-
 Then open [http://127.0.0.1:8765/ui/](http://127.0.0.1:8765/ui/) and:
 
 1. add and enable an upstream provider;
@@ -73,10 +67,6 @@ configuration. **Restore previous configuration** returns the configuration to
 its exact pre-connection state. The built-in connectors cover Codex, Claude Code,
 DeepSeek Harness, and nanobot; other Agents can connect through PrivacyFlow's
 standard local endpoints.
-
-> [!NOTE]
-> PrivacyFlow does not convert protocols. The Agent and upstream provider must
-> support the same format: Chat Completions, Responses, or Anthropic Messages.
 
 See [detailed setup and migration](#detailed-setup-and-migration) for manual
 endpoints, snapshot behavior, and legacy APG migration.
