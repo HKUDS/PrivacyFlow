@@ -33,6 +33,7 @@ dependencies = [
 [project.urls]
 Homepage = "https://github.com/HKUDS/PrivacyFlow"
 Changelog = "https://github.com/HKUDS/PrivacyFlow/blob/main/CHANGELOG.md"
+Releases = "https://github.com/HKUDS/PrivacyFlow/releases"
 Documentation = "https://github.com/HKUDS/PrivacyFlow/tree/main/docs"
 Issues = "https://github.com/HKUDS/PrivacyFlow/issues"
 Source = "https://github.com/HKUDS/PrivacyFlow"

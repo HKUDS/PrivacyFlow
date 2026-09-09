@@ -25,28 +25,19 @@ jobs:
           expected="${GITHUB_REF_NAME#v}"
           actual="$(python -c 'import tomllib; print(tomllib.load(open("pyproject.toml", "rb"))["project"]["version"])')"
           test "$expected" = "$actual" || { echo "tag $GITHUB_REF_NAME does not match pyproject version $actual"; exit 1; }
+      - name: Smoke-test the wheel in a clean environment
+        run: |
+          python -m venv /tmp/smoke
+          /tmp/smoke/bin/pip install --quiet dist/*.whl
+          cd /tmp && /tmp/smoke/bin/privacyflow --help
       - uses: actions/upload-artifact@v4
         with:
           name: dist
           path: dist/
 
-  publish:
-    name: Publish to PyPI
-    needs: build
-    runs-on: ubuntu-latest
-    environment: pypi
-    permissions:
-      id-token: write
-    steps:
-      - uses: actions/download-artifact@v4
-        with:
-          name: dist
-          path: dist/
-      - uses: pypa/gh-action-pypi-publish@release/v1
-
   github-release:
     name: Create GitHub release
-    needs: publish
+    needs: build
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -65,6 +56,16 @@ jobs:
             printing { print }
           ' CHANGELOG.md > release-notes.md
           test -s release-notes.md || echo "See CHANGELOG.md." > release-notes.md
+          {
+            echo
+            echo "## Install"
+            echo
+            echo '```bash'
+            echo "pip install \"privacyflow @ git+https://github.com/HKUDS/PrivacyFlow.git@$GITHUB_REF_NAME\""
+            echo '```'
+            echo
+            echo "Or download the wheel attached below and run \`pip install privacyflow-$version-py3-none-any.whl\`."
+          } >> release-notes.md
       - run: gh release create "$GITHUB_REF_NAME" dist/* --title "PrivacyFlow $GITHUB_REF_NAME" --notes-file release-notes.md
         env:
           GH_TOKEN: ${{ github.token }}

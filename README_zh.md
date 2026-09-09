@@ -46,6 +46,17 @@ python -m pip install -e .
 privacyflow
 ```
 
+如需把某个正式版本安装到已有环境：
+
+```bash
+python -m pip install "privacyflow @ git+https://github.com/HKUDS/PrivacyFlow.git@v0.1.0"
+```
+
+> [!WARNING]
+> PrivacyFlow 仅通过本仓库和
+> [GitHub Releases](https://github.com/HKUDS/PrivacyFlow/releases) 分发。
+> PyPI 上的 `privacyflow` 包**不是**本项目，请勿执行 `pip install privacyflow`。
+
 然后打开 [http://127.0.0.1:8765/ui/](http://127.0.0.1:8765/ui/)，依次：
 
 1. 添加并启用上游供应商；

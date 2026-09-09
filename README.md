@@ -49,6 +49,18 @@ python -m pip install -e .
 privacyflow
 ```
 
+To install a tagged release into an existing environment instead:
+
+```bash
+python -m pip install "privacyflow @ git+https://github.com/HKUDS/PrivacyFlow.git@v0.1.0"
+```
+
+> [!WARNING]
+> PrivacyFlow is distributed only through this repository and its
+> [GitHub releases](https://github.com/HKUDS/PrivacyFlow/releases). The
+> `privacyflow` package on PyPI is **not** this project; do not
+> `pip install privacyflow`.
+
 Then open [http://127.0.0.1:8765/ui/](http://127.0.0.1:8765/ui/) and:
 
 1. add and enable an upstream provider;

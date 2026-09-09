@@ -57,10 +57,14 @@ matrix has not been checked in yet.
 1. Move the `[Unreleased]` entries in `CHANGELOG.md` under a new version
    heading and bump `version` in `pyproject.toml` to match.
 2. Commit, then tag the commit as `vX.Y.Z` and push the tag.
-3. The `Release` workflow builds the distributions, verifies that the tag
-   matches the package version, publishes to PyPI through trusted publishing
-   (the `pypi` GitHub environment), and creates a GitHub release with the
-   matching changelog section as notes.
+3. The `Release` workflow builds the wheel and sdist, verifies that the tag
+   matches the package version, smoke-tests the wheel in a clean environment,
+   and creates a GitHub release with the artifacts attached and the matching
+   changelog section as notes.
+
+PrivacyFlow is distributed through GitHub releases and `pip install` from the
+repository, not through PyPI. The `privacyflow` name on PyPI is not this
+project; do not publish there or point users at it.
 
 By contributing, you agree that your contribution is licensed under the
 Apache License 2.0.
