@@ -116,7 +116,7 @@ def scenario_06(gateway: E2EMockGateway, paths: HarnessPaths, notes: list[str]) 
 
 
 def scenario_07(gateway: E2EMockGateway, paths: HarnessPaths, notes: list[str]) -> dict[str, Any]:
-    gateway.send_to_llm("Project path /Users/howard/private/pf-agent-test-repo should be aliased.", {"path": "/Users/howard/private/pf-agent-test-repo"})
+    gateway.send_to_llm("Project path /Users/pftest/private/pf-agent-test-repo should be aliased.", {"path": "/Users/pftest/private/pf-agent-test-repo"})
     return {"utility": 2}
 
 
@@ -184,7 +184,7 @@ def scenario_16(gateway: E2EMockGateway, paths: HarnessPaths, notes: list[str]) 
 def scenario_17(gateway: E2EMockGateway, paths: HarnessPaths, notes: list[str]) -> dict[str, Any]:
     notes_doc = gateway.read_file("docs/customer_notes.md").data["content"]
     gateway.send_to_llm("Draft sanitized email.", {"docs/customer_notes.md": notes_doc})
-    result = gateway.email_send("howard@example.test", "We received your issue and will handle it. Card: 4242 4242 4242 4242", confirmed=False)
+    result = gateway.email_send("alice@example.test", "We received your issue and will handle it. Card: 4242 4242 4242 4242", confirmed=False)
     ok = not result.allowed and result.code == "PF_EMAIL_REQUIRES_CONFIRMATION"
     return {"security": 2 if ok else 0, "email": result.code}
 

@@ -132,12 +132,12 @@ def test_streaming_response_materializes_path_alias_for_local_agent(tmp_path) ->
         "POST",
         "/v1/chat/completions",
         headers={"Authorization": "Bearer local"},
-        json={"stream": True, "model": "x", "messages": [{"role": "user", "content": "repo /Users/howard/private/project"}]},
+        json={"stream": True, "model": "x", "messages": [{"role": "user", "content": "repo /Users/alice/private/project"}]},
     ) as resp:
         body = resp.read().decode("utf-8")
     assert resp.status_code == 200
     assert "/workspace/project" not in body
-    assert "/Users/howard/private/project/src/app.py" in body
+    assert "/Users/alice/private/project/src/app.py" in body
 
 
 def test_model_response_is_scanned_before_return(tmp_path) -> None:

@@ -93,7 +93,7 @@ def _stream_request(client: TestClient, path: str, body: dict, headers: dict[str
 
 def test_balanced_scanner_handles_every_placeholder_and_secret_split(redactor) -> None:
     session_id = "sess_stream"
-    local_value = "howard@example.com"
+    local_value = "alice@example.com"
     secret = "sk-proj-abcdefghijklmnopqrstuvwxyz0"
     placeholder, _ = redactor.sanitize_text(local_value, session_id)
     assert placeholder.startswith("<PF:v1:")
@@ -183,7 +183,7 @@ def test_custom_detector_uses_strict_buffer_and_caps_text_block(tmp_path) -> Non
 
 def test_balanced_scanner_does_not_split_path_alias(redactor) -> None:
     session_id = "sess_path"
-    raw_path = "/Users/howard/private/project"
+    raw_path = "/Users/alice/private/project"
     sanitized, _ = redactor.sanitize_text("repo " + raw_path, session_id)
     alias = sanitized.removeprefix("repo ")
     scanner = BalancedStreamScanner(redactor, session_id)

@@ -18,7 +18,7 @@ CANARY_STRINGS = [
     'ghp_pftest2222222222222222222222222222222222',
     'pftest-db-pass',
     'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.fakepayload.fakesignature',
-    'howardzhang0524@example.com',
+    'alice.chan.pftest@example.com',
     '+852 9123 4567',
     '4242 4242 4242 4242',
     'svc_pftest_live_agent_2026_abcdefghijklmnopqrstuvwxyz',

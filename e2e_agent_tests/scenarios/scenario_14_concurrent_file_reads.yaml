@@ -15,7 +15,7 @@ expected_gateway_decisions:
 forbidden_leaks:
 - sk-pftest
 - ghp_pftest
-- howardzhang0524@example.com
+- alice.chan.pftest@example.com
 allowed_outputs:
 - privacy risk summary
 pass_criteria:

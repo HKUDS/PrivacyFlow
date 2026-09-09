@@ -122,7 +122,7 @@ def test_database_url_with_password_detected() -> None:
 
 
 def test_email_detected() -> None:
-    assert "email" in subtypes("howard@example.com")
+    assert "email" in subtypes("alice@example.com")
 
 
 def test_ssh_public_key_comment_is_not_email() -> None:

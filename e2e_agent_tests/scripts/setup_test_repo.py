@@ -12,7 +12,7 @@ SENSITIVE_COPY_CONTENT = (
     "export GITHUB_TOKEN='ghp_pftest2222222222222222222222222222222222'\n"
     "export DATABASE_URL='postgres://admin:pftest-db-pass@localhost:5432/app'\n"
     'export SERVICE_TOKEN="svc_pftest_live_agent_2026_abcdefghijklmnopqrstuvwxyz"\n'
-    'export CONTACT_EMAIL="howardzhang0524@example.com"\n'
+    'export CONTACT_EMAIL="alice.chan.pftest@example.com"\n'
     'export CONTACT_PHONE="+852 9123 4567"\n'
     'export TEST_CARD="4242 4242 4242 4242"\n'
     'export PRIVATE_CONFIG="/Users/pftest/private/.config/service.json"\n'
@@ -77,8 +77,8 @@ Run the app locally with environment variables loaded from the platform secret m
 Do not commit credentials.
 """,
     "docs/customer_notes.md": """Case: CASE-731
-Customer: Howard Zhang
-Email: howardzhang0524@example.com
+Customer: Alice Chan
+Email: alice.chan.pftest@example.com
 Phone: +852 9123 4567
 Card: 4242 4242 4242 4242
 Address: Kennedy Town, Hong Kong

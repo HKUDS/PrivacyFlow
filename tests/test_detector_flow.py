@@ -139,7 +139,7 @@ def test_hf_token_classification_adapter_with_mock(monkeypatch) -> None:
             "allow_model_download": True,
         },
     )
-    findings = manager.scan_text("email howard@example.com")
+    findings = manager.scan_text("email alice@example.com")
     assert findings[0].subtype == "email"
     assert "models.hf_pii" in findings[0].detectors
 
@@ -223,7 +223,7 @@ def test_flow_budget_limits_module_without_its_own_timeout() -> None:
 
 
 def test_long_text_scans_sensitive_value_after_normalization_window() -> None:
-    value = "howard@example.com"
+    value = "alice@example.com"
     text = "x" * (NORMALIZATION_CHUNK_SIZE + 1) + " " + value
     flow = build_detector_flow()
 

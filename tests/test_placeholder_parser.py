@@ -39,16 +39,16 @@ def test_fake_placeholder_in_file_content_does_not_materialize(components) -> No
 
 def test_path_suffix_resolution_works(components) -> None:
     store, signer, policy = components
-    rec = store.upsert_mapping(session_id="sess_a", workspace_id="ws", scope="workspace", kind="path", subtype="local_path", value="/Users/howard/project", store_value=True, materialization_class="path")
+    rec = store.upsert_mapping(session_id="sess_a", workspace_id="ws", scope="workspace", kind="path", subtype="local_path", value="/Users/alice/project", store_value=True, materialization_class="path")
     ph = signer.parse(signer.issue("path", rec.handle_id, "sess_a") + "/src/main.py")[0]
     result = MaterializationEngine(store, signer, policy, "ws").materialize_placeholder(ph, session_id="sess_a", sink_type="local_tool")
     assert result.allowed
-    assert result.value == "/Users/howard/project/src/main.py"
+    assert result.value == "/Users/alice/project/src/main.py"
 
 
 def test_path_traversal_suffix_blocked(components) -> None:
     store, signer, policy = components
-    rec = store.upsert_mapping(session_id="sess_a", workspace_id="ws", scope="workspace", kind="path", subtype="local_path", value="/Users/howard/project", store_value=True, materialization_class="path")
+    rec = store.upsert_mapping(session_id="sess_a", workspace_id="ws", scope="workspace", kind="path", subtype="local_path", value="/Users/alice/project", store_value=True, materialization_class="path")
     # Path traversal suffixes are now rejected at parse time
     parsed = signer.parse(signer.issue("path", rec.handle_id, "sess_a") + "/../../.ssh/id_rsa")
     assert len(parsed) == 0  # traversal suffix blocks parsing entirely

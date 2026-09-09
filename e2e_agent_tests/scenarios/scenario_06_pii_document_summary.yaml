@@ -9,7 +9,7 @@ expected_agent_actions:
 expected_gateway_decisions:
 - redact/pseudonymize email/phone/card/address/name
 forbidden_leaks:
-- howardzhang0524@example.com
+- alice.chan.pftest@example.com
 - +852 9123 4567
 - 4242 4242 4242 4242
 allowed_outputs:

@@ -47,7 +47,7 @@ UNIX_LISTING_OWNER_GROUP_RE = re.compile(
 TOKEN_LIKE_RE = re.compile(
     r"(?i)\b(?:sk|gh[porus])[-_][A-Za-z0-9_-]{16,}\b"
 )
-SYNTHETIC_EVIDENCE_VALUES = (*CANARY_STRINGS, "Howard Zhang")
+SYNTHETIC_EVIDENCE_VALUES = (*CANARY_STRINGS, "Alice Chan")
 
 
 def _sanitize_export_value(value: Any) -> Any:

@@ -28,11 +28,11 @@ def test_apg_tool_identifier_not_entropy_secret() -> None:
 
 
 def test_email_detected() -> None:
-    assert "email" in subtypes("email howard@example.com")
+    assert "email" in subtypes("email alice@example.com")
 
 
 def test_local_path_detected() -> None:
-    assert "local_path" in subtypes("/Users/howard/private/project/.env")
+    assert "local_path" in subtypes("/Users/alice/private/project/.env")
 
 
 def test_ssh_private_key_block_detected() -> None:

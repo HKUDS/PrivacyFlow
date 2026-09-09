@@ -334,15 +334,15 @@ def test_disabled_rule_does_not_reprotect_existing_mapping(components) -> None:
 
 
 def test_email_pseudonymized_consistently(redactor) -> None:
-    a, _ = redactor.sanitize_text("howard@example.com", "sess_1")
-    b, _ = redactor.sanitize_text("howard@example.com", "sess_1")
+    a, _ = redactor.sanitize_text("alice@example.com", "sess_1")
+    b, _ = redactor.sanitize_text("alice@example.com", "sess_1")
     assert a == b
-    assert "howard@example.com" not in a
+    assert "alice@example.com" not in a
 
 
 def test_local_path_aliased(redactor) -> None:
-    sanitized, _ = redactor.sanitize_text("cd /Users/howard/private/project", "sess_1")
-    assert "/Users/howard" not in sanitized
+    sanitized, _ = redactor.sanitize_text("cd /Users/alice/private/project", "sess_1")
+    assert "/Users/alice" not in sanitized
     assert "/workspace/" in sanitized
 
 
@@ -423,10 +423,10 @@ def test_tool_call_protocol_ids_are_not_redacted(redactor) -> None:
 
 
 def test_local_response_materializes_path_alias(redactor) -> None:
-    sanitized, _ = redactor.sanitize_text("read /Users/howard/private/project/src/app.py", "sess_1")
+    sanitized, _ = redactor.sanitize_text("read /Users/alice/private/project/src/app.py", "sess_1")
     assert "/workspace/" in sanitized
     restored = redactor.materialize_local_text(sanitized, "sess_1")
-    assert "/Users/howard/private/project/src/app.py" in restored
+    assert "/Users/alice/private/project/src/app.py" in restored
 
 
 def test_active_path_mapping_uses_one_store_snapshot(redactor, monkeypatch) -> None:
@@ -509,10 +509,10 @@ def test_tool_schema_function_names_are_not_redacted(redactor) -> None:
 
 
 def test_recursive_json_fields_are_scanned(redactor) -> None:
-    body = {"metadata": {"nested": ["email howard@example.com"]}, "response_format": {"description": "sk-proj-abcdefghijklmnopqrstuvwxyz123456"}}
+    body = {"metadata": {"nested": ["email alice@example.com"]}, "response_format": {"description": "sk-proj-abcdefghijklmnopqrstuvwxyz123456"}}
     sanitized, _ = redactor.sanitize_json(body, "sess_1")
     text = json.dumps(sanitized)
-    assert "howard@example.com" not in text
+    assert "alice@example.com" not in text
     assert "sk-proj-" not in text
 
 

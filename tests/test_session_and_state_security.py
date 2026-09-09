@@ -188,7 +188,7 @@ def test_path_alias_restores_after_redactor_restart_but_not_cross_session(tmp_pa
     db = str(tmp_path / "state.sqlite3")
     first_store = MappingStore(db)
     first = RedactionEngine(DetectorManager(), first_store, PlaceholderSigner("secret", "ws"), PolicyEngine(), "ws")
-    raw_path = "/Users/howard/private/project"
+    raw_path = "/Users/alice/private/project"
     alias, _ = first.sanitize_text(raw_path, "sess-a")
     assert alias.startswith("/workspace/")
 

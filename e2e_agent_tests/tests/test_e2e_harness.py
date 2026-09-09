@@ -580,20 +580,20 @@ def test_live_evidence_exports_exact_audited_replacement_and_materialization(tmp
 
 def test_checked_in_live_evidence_recursively_removes_protected_values_and_local_paths() -> None:
     sanitized = _sanitize_export_value({
-        "fixture": "Howard Zhang has sk-pftest-111111111111111111111111111111111111",
+        "fixture": "Alice Chan has sk-pftest-111111111111111111111111111111111111",
         "operation": ["<PF:v1:secret:sec_123:session:123:signature>"],
         "source": "/private/tmp/pf-live-agents/run/agent_trajectory.txt",
-        "home": "/Users/howard/Documents/code/private.txt",
-        "listing": "-rw-r--r--  1 howard  wheel  42 Aug  5 10:00 evidence.txt",
+        "home": "/Users/operator/Documents/code/private.txt",
+        "listing": "-rw-r--r--  1 operator  wheel  42 Aug  5 10:00 evidence.txt",
     })
 
     serialized = json.dumps(sanitized)
-    assert "Howard Zhang" not in serialized
+    assert "Alice Chan" not in serialized
     assert "sk-pftest" not in serialized
     assert "<PF:v1" not in serialized
     assert "/private/tmp" not in serialized
-    assert "/Users/howard" not in serialized
-    assert " howard  wheel " not in serialized
+    assert "/Users/operator" not in serialized
+    assert " operator  wheel " not in serialized
     assert "<local-home-path>" in serialized
     assert "<local-user>" in serialized
     assert serialized.count("<synthetic-protected-value>") == 2
@@ -602,7 +602,9 @@ def test_checked_in_live_evidence_recursively_removes_protected_values_and_local
     assert "/Users/" not in checked_in
     assert "/private/tmp" not in checked_in
     assert "/var/folders/" not in checked_in
-    assert "howard" not in checked_in.lower()
+    # Listing owners/groups must have been rewritten to the generic placeholders.
+    assert " wheel " not in checked_in
+    assert " staff " not in checked_in
 
 
 def test_live_evidence_page_renders_markdown_and_inline_legacy_apg_operations() -> None:
