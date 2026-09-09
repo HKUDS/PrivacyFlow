@@ -50,6 +50,17 @@ matrix has not been checked in yet.
 - Do not weaken loopback checks, placeholder validation, audit redaction, or
   provider-key isolation without an explicit threat-model update.
 - Confirm that `git diff --check` and the offline checks pass.
+- Add a line under `[Unreleased]` in `CHANGELOG.md` for user-visible changes.
+
+## Releasing
+
+1. Move the `[Unreleased]` entries in `CHANGELOG.md` under a new version
+   heading and bump `version` in `pyproject.toml` to match.
+2. Commit, then tag the commit as `vX.Y.Z` and push the tag.
+3. The `Release` workflow builds the distributions, verifies that the tag
+   matches the package version, publishes to PyPI through trusted publishing
+   (the `pypi` GitHub environment), and creates a GitHub release with the
+   matching changelog section as notes.
 
 By contributing, you agree that your contribution is licensed under the
 Apache License 2.0.
