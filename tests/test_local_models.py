@@ -363,14 +363,19 @@ def test_worker_timeout_terminates_worker_and_isolates_late_response(tmp_path) -
         sys.executable,
         tmp_path / "cache",
         worker_script=script,
-        timeout=0.03,
+        timeout=5,
     )
     try:
+        # Warm the worker first so its SIGTERM handler is installed before the
+        # short timeout below terminates it; otherwise interpreter start-up time
+        # decides whether the graceful-stop marker gets written.
+        assert client.request("health") == {"generation": 1}
+        client.timeout = 0.03
         with pytest.raises(ModelWorkerError) as error:
             client.request("slow")
         assert error.value.code == "WORKER_TIMEOUT"
         assert stopped.read_text(encoding="utf-8") == "1"
-        client.timeout = 1
+        client.timeout = 5
         assert client.request("health") == {"generation": 2}
         assert starts.read_text(encoding="utf-8").splitlines() == ["1", "2"]
     finally:
