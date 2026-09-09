@@ -526,6 +526,7 @@
     ["可用空间", "Free space"],
     ["可用", "Available"],
     ["需要安装 PyTorch", "PyTorch is required"],
+    ["当前设备不支持 Apple MPS", "Apple MPS is not supported on this device"],
     ["未检测到 MPS", "MPS not detected"],
     ["当前系统或 PyTorch 不支持 MPS", "MPS is unavailable on this system or PyTorch build"],
     ["未检测到 CUDA", "CUDA not detected"],
