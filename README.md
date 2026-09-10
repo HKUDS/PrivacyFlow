@@ -448,12 +448,16 @@ The main branch keeps the standard regression suite:
 | Unit and API regression | Proxy, detector, mapping, stream, UI, and security behavior | `pytest -m 'not integration'` |
 | Deterministic E2E harness | Scenario fixtures, leak assertions, and report generation | `pytest e2e_agent_tests/tests/test_e2e_harness.py` |
 | Networked local-model integration | Isolated runtime download and real Worker inference | `PF_RUN_LOCAL_MODEL_INTEGRATION=1 pytest -m integration tests/test_local_models_integration.py` |
-| Historical live-agent evidence | Real Claude Code / OpenCode matrices (APG-era artifacts) | [`docs/live_validation_results.md`](docs/live_validation_results.md) |
+
+Real Claude Code / OpenCode matrices are opt-in, consume provider capacity, and
+are not stored in git. Keep raw artifacts and exported trajectories on the
+maintainer machine.
 
 ## 📚 Documentation
 
 | Start here | What it covers |
 | --- | --- |
+| [`docs/README.md`](docs/README.md) | Public docs versus maintainer-local lab notes |
 | [`docs/design.md`](docs/design.md) | Architecture, trust boundaries, placeholders, and materialization |
 | [`docs/webui.md`](docs/webui.md) | Management behavior, persistence, raw-value review, and UI security |
 | [`docs/threat_model.md`](docs/threat_model.md) | Threats, mitigations, assumptions, and residual risk |
@@ -486,7 +490,7 @@ PF_RUN_LOCAL_MODEL_INTEGRATION=1 pytest -m integration \
 | --- | --- |
 | [`src/gateway/`](src/gateway/) | Gateway, detection, storage, proxy, model worker, and WebUI |
 | [`tests/`](tests/) | Unit, API, stream, security, and WebUI regression tests |
-| [`docs/`](docs/) | Design, operations, threat model, and validation evidence |
+| [`docs/`](docs/) | Public design, operations, and threat-model docs |
 | [`examples/`](examples/) | Minimal client and security examples |
 
 ## Contributing

@@ -317,7 +317,8 @@ export PF_HISTORY_RETENTION_SECONDS=2592000
 | 单元与 API 回归 | 验证代理、检测器、映射、流式传输、WebUI 与安全行为 | `pytest -m 'not integration'` |
 | 确定性 E2E harness | 场景夹具、泄漏断言和报告生成 | `pytest e2e_agent_tests/tests/test_e2e_harness.py` |
 | 联网本地模型集成 | 验证隔离运行环境下载和真实 Worker 推理 | `PF_RUN_LOCAL_MODEL_INTEGRATION=1 pytest -m integration tests/test_local_models_integration.py` |
-| 历史真实 Agent 证据 | Claude Code / OpenCode 矩阵（APG 时期产物） | [`docs/live_validation_results.md`](docs/live_validation_results.md) |
+
+Claude Code / OpenCode 真实矩阵是可选项，会消耗上游额度，不进入 git。原始产物和导出的轨迹只留在维护者本机。
 
 <a id="documentation"></a>
 
@@ -325,6 +326,7 @@ export PF_HISTORY_RETENTION_SECONDS=2592000
 
 | 从这里开始 | 内容 |
 | --- | --- |
+| [`docs/README.md`](docs/README.md) | 对外文档与维护者本地实验笔记的区分 |
 | [`docs/design.md`](docs/design.md) | 架构、信任边界、占位符和还原 |
 | [`docs/webui.md`](docs/webui.md) | 管理行为、持久化、原值查看和 UI 安全 |
 | [`docs/threat_model.md`](docs/threat_model.md) | 威胁、缓解措施、假设和残余风险 |
@@ -357,7 +359,7 @@ PF_RUN_LOCAL_MODEL_INTEGRATION=1 pytest -m integration \
 | --- | --- |
 | [`src/gateway/`](src/gateway/) | 网关、检测、存储、代理、模型 Worker 和 WebUI |
 | [`tests/`](tests/) | 单元、API、流式传输、安全和 WebUI 回归测试 |
-| [`docs/`](docs/) | 设计、运行、威胁模型和验证证据 |
+| [`docs/`](docs/) | 对外设计、运行与威胁模型文档 |
 | [`examples/`](examples/) | 最小客户端与安全示例 |
 
 ## 参与贡献

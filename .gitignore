@@ -7,6 +7,7 @@
 .privacyflow-*/
 .privacyflow-e2e*/
 .claude/
+.cursor/
 .pytest_cache/
 .ruff_cache/
 .coverage
@@ -28,3 +29,13 @@ test-results/
 .env
 .env.*
 !.env.example
+uv.lock
+e2e_agent_tests/reports/latest_report.md
+
+# Maintainer-only live-agent lab notes and trajectory dumps. Public docs stay
+# under docs/; these files are generated locally and are not part of the source tree.
+docs/live_agent_evidence.js
+docs/live_agent_scenarios.html
+docs/live_validation_results.md
+docs/vendor/marked.min.js
+docs/vendor/marked-LICENSE.md

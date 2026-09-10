@@ -7,4 +7,5 @@ PrivacyFlow does not bundle Claude Code, OpenCode, Codex, or other Agent product
 Names of compatible products are used only to describe optional validation
 targets and do not imply endorsement.
 
-Bundled JavaScript library licenses are preserved under `docs/vendor/`.
+Bundled JavaScript library licenses for the WebUI are preserved under
+`docs/vendor/`.
