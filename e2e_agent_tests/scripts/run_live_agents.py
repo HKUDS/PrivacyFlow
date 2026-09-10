@@ -20,6 +20,7 @@ from urllib.parse import urlparse
 
 from e2e_agent_tests.scripts.check_leaks import scan_paths
 from e2e_agent_tests.scripts.common import CANARY_STRINGS, HarnessPaths, file_snapshot, read_jsonl, reset_path, sha256_file
+from e2e_agent_tests.scripts.opencode_real_agent_server import live_upstream_base_url
 from e2e_agent_tests.scripts.setup_test_repo import setup_test_repo
 from gateway.cli.launcher import LauncherConfigError, prepare_launcher_config
 from gateway.placeholder_parser import PF_PLACEHOLDER_FORMAT_EXAMPLES
@@ -181,8 +182,8 @@ def _apply_live_launcher_config(path: Path) -> None:
     if not api_key or not base_url or not protocol:
         raise LauncherConfigError("The active launcher upstream profile is incomplete.")
     os.environ["DEEPSEEK_API_KEY"] = api_key
-    os.environ["PF_UPSTREAM_BASE_URL"] = base_url
     os.environ["PF_UPSTREAM_PROTOCOL"] = protocol
+    os.environ["PF_UPSTREAM_BASE_URL"] = live_upstream_base_url(protocol, base_url)
 
 
 def _base_child_environment() -> dict[str, str]:
@@ -207,10 +208,10 @@ def _agent_environment(repo: Path) -> dict[str, str]:
 def _server_environment(*, disable_entropy: bool = False) -> dict[str, str]:
     env = _base_child_environment()
     env["DEEPSEEK_API_KEY"] = os.environ["DEEPSEEK_API_KEY"]
-    env["PF_UPSTREAM_PROTOCOL"] = os.getenv("PF_UPSTREAM_PROTOCOL", OPENAI_CHAT_COMPLETIONS)
-    upstream_base_url = os.getenv("PF_UPSTREAM_BASE_URL", "https://api.deepseek.com")
-    if os.getenv("PF_UPSTREAM_BASE_URL"):
-        env["PF_UPSTREAM_BASE_URL"] = upstream_base_url
+    protocol = os.getenv("PF_UPSTREAM_PROTOCOL", OPENAI_CHAT_COMPLETIONS)
+    env["PF_UPSTREAM_PROTOCOL"] = protocol
+    upstream_base_url = live_upstream_base_url(protocol, os.getenv("PF_UPSTREAM_BASE_URL", ""))
+    env["PF_UPSTREAM_BASE_URL"] = upstream_base_url
     upstream_host = urlparse(upstream_base_url).hostname
     no_proxy = ",".join(value for value in (upstream_host, "127.0.0.1", "localhost") if value)
     env["NO_PROXY"] = no_proxy

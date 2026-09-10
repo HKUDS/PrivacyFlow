@@ -19,6 +19,24 @@ from gateway.upstream_protocol import (
 from e2e_agent_tests.scripts.common import HarnessPaths
 from e2e_agent_tests.scripts.real_api_gateway import RecordingUpstreamClient
 
+DEEPSEEK_OPENAI_BASE_URL = "https://api.deepseek.com"
+DEEPSEEK_ANTHROPIC_BASE_URL = "https://api.deepseek.com/anthropic"
+
+
+def live_upstream_base_url(protocol: str, configured: str = "") -> str:
+    """Choose DeepSeek's documented root for the active native protocol.
+
+    Anthropic clients must use ``https://api.deepseek.com/anthropic``, not the
+    OpenAI-compatible host root. See https://api-docs.deepseek.com/guides/anthropic_api
+    """
+    protocol = canonical_upstream_protocol(protocol)
+    raw = configured.strip().rstrip("/")
+    if protocol == ANTHROPIC_MESSAGES:
+        if raw in {"", DEEPSEEK_OPENAI_BASE_URL, f"{DEEPSEEK_OPENAI_BASE_URL}/v1"}:
+            return DEEPSEEK_ANTHROPIC_BASE_URL
+        return raw
+    return raw or DEEPSEEK_OPENAI_BASE_URL
+
 
 def build_app(
     workdir: Path,
@@ -30,6 +48,7 @@ def build_app(
     paths = HarnessPaths(workdir)
     paths.ensure()
     upstream_protocol = canonical_upstream_protocol(upstream_protocol)
+    upstream_base_url = live_upstream_base_url(upstream_protocol, upstream_base_url)
     config = GatewayConfig(
         database_path=str(paths.artifacts / "pf_proxy_state.sqlite3"),
         audit_log_path=str(paths.audit_log),
@@ -57,7 +76,7 @@ def main() -> None:
         choices=sorted(SUPPORTED_UPSTREAM_PROTOCOLS),
         default=os.getenv("PF_UPSTREAM_PROTOCOL", OPENAI_CHAT_COMPLETIONS),
     )
-    parser.add_argument("--upstream-base-url", default=os.getenv("PF_UPSTREAM_BASE_URL", "https://api.deepseek.com"))
+    parser.add_argument("--upstream-base-url", default=os.getenv("PF_UPSTREAM_BASE_URL", ""))
     parser.add_argument("--upstream-api-key-env", default="DEEPSEEK_API_KEY")
     args = parser.parse_args()
 

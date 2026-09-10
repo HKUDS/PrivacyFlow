@@ -41,7 +41,7 @@ LOCAL_HOME_PATH_RE = re.compile(
     r"/(?:Users|home)/[^/\s\"'<>]+(?:/[^\s\"'<>]*)?"
 )
 UNIX_LISTING_OWNER_GROUP_RE = re.compile(
-    r"(?m)^(?P<prefix>[bcdlps-][rwxStTs-]{9}[+@.]?\s+\d+\s+)"
+    r"(?P<prefix>[bcdlps-][rwxStTs-]{9}[+@.]?\s+\d+\s+)"
     r"(?P<owner>\S+)(?P<separator>\s+)(?P<group>\S+)(?P<suffix>\s+)"
 )
 TOKEN_LIKE_RE = re.compile(

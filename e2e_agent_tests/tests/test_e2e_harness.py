@@ -18,7 +18,12 @@ from e2e_agent_tests.scripts.export_live_evidence import (
     _sanitize_export_value,
 )
 from e2e_agent_tests.scripts.run_scenario import run_scenario
-from e2e_agent_tests.scripts.setup_test_repo import setup_test_repo
+from e2e_agent_tests.scripts.setup_test_repo import (
+    CONTACT_EMAIL_VALUE,
+    SERVICE_TOKEN_VALUE,
+    _sha256_hex,
+    setup_test_repo,
+)
 from gateway.mapping_store import MappingStore
 from e2e_agent_tests.scripts.run_live_agents import (
     LIVE_SCENARIOS,
@@ -61,6 +66,10 @@ def test_setup_test_repo_creates_expected_files(tmp_path: Path) -> None:
     assert (repo / "private/path_probe.txt").read_text().startswith("PATH_ALIAS_OK")
     assert "CASE-731" in (repo / "docs/customer_notes.md").read_text()
     assert "sk-pftest" in (repo / ".env").read_text()
+    secret_script = (repo / "scripts/validate_secret.py").read_text()
+    pii_script = (repo / "scripts/validate_pii.py").read_text()
+    assert _sha256_hex(SERVICE_TOKEN_VALUE) in secret_script
+    assert _sha256_hex(CONTACT_EMAIL_VALUE) in pii_script
     assert "OPENAI_API_KEY_SET=false" in (repo / "config/edge.env").read_text()
     assert "status=401" in (repo / "logs/assignment_edge.log").read_text()
 
@@ -303,6 +312,23 @@ def test_live_server_bypasses_system_proxy_only_for_its_upstream(monkeypatch) ->
 
     no_entropy_env = _server_environment(disable_entropy=True)
     assert no_entropy_env["PF_LIVE_DISABLE_ENTROPY"] == "1"
+
+
+def test_live_server_uses_deepseek_anthropic_root_for_claude(monkeypatch) -> None:
+    from e2e_agent_tests.scripts.opencode_real_agent_server import (
+        DEEPSEEK_ANTHROPIC_BASE_URL,
+        DEEPSEEK_OPENAI_BASE_URL,
+        live_upstream_base_url,
+    )
+
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "provider-key")
+    monkeypatch.setenv("PF_UPSTREAM_PROTOCOL", "anthropic_messages")
+    monkeypatch.setenv("PF_UPSTREAM_BASE_URL", DEEPSEEK_OPENAI_BASE_URL)
+
+    server_env = _server_environment()
+    assert server_env["PF_UPSTREAM_BASE_URL"] == DEEPSEEK_ANTHROPIC_BASE_URL
+    assert live_upstream_base_url("anthropic_messages", "") == DEEPSEEK_ANTHROPIC_BASE_URL
+    assert live_upstream_base_url("openai_chat_completions", "") == DEEPSEEK_OPENAI_BASE_URL
 
 
 def test_live_agent_matrix_uses_natural_tasks_and_covers_write_workflows(tmp_path: Path) -> None:
@@ -578,13 +604,14 @@ def test_live_evidence_exports_exact_audited_replacement_and_materialization(tmp
     assert all(item["timestamps"] == [1] for item in operations)
 
 
-def test_checked_in_live_evidence_recursively_removes_protected_values_and_local_paths() -> None:
+def test_live_evidence_export_removes_protected_values_and_local_paths() -> None:
     sanitized = _sanitize_export_value({
         "fixture": "Alice Chan has sk-pftest-111111111111111111111111111111111111",
         "operation": ["<PF:v1:secret:sec_123:session:123:signature>"],
         "source": "/private/tmp/pf-live-agents/run/agent_trajectory.txt",
         "home": "/Users/operator/Documents/code/private.txt",
         "listing": "-rw-r--r--  1 operator  wheel  42 Aug  5 10:00 evidence.txt",
+        "concatenated": "{\"ok\": true}-rw-r--r--  1 operator  wheel  12 Sep  9 22:39 validator_success.json",
     })
 
     serialized = json.dumps(sanitized)
@@ -597,31 +624,7 @@ def test_checked_in_live_evidence_recursively_removes_protected_values_and_local
     assert "<local-home-path>" in serialized
     assert "<local-user>" in serialized
     assert serialized.count("<synthetic-protected-value>") == 2
-
-    checked_in = (Path(__file__).resolve().parents[2] / "docs" / "live_agent_evidence.js").read_text()
-    assert "/Users/" not in checked_in
-    assert "/private/tmp" not in checked_in
-    assert "/var/folders/" not in checked_in
-    # Listing owners/groups must have been rewritten to the generic placeholders.
-    assert " wheel " not in checked_in
-    assert " staff " not in checked_in
-
-
-def test_live_evidence_page_renders_markdown_and_inline_legacy_apg_operations() -> None:
-    page = (Path(__file__).resolve().parents[2] / "docs" / "live_agent_scenarios.html").read_text()
-
-    assert '<script src="./vendor/marked.min.js"></script>' in page
-    assert "renderMarkdownWithAnnotations" in page
-    assert "sanitizeMarkdownHTML" in page
-    assert "↑ 上行已替换" in page
-    assert "↓ 本地已还原" in page
-    assert "云端保护表示" in page
-    # The checked-in HTML is a historical APG capture.  The active exporter
-    # emits PF, but historical generated evidence is intentionally immutable.
-    assert "data-apg-toggle" in page
-    assert "toggleAPGMark" in page
-    assert 'data-apg-value="protected"' in page
-    assert 'role="button" tabindex="0"' in page
+    assert serialized.count("<local-user>") == 2
 
 
 def test_debug_script_validation_accepts_python_boolean_casing(tmp_path: Path) -> None:

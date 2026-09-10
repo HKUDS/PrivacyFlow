@@ -118,6 +118,26 @@ def test_upstream_client_resolves_api_root_and_full_endpoint_urls() -> None:
     assert endpoint_client.resolve_upstream_url("/v1/models") == "https://openrouter.ai/api/v1/models"
 
 
+def test_upstream_client_rewrites_deepseek_openai_root_to_anthropic_messages() -> None:
+    root_client = UpstreamClient(
+        UpstreamConfig(
+            base_url="https://api.deepseek.com",
+            api_key="provider-key",
+            protocol=ANTHROPIC_MESSAGES,
+        )
+    )
+    assert root_client.resolve_upstream_url("/v1/messages") == "https://api.deepseek.com/anthropic/v1/messages"
+
+    documented_client = UpstreamClient(
+        UpstreamConfig(
+            base_url="https://api.deepseek.com/anthropic",
+            api_key="provider-key",
+            protocol=ANTHROPIC_MESSAGES,
+        )
+    )
+    assert documented_client.resolve_upstream_url("/v1/messages") == "https://api.deepseek.com/anthropic/v1/messages"
+
+
 def test_upstream_client_selects_native_auth_and_endpoint_override_from_request_path() -> None:
     captured: list[tuple[str, dict[str, str]]] = []
 

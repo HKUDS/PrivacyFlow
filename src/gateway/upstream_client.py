@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from collections.abc import AsyncIterator
 from typing import Any
-from urllib.parse import urlsplit, urlunsplit
+from urllib.parse import SplitResult, urlsplit, urlunsplit
 
 import httpx
 
@@ -44,6 +44,21 @@ def _is_json_content_type(value: str) -> bool:
 def _terminal_api_path(path: str) -> str:
     normalized = path.rstrip("/")
     return next((suffix for suffix in _TERMINAL_API_PATHS if normalized.endswith(suffix)), "")
+
+
+def _deepseek_anthropic_root(parsed: SplitResult) -> SplitResult | None:
+    """Map DeepSeek's OpenAI root onto the documented Anthropic surface.
+
+    Official Anthropic ``base_url`` is ``https://api.deepseek.com/anthropic``.
+    Configuring the OpenAI root with ``anthropic_messages`` would otherwise
+    POST ``/v1/messages`` to a path that is not served.
+    """
+    if parsed.hostname != "api.deepseek.com":
+        return None
+    parts = [part.lower() for part in parsed.path.split("/") if part]
+    if "anthropic" in parts or parts not in ([], ["v1"]):
+        return None
+    return parsed._replace(path="/anthropic", query="", fragment="")
 
 
 class UpstreamClient:
@@ -118,6 +133,12 @@ class UpstreamClient:
             return override
         base_url = self.config.base_url.rstrip("/")
         parsed = urlsplit(base_url)
+        effective_protocol = request_protocol or canonical_upstream_protocol(self.config.protocol)
+        if effective_protocol == ANTHROPIC_MESSAGES:
+            rewritten = _deepseek_anthropic_root(parsed)
+            if rewritten is not None:
+                parsed = rewritten
+                base_url = urlunsplit((parsed.scheme, parsed.netloc, parsed.path, "", "")).rstrip("/")
         base_path = parsed.path.rstrip("/")
         base_terminal = _terminal_api_path(base_path)
         if base_terminal and requested_terminal:
