@@ -83,7 +83,8 @@ them in plaintext. Sending the original values to a cloud model means trusting
 every provider and intermediary that handles the request. Data policies vary;
 some services may retain or reuse requests for model improvement or training.
 Unofficial or personal API relays make retention, access, and reuse even harder
-to assess. Moving entirely to local models often means either investing
+to assess: whoever operates the relay can log, resell, or reuse the plaintext
+that agents send. Moving entirely to local models often means either investing
 substantial compute resources or accepting less capable models.
 
 ### What providers say
@@ -109,11 +110,13 @@ agent, setting, and intermediary to handle sensitive values correctly.
 
 ### What users have reported
 
-The following public reports have not been confirmed by the providers and do
-not independently prove cross-user data leakage. Unexpected content may also
-result from hallucination, context contamination, client bugs, or tool input.
-They nevertheless illustrate a practical problem: once sensitive data is sent
-upstream, users lose control over which systems process it and whether it might
+The following public reports have not been independently confirmed by
+PrivacyFlow and do not by themselves prove a specific breach. Unexpected model
+output may also result from hallucination, context contamination, client bugs,
+or tool input. Reports about unofficial routers describe a different failure:
+the intermediary itself logging or reselling plaintext traffic. They nevertheless
+illustrate a practical problem: once sensitive data is sent upstream, users lose
+control over which systems process it, who can retain it, and whether it might
 reappear under unexpected conditions.
 
 | Platform | Public report |
@@ -122,6 +125,7 @@ reappear under unexpected conditions.
 | Claude Code | A user reported that unrelated production-server connection details and credentials appeared in a session, after which the Agent connected to the server and modified a third-party database. [View the issue](https://github.com/anthropics/claude-code/issues/72274) |
 | ChatGPT | Multiple users reported receiving responses unrelated to files they had uploaded. One response allegedly contained a document uploaded by a local lawyer. [View the discussion](https://news.ycombinator.com/item?id=43615756) |
 | Gemini | After uploading audio for transcription, a user received an unrelated business-meeting transcript containing names, corporate email addresses, contracts, and document links. The poster said some of the people and details could be verified. [View the original post](https://www.reddit.com/r/GeminiAI/comments/1v8700z/gemini_gave_me_someone_elses_transcript/) |
+| Third-party LLM router | A researcher reported buying a multi-terabyte traffic dataset from a popular Chinese LLM router. The dump still contained SSH keys, VPN configurations, Aliyun keys, and GitLab tokens associated with government organizations and major companies. [View the original post](https://x.com/shoucccc/status/2098169782541631871) |
 
 PrivacyFlow does not need to assume that every anomaly is a data breach. It replaces
 values detected in supported textual fields before a request leaves the device.
