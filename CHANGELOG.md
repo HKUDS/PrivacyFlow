@@ -7,7 +7,7 @@ versions may include breaking changes, which are called out explicitly.
 
 ## [Unreleased]
 
-## [0.1.0] - 2026-09-09
+## [0.1.0] - 2026-09-19
 
 First public release under the PrivacyFlow name. Earlier revisions were
 developed as Agent Privacy Gateway (APG); `privacyflow migrate` and the `apg`
@@ -36,6 +36,18 @@ compatibility entry point carry that state forward.
 - Sanitized, size-rotated JSONL audit log and safe diagnostics that never store
   raw protected values, test text, or detector patterns.
 - Deterministic E2E harness and Playwright WebUI checks in CI.
+
+### Changed
+
+- Ship tagged builds through GitHub Releases and `pip install` from git. The
+  `privacyflow` name on PyPI belongs to a different project.
+
+### Fixed
+
+- Route DeepSeek Anthropic Messages traffic to the documented `/anthropic` root
+  instead of the OpenAI-compatible `/v1` root.
+- Show the English WebUI copy when Apple MPS is unavailable, instead of a
+  leaked Chinese device-reason string.
 
 ### Security
 
